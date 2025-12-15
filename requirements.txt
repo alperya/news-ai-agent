@@ -1,0 +1,23 @@
+# Core dependencies
+anthropic>=0.39.0
+feedparser>=6.0.11
+tweepy>=4.14.0
+requests>=2.31.0
+
+# AWS SDK
+boto3>=1.34.0
+botocore>=1.34.0
+
+# Data processing
+python-dateutil>=2.8.2
+
+# Testing
+pytest>=8.0.0
+pytest-cov>=4.1.0
+pytest-mock>=3.12.0
+
+# Development
+python-dotenv>=1.0.0
+black>=24.0.0
+flake8>=7.0.0
+mypy>=1.8.0
