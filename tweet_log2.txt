@@ -1,0 +1,51 @@
+INFO:__main__:============================================================
+INFO:__main__:🚀 Starting Pipeline
+INFO:__main__:============================================================
+INFO:__main__:
+📰 STAGE 1: Scraping...
+INFO:news_scraper:Fetching feed: nos/general from https://feeds.nos.nl/nosnieuwsalgemeen
+INFO:news_scraper:Successfully fetched 5 articles from nos/general
+INFO:news_scraper:Fetching feed: nos/binnenland from https://feeds.nos.nl/nosnieuwsbinnenland
+INFO:news_scraper:Successfully fetched 5 articles from nos/binnenland
+INFO:news_scraper:Fetching feed: nos/buitenland from https://feeds.nos.nl/nosnieuwsbuitenland
+INFO:news_scraper:Successfully fetched 5 articles from nos/buitenland
+INFO:news_scraper:Fetching feed: nos/sport from https://feeds.nos.nl/nossportalgemeen
+INFO:news_scraper:Successfully fetched 5 articles from nos/sport
+INFO:news_scraper:Fetching feed: nu/general from https://www.nu.nl/rss/Algemeen
+INFO:news_scraper:Successfully fetched 5 articles from nu/general
+INFO:news_scraper:Fetching feed: nu/binnenland from https://www.nu.nl/rss/Binnenland
+INFO:news_scraper:Successfully fetched 5 articles from nu/binnenland
+INFO:news_scraper:Fetching feed: nu/economie from https://www.nu.nl/rss/Economie
+INFO:news_scraper:Successfully fetched 5 articles from nu/economie
+INFO:news_scraper:Fetching feed: nu/tech from https://www.nu.nl/rss/Tech
+INFO:news_scraper:Successfully fetched 5 articles from nu/tech
+INFO:news_scraper:Fetching feed: telegraaf/algemeen from https://www.telegraaf.nl/rss
+INFO:news_scraper:Successfully fetched 0 articles from telegraaf/algemeen
+INFO:news_scraper:Fetching feed: telegraaf/binnenland from https://www.telegraaf.nl/rss/binnenland
+INFO:news_scraper:Successfully fetched 0 articles from telegraaf/binnenland
+INFO:news_scraper:Fetching feed: telegraaf/buitenland from https://www.telegraaf.nl/rss/buitenland
+INFO:news_scraper:Successfully fetched 0 articles from telegraaf/buitenland
+INFO:news_scraper:Fetching feed: telegraaf/financieel from https://www.telegraaf.nl/rss/financieel
+INFO:news_scraper:Successfully fetched 0 articles from telegraaf/financieel
+INFO:news_scraper:Total articles scraped: 16
+INFO:news_scraper:Saved 16 articles to output/articles_20251216_130804.json
+INFO:__main__:Scraped 16 articles
+INFO:__main__:
+🤖 STAGE 2: AI Processing...
+INFO:ai_agent:Processing article: Drama met Jeffrey en Emma uit Beerta was volgens i...
+INFO:httpx:HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+INFO:ai_agent:Processed 1/1
+INFO:ai_agent:Successfully processed 1 posts
+INFO:ai_agent:Saved 1 posts to output/posts_20251216_130804.json
+INFO:__main__:Generated 1 posts
+INFO:__main__:
+Sample post:
+INFO:__main__:------------------------------------------------------------
+INFO:__main__:💔 Evaluatie drama Beerta: betrokken organisaties concluderen dat er geen signalen waren die voorspelden dat vader Jeffrey (10) en Emma (8) en zichzelf iets zou aandoen. Het gezin kwam dit voorjaar door verdrinking om het leven
+
+#Beerta #kinderveiligheid #evaluatie #Nederland
+
+🔗 https://nos.nl/l/2594808
+INFO:__main__:------------------------------------------------------------
+INFO:__main__:
+✅ Pipeline Complete!

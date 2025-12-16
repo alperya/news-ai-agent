@@ -1,0 +1,12 @@
+version: '3.8'
+services:
+  news-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    volumes:
+      - ./:/app
+      - ./output:/app/output
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    command: python3 main.py --dry-run

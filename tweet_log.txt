@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+  File "/Users/alperyasemin/Documents/workspace/news-ai-agent/main.py", line 7, in <module>
+    from news_scraper import DutchNewsScraper, save_articles_json
+  File "/Users/alperyasemin/Documents/workspace/news-ai-agent/news_scraper.py", line 6, in <module>
+    import feedparser
+ModuleNotFoundError: No module named 'feedparser'
