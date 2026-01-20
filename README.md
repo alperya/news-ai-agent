@@ -15,15 +15,21 @@ cp .env.example .env
 # Run pipeline (dry-run mode)
 python main.py --dry-run
 
-# Run with actual posting
-python main.py --no-dry-run --max-posts 3
+# Run with actual posting (Instagram - optimal times: 11:00, 15:00, 19:00 CET)
+python main.py --no-dry-run --platform instagram --max-posts 3
+
+# Run with Twitter
+python main.py --no-dry-run --platform twitter --max-posts 3
 ```
 
 ## 📦 Features
 
 - ✅ Multi-source RSS scraping (NOS, NU.nl, Telegraaf)
-- ✅ Claude AI content generation
-- ✅ Twitter/X integration
+- ✅ Claude AI content generation with Turkish content optimization
+- ✅ Instagram & Twitter/X integration
+- ✅ Smart content selection for Turkish community in Netherlands
+- ✅ Daily posting limit (max 3 posts/day)
+- ✅ Optimal posting times for Instagram (11:00, 15:00, 19:00 CET)
 - ✅ AWS Lambda deployment ready
 - ✅ Docker support
 - ✅ Infrastructure as Code (Terraform)

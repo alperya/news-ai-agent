@@ -44,6 +44,8 @@ output/
 # Logs
 *.log
 logs/
+pipeline.log
+pipeline.pid
 
 # Testing
 .pytest_cache/

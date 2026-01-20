@@ -66,11 +66,22 @@ class DutchNewsScraper:
             logger.info(f"Fetching feed: {source}/{category} from {url}")
             feed = feedparser.parse(url)
             
+            # Check feed status and log warnings
+            if hasattr(feed, 'status') and feed.status != 200:
+                logger.warning(f"Feed {source}/{category} returned status {feed.status}")
+            
+            if not feed.entries:
+                logger.warning(f"Feed {source}/{category} has no entries. Feed bozo: {getattr(feed, 'bozo', False)}, bozo_exception: {getattr(feed, 'bozo_exception', None)}")
+                return []
+            
             articles = []
             for entry in feed.entries[:5]:
                 article = self._parse_entry(entry, source, category)
                 if article:
                     articles.append(article)
+            
+            if len(articles) == 0 and len(feed.entries) > 0:
+                logger.warning(f"Feed {source}/{category} has {len(feed.entries)} entries but none could be parsed")
             
             logger.info(f"Successfully fetched {len(articles)} articles from {source}/{category}")
             return articles
