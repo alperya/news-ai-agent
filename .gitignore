@@ -28,6 +28,10 @@ env/
 .env.local
 .env.*.local
 
+# Instagram Token Cache (contains sensitive token data)
+.instagram_token_cache.json
+.token_cache*
+
 # IDE
 .vscode/
 .idea/

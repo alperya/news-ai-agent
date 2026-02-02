@@ -10,6 +10,22 @@ from typing import Optional
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Import token manager for Instagram token refresh
+try:
+    from token_manager import InstagramTokenManager
+    HAS_TOKEN_MANAGER = True
+except ImportError:
+    HAS_TOKEN_MANAGER = False
+    logger.debug("token_manager not available - using static tokens")
+
+# Import token manager for Instagram
+try:
+    from token_manager import InstagramTokenManager
+    HAS_TOKEN_MANAGER = True
+except ImportError:
+    HAS_TOKEN_MANAGER = False
+    logger.warning("⚠️  token_manager not available - using static tokens")
+
 class TwitterPublisher:
     def __init__(self):
         self.api_key = os.getenv('TWITTER_API_KEY')
@@ -32,16 +48,51 @@ class TwitterPublisher:
             logger.info(f"[DRY RUN] Would post:\n{content}")
             return {'id': 'dry_run', 'text': content}
         
-        response = self.client.create_tweet(text=content)
-        logger.info(f"✅ Posted: {response.data['id']}")
-        return response.data
+        try:
+            response = self.client.create_tweet(text=content)
+            logger.info(f"✅ Posted: {response.data['id']}")
+            return response.data
+        except tweepy.Forbidden as e:
+            # Check if it's a rate limit error
+            error_str = str(e)
+            if "You are not permitted to perform this action" in error_str:
+                logger.error("❌ Twitter API Rate Limit Exceeded!")
+                logger.error("   Daily limit of 17 tweets reached (Essential tier)")
+                logger.error("   Limit resets in ~24 hours")
+                logger.info("💡 Solutions:")
+                logger.info("   1. Wait 24 hours for limit reset")
+                logger.info("   2. Use Instagram instead (unlimited)")
+                logger.info("   3. Upgrade to Premium tier")
+                logger.info("   📚 See: TWITTER_403_EXPLAINED.md")
+            raise
+        except Exception as e:
+            logger.error(f"❌ Error posting to Twitter: {str(e)}")
+            raise
 
 
 class InstagramPublisher:
-    """Instagram Publisher using Meta Graph API"""
+    """Instagram Publisher using Meta Graph API with automatic token refresh"""
     
     def __init__(self):
-        self.access_token = os.getenv('INSTAGRAM_ACCESS_TOKEN')
+        # Try to use token manager for automatic refresh
+        self.token_manager = None
+        self.access_token = None
+        
+        if HAS_TOKEN_MANAGER:
+            try:
+                self.token_manager = InstagramTokenManager()
+                self.access_token = self.token_manager.get_valid_token()
+                logger.info("✅ Token manager initialized - automatic token refresh enabled")
+            except Exception as e:
+                logger.debug(f"Token manager failed: {str(e)} - falling back to static token")
+                self.token_manager = None
+        
+        # Fallback to static token from environment
+        if not self.access_token:
+            self.access_token = os.getenv('INSTAGRAM_ACCESS_TOKEN')
+            if not self.token_manager and self.access_token:
+                logger.info("Using static token from .env (auto-refresh disabled)")
+        
         self.instagram_account_id = os.getenv('INSTAGRAM_ACCOUNT_ID')
         
         if not self.access_token:
@@ -49,7 +100,19 @@ class InstagramPublisher:
         if not self.instagram_account_id:
             raise ValueError("INSTAGRAM_ACCOUNT_ID not found in environment")
         
-        self.graph_api_url = "https://graph.facebook.com/v18.0"
+        # Use API v24.0
+        self.graph_api_url = "https://graph.facebook.com/v24.0"
+        
+        # Log current configuration for verification
+        logger.info(f"📋 Instagram API Configuration:")
+        logger.info(f"   API Version: v24.0")
+        logger.info(f"   Account ID: {self.instagram_account_id}")
+        logger.info(f"   Access Token: {self.access_token[:20]}...{self.access_token[-10:] if len(self.access_token) > 30 else '***'}")
+        logger.info(f"   Base URL: {self.graph_api_url}")
+        if self.token_manager:
+            logger.info(f"   ✅ Token Refresh: Enabled")
+        else:
+            logger.info(f"   ⚠️  Token Refresh: Disabled")
     
     def _download_image(self, image_url: str) -> Optional[bytes]:
         """Download image from URL"""
@@ -88,12 +151,35 @@ class InstagramPublisher:
             logger.error(f"Error uploading image: {str(e)}")
             return None
     
+    def _ensure_valid_token(self):
+        """Ensure we have a valid token before making API calls"""
+        if not self.token_manager:
+            # No token manager - can't refresh, just warn
+            logger.debug("No token manager - using static token")
+            return
+        
+        try:
+            # Get fresh token from manager (will refresh if needed)
+            new_token = self.token_manager.get_valid_token()
+            
+            # Update if token changed
+            if new_token != self.access_token:
+                logger.info("🔄 Token refreshed and updated")
+                self.access_token = new_token
+            
+        except Exception as e:
+            logger.error(f"❌ Token validation failed: {str(e)}")
+            raise ValueError(f"Cannot get valid Instagram token: {str(e)}")
+    
     def _check_container_status(self, creation_id: str, max_attempts: int = 30, delay: int = 2) -> bool:
         """Check if media container is ready for publishing"""
         status_url = f"{self.graph_api_url}/{creation_id}"
         
         for attempt in range(max_attempts):
             try:
+                # Ensure valid token before each status check
+                self._ensure_valid_token()
+                
                 response = requests.get(status_url, params={'fields': 'status_code', 'access_token': self.access_token})
                 response.raise_for_status()
                 data = response.json()
@@ -119,6 +205,7 @@ class InstagramPublisher:
     
     def publish_post(self, content: str, image_url: Optional[str] = None, dry_run: bool = False):
         """Publish post to Instagram"""
+        
         if dry_run:
             logger.info(f"[DRY RUN] Would post to Instagram:\n{content}")
             if image_url:
@@ -126,6 +213,11 @@ class InstagramPublisher:
             return {'id': 'dry_run', 'text': content}
         
         try:
+            # ⚡ STEP 0: Ensure valid token before any API calls
+            logger.info("🔐 Validating Instagram token...")
+            self._ensure_valid_token()
+            logger.info("✅ Token is valid and ready")
+            
             # Instagram Graph API requires image for photo posts
             if not image_url:
                 logger.warning("⚠️  Instagram posts typically require an image")
@@ -157,7 +249,12 @@ class InstagramPublisher:
             if not self._check_container_status(creation_id):
                 raise ValueError("Media container not ready after maximum attempts")
             
-            # Step 3: Publish the container
+            # ⚡ STEP 3: Ensure token is still valid before publishing
+            logger.info("🔐 Validating token before publishing...")
+            self._ensure_valid_token()
+            logger.info("✅ Token valid, proceeding with publish...")
+            
+            # Step 4: Publish the container
             logger.info("📤 Publishing media...")
             publish_url = f"{self.graph_api_url}/{self.instagram_account_id}/media_publish"
             publish_params = {
@@ -184,5 +281,5 @@ class InstagramPublisher:
             logger.error(error_msg)
             raise ValueError(error_msg)
         except Exception as e:
-            logger.error(f"Error posting to Instagram: {str(e)}")
+            logger.error(f"❌ Error posting to Instagram: {str(e)}")
             raise

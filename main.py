@@ -11,16 +11,12 @@ import argparse
 import json
 from datetime import datetime
 from pathlib import Path
-import time
 
 from news_scraper import DutchNewsScraper, save_articles_json
 from ai_agent import NewsAIAgent, save_posts_json
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
-# Best times for Instagram engagement (CET timezone)
-INSTAGRAM_OPTIMAL_HOURS = [11, 15, 19]  # 11:00, 15:00, 19:00
 
 
 class NewsAIPipeline:
@@ -29,13 +25,10 @@ class NewsAIPipeline:
         self.config = config or {
             'output_dir': 'output',
             'max_articles_per_source': 2,
-            'max_posts': 3,  # Maximum 3 posts per day
+            'max_posts': 1,  # Post only one article per run
             'dry_run': True,
-            # Default: 4 hours between posts (in seconds) - to space out 3 posts per day
-            'publish_interval_seconds': 4 * 60 * 60,
             'platform': 'instagram',  # 'twitter' or 'instagram'
             'use_existing_today': False,  # Use existing scraped articles from today if available
-            'max_posts_per_day': 3,  # Daily limit
         }
         self.scraper = DutchNewsScraper()
         self.ai_agent = NewsAIAgent()
@@ -49,16 +42,6 @@ class NewsAIPipeline:
         logger.info("="*60)
         logger.info("🚀 Starting News AI Agent Pipeline")
         logger.info("="*60)
-        
-        # Check daily post limit
-        if not dry_run:
-            posts_today = self._count_posts_today()
-            max_daily = self.config.get('max_posts_per_day', 3)
-            if posts_today >= max_daily:
-                logger.warning(f"⚠️  Daily limit reached! Already posted {posts_today}/{max_daily} times today.")
-                logger.info("💡 Skipping pipeline run to respect daily limit.")
-                return {'error': 'Daily post limit reached', 'posts_today': posts_today}
-            logger.info(f"📊 Posts today: {posts_today}/{max_daily}")
         
         results = {'timestamp': timestamp, 'stages': {}}
         
@@ -94,8 +77,42 @@ class NewsAIPipeline:
             # STAGE 2: AI Processing
             logger.info("\n🤖 STAGE 2: Processing with AI...")
             platform = self.config.get('platform', 'twitter')
-            articles_dict = [a.to_dict() for a in articles]
-            posts = self.ai_agent.process_batch(articles_dict, self.config['max_posts'], platform=platform)
+            
+            # Check if we should use existing posts from today
+            posts = None
+            if self.config.get('use_existing_today', False):
+                existing_posts = self._find_today_posts(platform)
+                if existing_posts:
+                    logger.info(f"📋 Found {len(existing_posts)} existing posts from today")
+                    logger.info("⏭️  Using existing posts (skipping AI API call)")
+                    posts = existing_posts
+            
+            # If no existing posts found, process with AI
+            if not posts:
+                logger.info("🆕 No existing posts found, processing with AI...")
+                
+                # Filter out already posted articles (from ANY previous run)
+                posted_urls = self._get_posted_urls()
+                if posted_urls:
+                    logger.info(f"🔍 Found {len(posted_urls)} previously posted articles across all runs")
+                    original_count = len(articles)
+                    articles = [a for a in articles if a.url not in posted_urls]
+                    filtered_count = len(articles)
+                    if filtered_count < original_count:
+                        logger.info(f"📋 Filtered out {original_count - filtered_count} duplicate articles")
+                        logger.info(f"📰 Remaining NEW articles: {filtered_count}")
+                    else:
+                        logger.info(f"✅ All {filtered_count} articles are NEW (no duplicates found)")
+                    
+                    if not articles:
+                        logger.warning("⚠️  All articles have already been posted!")
+                        logger.info("💡 No new articles to post. Exiting.")
+                        results['stages']['ai_processing'] = {'success': False, 'count': 0, 'reason': 'all_articles_already_posted'}
+                        return results
+                
+                articles_dict = [a.to_dict() for a in articles]
+                posts = self.ai_agent.process_batch(articles_dict, self.config['max_posts'], platform=platform)
+            
             save_posts_json(posts, str(self.output_dir / f'posts_{timestamp}.json'))
             results['stages']['ai_processing'] = {'success': True, 'count': len(posts)}
             logger.info(f"Generated {len(posts)} posts")
@@ -108,16 +125,6 @@ class NewsAIPipeline:
             
             # STAGE 3: Publishing
             logger.info("\n📱 STAGE 3: Publishing to social media...")
-            
-            # Check if it's optimal time for Instagram
-            if not dry_run and self.config.get('platform') == 'instagram':
-                if not self._should_post_now():
-                    next_time = self._get_next_optimal_time()
-                    logger.warning(f"⏰ Not optimal time for Instagram posting!")
-                    logger.info(f"💡 Best posting times: {', '.join([f'{h}:00' for h in INSTAGRAM_OPTIMAL_HOURS])}")
-                    logger.info(f"📅 Next optimal time: {next_time.strftime('%Y-%m-%d %H:%M')}")
-                    logger.info("🧪 Switching to DRY RUN mode")
-                    dry_run = True
             
             publish_results = self._publish_posts(posts, dry_run)
             results['stages']['publishing'] = {
@@ -194,6 +201,55 @@ class NewsAIPipeline:
         except Exception as e:
             logger.error(f"❌ Failed to load articles from {latest_file}: {str(e)}")
             return []
+    
+    def _find_today_posts(self, platform: str) -> list:
+        """Find posts from today's existing output files"""
+        from ai_agent import SocialMediaPost
+        
+        today_prefix = datetime.now().strftime('%Y%m%d')
+        
+        # Look for posts files from today
+        post_files = list(self.output_dir.glob(f'posts_{today_prefix}*.json'))
+        
+        if not post_files:
+            return []
+        
+        # Use the most recent file from today
+        latest_file = max(post_files, key=lambda p: p.stat().st_mtime)
+        logger.info(f"📂 Loading posts from: {latest_file.name}")
+        
+        try:
+            with open(latest_file, 'r', encoding='utf-8') as f:
+                posts_data = json.load(f)
+            
+            # Convert dict back to SocialMediaPost objects
+            posts = []
+            for post_dict in posts_data:
+                try:
+                    # Filter by platform if specified
+                    post_platform = post_dict.get('platform', 'twitter')
+                    if platform and post_platform != platform:
+                        continue
+                    
+                    post = SocialMediaPost(
+                        original_title=post_dict.get('original_title', ''),
+                        original_url=post_dict.get('original_url', ''),
+                        source=post_dict.get('source', ''),
+                        content=post_dict.get('content', ''),
+                        hashtags=post_dict.get('hashtags', []),
+                        emoji=post_dict.get('emoji', '📰'),
+                        platform=post_platform,
+                        image_url=post_dict.get('image_url')
+                    )
+                    posts.append(post)
+                except Exception as e:
+                    logger.warning(f"Failed to load post: {str(e)}")
+                    continue
+            
+            return posts
+        except Exception as e:
+            logger.error(f"❌ Failed to load posts from {latest_file}: {str(e)}")
+            return []
 
     def _publish_posts(self, posts: list, dry_run: bool) -> dict:
         """Stage 3: Publish posts to social media"""
@@ -222,19 +278,29 @@ class NewsAIPipeline:
             
             posted_results = []
             
-            for i, post in enumerate(posts, 1):
+            # Post only the first post (one post per run)
+            if posts:
+                post = posts[0]
                 try:
-                    logger.info(f"\n📤 Posting {i}/{len(posts)} to {platform_name}...")
+                    logger.info(f"\n📤 Posting to {platform_name}...")
                     
                     # Get image URL from post if available (for Instagram)
                     image_url = None
                     if platform == 'instagram':
                         image_url = getattr(post, 'image_url', None)
                         if not image_url:
-                            logger.warning(f"⚠️  No image URL for post {i}, Instagram post may fail")
+                            error_msg = (
+                                "❌ Instagram post requires an image_url but none was found.\n"
+                                f"   Post title: {post.original_title}\n"
+                                f"   Post URL: {post.original_url}\n"
+                                "   Please ensure the RSS feed provides image URLs or skip this post."
+                            )
+                            logger.error(error_msg)
+                            raise ValueError("Instagram post cannot be published without image_url")
                     
                     # Post to social media
                     if platform == 'instagram':
+                        logger.info(f"   Image URL: {image_url}")
                         result = publisher.publish_post(post.format_post(), image_url=image_url, dry_run=False)
                     else:
                         result = publisher.publish_post(post.format_post(), dry_run=False)
@@ -250,6 +316,7 @@ class NewsAIPipeline:
                                 'post_id': result['id'],
                                 'url': post_url,
                                 'original_title': post.original_title,
+                                'original_url': post.original_url,
                                 'status': 'success'
                             })
                         else:
@@ -262,24 +329,18 @@ class NewsAIPipeline:
                                 'tweet_id': result['id'],
                                 'url': tweet_url,
                                 'original_title': post.original_title,
+                                'original_url': post.original_url,
                                 'status': 'success'
                             })
                     else:
-                        logger.warning(f"❌ Failed to post {platform_name} post {i}")
+                        logger.warning(f"❌ Failed to post to {platform_name}")
                         posted_results.append({
                             'status': 'failed',
                             'original_title': post.original_title
                         })
-                    
-                    # Rate limiting - wait between tweets
-                    if i < len(posts):
-                        # Wait between tweets (configured, default ~2 hours)
-                        delay = self.config.get('publish_interval_seconds', 2 * 60 * 60)
-                        logger.info(f"⏳ Waiting {delay} seconds (~{delay/3600:.1f} hours) before next tweet...")
-                        time.sleep(delay)
                 
                 except Exception as e:
-                    logger.error(f"❌ Error posting {platform_name} post {i}: {str(e)}")
+                    logger.error(f"❌ Error posting to {platform_name}: {str(e)}")
                     posted_results.append({
                         'status': 'error',
                         'error': str(e),
@@ -287,11 +348,11 @@ class NewsAIPipeline:
                     })
             
             success_count = sum(1 for r in posted_results if r.get('status') == 'success')
-            logger.info(f"\n📊 Posted {success_count}/{len(posts)} {platform_name.lower()} posts successfully")
+            logger.info(f"\n📊 Posted {success_count}/1 {platform_name.lower()} post successfully")
             
             return {
                 'posted': success_count,
-                'total': len(posts),
+                'total': 1,
                 'results': posted_results
             }
             
@@ -309,52 +370,43 @@ class NewsAIPipeline:
             logger.error(f"❌ Publishing error: {str(e)}", exc_info=True)
             return {'error': str(e)}
     
-    def _count_posts_today(self) -> int:
-        """Count how many posts were successfully made today"""
-        today_prefix = datetime.now().strftime('%Y%m%d')
-        result_files = list(self.output_dir.glob(f'pipeline_results_{today_prefix}*.json'))
+    
+    def _get_posted_urls(self) -> set:
+        """Get URLs of all previously posted articles from all posts_*.json files"""
+        posted_urls = set()
         
-        total_posts = 0
-        for file in result_files:
+        # Look for all posts_*.json files (which contain successfully posted articles)
+        posts_files = list(self.output_dir.glob('posts_*.json'))
+        
+        logger.debug(f"Checking {len(posts_files)} posts files for duplicate detection")
+        
+        for file in posts_files:
             try:
                 with open(file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    publishing = data.get('stages', {}).get('publishing', {})
-                    if not publishing.get('dry_run', True):
-                        total_posts += publishing.get('posted', 0)
+                    posts_data = json.load(f)
+                    
+                # posts_*.json contains a list of SocialMediaPost objects
+                if isinstance(posts_data, list):
+                    for post in posts_data:
+                        if isinstance(post, dict):
+                            original_url = post.get('original_url') or post.get('url')
+                            if original_url:
+                                posted_urls.add(original_url)
+                elif isinstance(posts_data, dict):
+                    # Sometimes it might be wrapped in a dict
+                    posts_list = posts_data.get('posts', [])
+                    if isinstance(posts_list, list):
+                        for post in posts_list:
+                            if isinstance(post, dict):
+                                original_url = post.get('original_url') or post.get('url')
+                                if original_url:
+                                    posted_urls.add(original_url)
+                                
             except Exception as e:
-                logger.warning(f"Error reading {file}: {str(e)}")
+                logger.debug(f"Error reading {file}: {str(e)}")
+                continue
         
-        return total_posts
-    
-    def _get_next_optimal_time(self) -> datetime:
-        """Get next optimal posting time for Instagram"""
-        now = datetime.now()
-        current_hour = now.hour
-        
-        # Find next optimal hour
-        for hour in INSTAGRAM_OPTIMAL_HOURS:
-            if hour > current_hour:
-                next_time = now.replace(hour=hour, minute=0, second=0, microsecond=0)
-                return next_time
-        
-        # If no more optimal times today, return first optimal time tomorrow
-        tomorrow = now.replace(hour=INSTAGRAM_OPTIMAL_HOURS[0], minute=0, second=0, microsecond=0)
-        tomorrow = tomorrow.replace(day=tomorrow.day + 1)
-        return tomorrow
-    
-    def _should_post_now(self) -> bool:
-        """Check if current time is optimal for posting"""
-        if self.config.get('platform') != 'instagram':
-            return True  # No time restrictions for Twitter
-        
-        current_hour = datetime.now().hour
-        # Allow posting within 30 minutes of optimal hours
-        for optimal_hour in INSTAGRAM_OPTIMAL_HOURS:
-            if abs(current_hour - optimal_hour) < 1:
-                return True
-        
-        return False
+        return posted_urls
     
     def _save_results(self, results: dict, timestamp: str):
         """Save complete pipeline results"""
@@ -368,14 +420,8 @@ def main():
     parser = argparse.ArgumentParser(description='News AI Agent Pipeline')
     parser.add_argument('--dry-run', action='store_true', help='Simulate without posting')
     parser.add_argument('--no-dry-run', action='store_true', help='Actually post to Twitter')
-    parser.add_argument('--max-posts', type=int, default=3, help='Maximum posts to generate (default: 3)')
+    parser.add_argument('--max-posts', type=int, default=1, help='Maximum posts to generate (default: 1)')
     parser.add_argument('--output-dir', type=str, default='output', help='Output directory')
-    parser.add_argument(
-        '--interval-hours',
-        type=float,
-        default=4.0,
-        help='Interval between posts in hours (default: 4.0 for 3 posts/day)',
-    )
     parser.add_argument(
         '--platform',
         type=str,
@@ -399,17 +445,13 @@ def main():
     else:
         dry_run = True  # Default to safe mode
     
-    publish_interval_seconds = int(args.interval_hours * 60 * 60)
-
     config = {
         'output_dir': args.output_dir,
         'max_articles_per_source': 2,
         'max_posts': args.max_posts,
         'dry_run': dry_run,
-        'publish_interval_seconds': publish_interval_seconds,
         'platform': args.platform,
         'use_existing_today': args.use_existing_today,
-        'max_posts_per_day': 3,  # Daily limit
     }
     
     pipeline = NewsAIPipeline(config)

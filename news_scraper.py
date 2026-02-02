@@ -45,12 +45,6 @@ class DutchNewsScraper:
             'binnenland': 'https://www.nu.nl/rss/Binnenland',
             'economie': 'https://www.nu.nl/rss/Economie',
             'tech': 'https://www.nu.nl/rss/Tech'
-        },
-        'telegraaf': {
-            'algemeen': 'https://www.telegraaf.nl/rss',
-            'binnenland': 'https://www.telegraaf.nl/rss/binnenland',
-            'buitenland': 'https://www.telegraaf.nl/rss/buitenland',
-            'financieel': 'https://www.telegraaf.nl/rss/financieel'
         }
     }
     

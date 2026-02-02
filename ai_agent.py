@@ -9,6 +9,10 @@ from typing import List, Dict, Optional
 import logging
 from dataclasses import dataclass
 import json
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -35,6 +39,7 @@ class SocialMediaPost:
             'hashtags': self.hashtags,
             'emoji': self.emoji,
             'platform': self.platform,
+            'image_url': self.image_url,
             'full_post': self.format_post()
         }
     
@@ -70,7 +75,7 @@ class NewsAIAgent:
             response = self.client.messages.create(
                 model=self.model,
                 max_tokens=500,
-                temperature=0.7,
+                temperature=0.2,
                 messages=[{
                     "role": "user",
                     "content": prompt
@@ -103,42 +108,29 @@ class NewsAIAgent:
         else:
             max_length = 500
         
-        prompt = f"""Sen Türkçe sosyal medya içerik uzmanısın. Felemenkçe haberleri Türkçe'ye çevirip sosyal medya post'una dönüştürüyorsun.
-
-HABER DETAYLARI:
-Başlık: {article['title']}
-Açıklama: {article['description']}
-Kaynak: {article['source'].upper()}
-Kategori: {article.get('category', 'genel')}
-
-HEDEİ KİTLE: Hollanda'da yaşayan Türkler
-
-GÖREV:
-{platform} için Hollanda'daki Türklerin ilgisini çekecek, gündemlerini yakından ilgilendiren bir Türkçe post oluştur ki:
-1. Haberin özünü özetlesin
-2. Hollanda'daki Türk toplumu için önemli ve ilgi çekici olsun
-3. Maksimum {max_length} karakter olsun (link ve hashtag'ler hariç)
-4. Uygun bir emoji kullansın
-5. {'5-10 ilgili hashtag içersin (sadece Türkçe)' if platform == 'instagram' else '3-5 ilgili hashtag içersin (sadece Türkçe)'}
-
-ÖNCELİK KONULAR:
-- Hollanda'daki Türk toplumunu doğrudan etkileyen yasalar, kararlar
-- Ekonomi, enflasyon, maaş, vergi haberleri
-- Eğitim, sağlık, ulaşım
-- Türkiye-Hollanda ilişkileri
-- Yerel önemli olaylar
-
-YANIT FORMATI (JSON):
-{{
-    "content": "Emoji, hashtag veya link olmadan post metni",
-    "emoji": "Tek bir uygun emoji",
-    "hashtags": ["#Hollanda", "#Türkler", "#Haberler"]  # Sadece Türkçe hashtag kullan
-}}
-
-Önemli: 
-- İçeriği tarafsız ve gerçekçi tut. Sansasyonel dil kullanma. Haberi Türkçe'ye doğal bir şekilde çevir.
-- Hashtag'ler SADECE Türkçe olmalı. Felemenkçe veya İngilizce hashtag kullanma."""
-
+        # Get prompt template from environment variable (required)
+        prompt_template = os.getenv('AI_PROMPT_SINGLE_ARTICLE')
+        if not prompt_template:
+            raise ValueError(
+                "AI_PROMPT_SINGLE_ARTICLE environment variable is required. "
+                "Please set it in your .env file. See .env.example for the format."
+            )
+        
+        # Convert \n to actual newlines (for .env file format)
+        prompt_template = prompt_template.replace('\\n', '\n')
+        
+        hashtag_instruction = '5-10 ilgili hashtag içersin (sadece Türkçe)' if platform == 'instagram' else '3-5 ilgili hashtag içersin (sadece Türkçe)'
+        
+        prompt = prompt_template.format(
+            title=article['title'],
+            description=article['description'],
+            source=article['source'].upper(),
+            category=article.get('category', 'genel'),
+            platform=platform,
+            max_length=max_length,
+            hashtag_instruction=hashtag_instruction
+        )
+        
         return prompt
     
     def _parse_response(self, response_text: str) -> Dict:
@@ -166,20 +158,151 @@ YANIT FORMATI (JSON):
             }
     
     def process_batch(self, articles: List[Dict], max_posts: int = 10, platform: str = "twitter") -> List[SocialMediaPost]:
-        """Process multiple articles"""
-        posts = []
+        """Process multiple articles - selects which articles to post in a single API call"""
+        if not articles:
+            logger.warning("No articles to process")
+            return []
         
-        for i, article in enumerate(articles[:max_posts]):
-            try:
-                post = self.process_article(article, target_platform=platform)
+        try:
+            logger.info(f"Selecting and processing articles from {len(articles)} total articles (max {max_posts} posts)")
+            
+            # Single API call to select articles and create posts
+            posts = self._select_and_process_articles(articles, max_posts, platform)
+            
+            logger.info(f"Successfully selected and processed {len(posts)} posts")
+            return posts
+            
+        except Exception as e:
+            logger.error(f"Error in batch processing: {str(e)}")
+            # Fallback: process first article only
+            if articles:
+                try:
+                    logger.info("Falling back to processing first article only")
+                    post = self.process_article(articles[0], target_platform=platform)
+                    return [post]
+                except:
+                    pass
+            return []
+    
+    def _select_and_process_articles(self, articles: List[Dict], max_posts: int, platform: str) -> List[SocialMediaPost]:
+        """Select which articles to post and create posts for them in a single API call"""
+        prompt = self._create_batch_selection_prompt(articles, max_posts, platform)
+        
+        try:
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=4000,
+                temperature=0.2,
+                messages=[{
+                    "role": "user",
+                    "content": prompt
+                }]
+            )
+            
+            result = self._parse_batch_response(response.content[0].text, articles, platform)
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error in article selection: {str(e)}")
+            raise
+    
+    def _create_batch_selection_prompt(self, articles: List[Dict], max_posts: int, platform: str) -> str:
+        """Create prompt for selecting articles and creating posts"""
+        if platform == "twitter":
+            max_length = 280
+        elif platform == "instagram":
+            max_length = 2200
+        else:
+            max_length = 500
+        
+        # Format all articles for the prompt
+        articles_text = ""
+        for i, article in enumerate(articles, 1):
+            articles_text += f"""
+HABER {i}:
+- Başlık: {article['title']}
+- Açıklama: {article['description']}
+- Kaynak: {article['source'].upper()}
+- Kategori: {article.get('category', 'genel')}
+- URL: {article['url']}
+"""
+        
+        # Get prompt template from environment variable (required)
+        prompt_template = os.getenv('AI_PROMPT_BATCH_SELECTION')
+        if not prompt_template:
+            raise ValueError(
+                "AI_PROMPT_BATCH_SELECTION environment variable is required. "
+                "Please set it in your .env file. See .env.example for the format."
+            )
+        
+        # Convert \n to actual newlines (for .env file format)
+        prompt_template = prompt_template.replace('\\n', '\n')
+        
+        hashtag_instruction = '5-10 ilgili hashtag içersin (sadece Türkçe)' if platform == 'instagram' else '3-5 ilgili hashtag içersin (sadece Türkçe)'
+        
+        prompt = prompt_template.format(
+            article_count=len(articles),
+            max_posts=max_posts,
+            platform=platform,
+            articles_text=articles_text,
+            max_length=max_length,
+            hashtag_instruction=hashtag_instruction
+        )
+        
+        return prompt
+    
+    def _parse_batch_response(self, response_text: str, articles: List[Dict], platform: str) -> List[SocialMediaPost]:
+        """Parse batch response and create SocialMediaPost objects"""
+        try:
+            import re
+            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            if json_match:
+                result = json.loads(json_match.group())
+            else:
+                result = json.loads(response_text)
+            
+            if 'selected_articles' not in result:
+                raise ValueError("Missing 'selected_articles' field in response")
+            
+            posts = []
+            for selected in result['selected_articles']:
+                article_index = selected.get('article_index')
+                if article_index is None:
+                    logger.warning("Missing article_index in selected article, skipping")
+                    continue
+                
+                # Convert to 0-based index
+                idx = article_index - 1
+                if idx < 0 or idx >= len(articles):
+                    logger.warning(f"Invalid article_index {article_index}, skipping")
+                    continue
+                
+                article = articles[idx]
+                
+                post = SocialMediaPost(
+                    original_title=article['title'],
+                    original_url=article['url'],
+                    source=article['source'],
+                    content=selected.get('content', ''),
+                    hashtags=selected.get('hashtags', []),
+                    emoji=selected.get('emoji', '📰'),
+                    platform=platform,
+                    image_url=article.get('image_url')
+                )
                 posts.append(post)
-                logger.info(f"Processed {i+1}/{min(len(articles), max_posts)}")
-            except Exception as e:
-                logger.error(f"Failed to process article {i+1}: {str(e)}")
-                continue
-        
-        logger.info(f"Successfully processed {len(posts)} posts")
-        return posts
+            
+            if not posts:
+                logger.warning("No valid posts created from batch response")
+            
+            return posts
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse JSON response: {response_text[:500]}")
+            # Fallback: return empty list
+            return []
+        except Exception as e:
+            logger.error(f"Error parsing batch response: {str(e)}")
+            return []
 
 
 def save_posts_json(posts: List[SocialMediaPost], filename: str = 'social_posts.json'):
