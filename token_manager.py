@@ -83,8 +83,9 @@ class InstagramTokenManager:
         hours_remaining = self._get_hours_until_expiry(token_info)
         logger.info(f"✅ Token is valid (expires in {hours_remaining} hours)")
         
-        # Check if token is short-lived (less than 60 days = 1440 hours)
-        if hours_remaining < 1440:
+        # Check if token is short-lived (less than 7 days = 168 hours)
+        # Refresh if less than 1 week remaining to prevent expiration
+        if hours_remaining < 168:
             logger.warning(f"⚠️  Token is SHORT-LIVED (only {hours_remaining} hours remaining)")
             logger.info("🔄 Converting to long-lived token...")
             
@@ -95,12 +96,6 @@ class InstagramTokenManager:
             else:
                 # Conversion failed
                 logger.error("⚠️  ⚠️  Could not convert token to long-lived")
-                logger.error("💡 To get a long-lived token:")
-                logger.error("   1. Go to: https://developers.facebook.com/tools/explorer")
-                logger.error("   2. Select your app → Instagram Graph API")
-                logger.error("   3. Get a new User Token")
-                logger.error("   4. Copy the token to INSTAGRAM_ACCESS_TOKEN in .env")
-                logger.warning("   Using current token for now (will expire in {} hours)".format(hours_remaining))
                 return current_token
         
         logger.info(f"✅ Token is LONG-LIVED - All good!")
@@ -254,7 +249,7 @@ class InstagramTokenManager:
             True if token is expired
         """
         try:
-            expires_at = token_info.get('info', {}).get('expires_at')
+            expires_at = token_info.get('expires_at')
             
             if not expires_at:
                 # No expiry info available - assume valid
@@ -278,7 +273,7 @@ class InstagramTokenManager:
     def _get_hours_until_expiry(self, token_info: Dict) -> int:
         """Get estimated hours until token expires"""
         try:
-            expires_at = token_info.get('info', {}).get('expires_at')
+            expires_at = token_info.get('expires_at')
             
             if not expires_at:
                 return 0
