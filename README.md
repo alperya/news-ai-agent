@@ -71,12 +71,9 @@ terraform init && terraform apply     # Deploy infrastructure
 ├── main.py                      # Local pipeline runner (CLI)
 ├── lambda_handler.py            # AWS Lambda entry point
 ├── Makefile                     # Build shortcuts
-├── Dockerfile                   # Container build
 ├── scripts/                     # Shell & utility scripts
 │   ├── build_lambda.sh          # Build Lambda deployment ZIP
 │   ├── deploy.sh                # Full deployment script
-│   ├── run_pipeline.sh          # Local pipeline runner
-│   ├── aws_deploy_wizard.sh     # Interactive AWS setup wizard
 │   └── update_secrets.py        # Push .env & prompts to AWS Secrets Manager
 ├── requirements/                # Python dependencies
 │   ├── base.txt                 # Development dependencies
