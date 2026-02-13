@@ -52,14 +52,14 @@ class SocialMediaPost:
     def format_post(self) -> str:
         """Format complete social media post with source"""
         hashtags_str = ' '.join(self.hashtags)
-        source_text = f"\n📰 Kaynak: {self.source}"
+        source_line = f"\n📰 Kaynak: {self.original_url}"
         # Only prepend emoji if content doesn't already start with one
         content = self.content
         if not content or not self._starts_with_emoji(content):
             content = f"{self.emoji} {content}"
         # Add dot separator before hashtags if content was corrected by quality gate
         separator = "\n.\n" if self._corrected else "\n\n"
-        return f"{content}{source_text}\n🔗 {self.original_url}{separator}{hashtags_str}"
+        return f"{content}{source_line}{separator}{hashtags_str}"
 
     @staticmethod
     def _starts_with_emoji(text: str) -> bool:

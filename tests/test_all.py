@@ -132,8 +132,7 @@ def test_post_format_contains_required_parts(sample_post):
 
     assert "🚲" in formatted
     assert "Hollanda'da yeni bisiklet yasası" in formatted
-    assert "📰 Kaynak: nos" in formatted
-    assert "🔗 https://nos.nl/artikel/test-123" in formatted
+    assert "📰 Kaynak: https://nos.nl/artikel/test-123" in formatted
     assert "#Hollanda" in formatted
 
 
