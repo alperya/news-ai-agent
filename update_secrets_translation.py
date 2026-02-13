@@ -26,6 +26,7 @@ with open(SCRIPT_DIR / '.env', 'r') as f:
 prompts_dir = SCRIPT_DIR / 'prompts'
 batch_prompt = (prompts_dir / 'batch_selection.txt').read_text(encoding='utf-8')
 single_prompt = (prompts_dir / 'single_article.txt').read_text(encoding='utf-8')
+quality_prompt = (prompts_dir / 'quality_check.txt').read_text(encoding='utf-8')
 
 # Prepare secret payload
 secret_payload = {
@@ -34,6 +35,7 @@ secret_payload = {
     'INSTAGRAM_ACCOUNT_ID': env_vars.get('INSTAGRAM_ACCOUNT_ID'),
     'AI_PROMPT_BATCH_SELECTION': batch_prompt,
     'AI_PROMPT_SINGLE_ARTICLE': single_prompt,
+    'AI_PROMPT_QUALITY_CHECK': quality_prompt,
 }
 
 # Update AWS Secrets Manager
@@ -47,14 +49,14 @@ try:
     print("✅ AWS Secrets Manager güncellendi!")
     print(f"   Secret ARN: {response['ARN']}")
     print(f"   Version: {response['VersionId']}")
-    print(f"\n✨ Değişiklikler:")
+    print(f"\n✨ Changes:")
     print(f"   ✓ AI_PROMPT_SINGLE_ARTICLE: {len(secret_payload['AI_PROMPT_SINGLE_ARTICLE'])} chars")
     print(f"   ✓ AI_PROMPT_BATCH_SELECTION: {len(secret_payload['AI_PROMPT_BATCH_SELECTION'])} chars")
-    print(f"   ✓ Türkçe çeviri talimatları eklendi")
-    print(f"\n📋 Sonraki adımlar:")
-    print(f"   1. Lambda'yı rebuild et: ./build_lambda.sh")
-    print(f"   2. Deploy et: cd infrastructure/terraform && terraform apply -auto-approve")
-    print(f"   3. Test et: AWS Lambda invoke veya manuel posting")
+    print(f"   ✓ AI_PROMPT_QUALITY_CHECK: {len(secret_payload['AI_PROMPT_QUALITY_CHECK'])} chars")
+    print(f"\n📋 Next steps:")
+    print(f"   1. Rebuild Lambda: ./build_lambda.sh")
+    print(f"   2. Deploy: cd infrastructure/terraform && terraform apply -auto-approve")
+    print(f"   3. Test: aws lambda invoke --function-name news-ai-agent ...")
     
 except ClientError as e:
     if e.response['Error']['Code'] == 'ResourceNotFoundException':

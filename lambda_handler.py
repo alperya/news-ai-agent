@@ -58,6 +58,8 @@ def get_secrets():
         os.environ['AI_PROMPT_BATCH_SELECTION'] = secret['AI_PROMPT_BATCH_SELECTION']
     if 'AI_PROMPT_SINGLE_ARTICLE' in secret:
         os.environ['AI_PROMPT_SINGLE_ARTICLE'] = secret['AI_PROMPT_SINGLE_ARTICLE']
+    if 'AI_PROMPT_QUALITY_CHECK' in secret:
+        os.environ['AI_PROMPT_QUALITY_CHECK'] = secret['AI_PROMPT_QUALITY_CHECK']
     
     logger.info("✅ Secrets loaded successfully")
     return secret

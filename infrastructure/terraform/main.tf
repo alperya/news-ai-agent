@@ -142,7 +142,7 @@ resource "aws_lambda_function" "news_agent" {
   function_name    = var.project_name
   role            = aws_iam_role.lambda_role.arn
   handler         = "lambda_handler.lambda_handler"
-  runtime         = "python3.9"
+  runtime         = "python3.12"
   timeout         = var.lambda_timeout
   memory_size     = var.lambda_memory
   
