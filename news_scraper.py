@@ -1,15 +1,17 @@
 """
 News Scraper for Dutch News Sites
-Supports: NOS.nl, NU.nl, Telegraaf.nl
+Supports: NOS.nl, NU.nl
 """
 
-import feedparser
 import requests
 from typing import List, Dict, Optional
 from datetime import datetime
 import logging
 from dataclasses import dataclass, asdict
 import json
+import xml.etree.ElementTree as ET
+import html
+import re
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -58,25 +60,15 @@ class DutchNewsScraper:
         """Fetch and parse RSS feed"""
         try:
             logger.info(f"Fetching feed: {source}/{category} from {url}")
-            feed = feedparser.parse(url)
-            
-            # Check feed status and log warnings
-            if hasattr(feed, 'status') and feed.status != 200:
-                logger.warning(f"Feed {source}/{category} returned status {feed.status}")
-            
-            if not feed.entries:
-                logger.warning(f"Feed {source}/{category} has no entries. Feed bozo: {getattr(feed, 'bozo', False)}, bozo_exception: {getattr(feed, 'bozo_exception', None)}")
+            response = self.session.get(url, timeout=15)
+            response.raise_for_status()
+
+            articles = self._parse_feed_xml(response.text, source, category)
+
+            if not articles:
+                logger.warning(f"Feed {source}/{category} has no entries")
                 return []
-            
-            articles = []
-            for entry in feed.entries[:5]:
-                article = self._parse_entry(entry, source, category)
-                if article:
-                    articles.append(article)
-            
-            if len(articles) == 0 and len(feed.entries) > 0:
-                logger.warning(f"Feed {source}/{category} has {len(feed.entries)} entries but none could be parsed")
-            
+
             logger.info(f"Successfully fetched {len(articles)} articles from {source}/{category}")
             return articles
             
@@ -84,25 +76,94 @@ class DutchNewsScraper:
             logger.error(f"Error fetching feed {url}: {str(e)}")
             return []
     
-    def _parse_entry(self, entry, source: str, category: str) -> Optional[NewsArticle]:
-        """Parse RSS entry into NewsArticle"""
+    def _parse_feed_xml(self, xml_text: str, source: str, category: str) -> List[NewsArticle]:
+        """Parse RSS/Atom XML into NewsArticle list"""
+        try:
+            root = ET.fromstring(xml_text)
+        except ET.ParseError as e:
+            logger.error(f"XML parse error: {str(e)}")
+            return []
+
+        ns = {
+            'content': 'http://purl.org/rss/1.0/modules/content/',
+            'media': 'http://search.yahoo.com/mrss/',
+            'atom': 'http://www.w3.org/2005/Atom'
+        }
+
+        items = []
+
+        # RSS items
+        channel = root.find('channel')
+        if channel is not None:
+            items = channel.findall('item')
+        else:
+            # Atom entries
+            items = root.findall('atom:entry', ns)
+
+        articles: List[NewsArticle] = []
+        for item in items[:5]:
+            entry = self._extract_entry(item, ns)
+            article = self._parse_entry(entry, source, category)
+            if article:
+                articles.append(article)
+
+        return articles
+
+    def _extract_entry(self, item: ET.Element, ns: Dict) -> Dict:
+        """Extract fields from RSS/Atom item"""
+        def text(elem: Optional[ET.Element]) -> str:
+            return html.unescape(elem.text.strip()) if elem is not None and elem.text else ''
+
+        title = text(item.find('title')) or text(item.find('atom:title', ns))
+
+        link = ''
+        link_elem = item.find('link')
+        if link_elem is not None and link_elem.text:
+            link = link_elem.text.strip()
+        else:
+            atom_link = item.find('atom:link[@rel="alternate"]', ns) or item.find('atom:link', ns)
+            if atom_link is not None:
+                link = atom_link.attrib.get('href', '')
+
+        description = text(item.find('description')) or text(item.find('summary'))
+        if not description:
+            description = text(item.find('atom:summary', ns))
+
+        published = text(item.find('pubDate')) or text(item.find('updated'))
+        if not published:
+            published = text(item.find('atom:updated', ns)) or text(item.find('atom:published', ns))
+
+        image_url = None
+        media_content = item.find('media:content', ns)
+        if media_content is not None:
+            image_url = media_content.attrib.get('url')
+        enclosure = item.find('enclosure')
+        if enclosure is not None and enclosure.attrib.get('type', '').startswith('image/'):
+            image_url = enclosure.attrib.get('url') or enclosure.attrib.get('href')
+
+        return {
+            'title': title,
+            'link': link,
+            'description': description,
+            'published': published,
+            'image_url': image_url
+        }
+
+    def _parse_entry(self, entry: Dict, source: str, category: str) -> Optional[NewsArticle]:
+        """Parse entry dict into NewsArticle"""
         try:
             published = entry.get('published', '')
-            if not published and hasattr(entry, 'published_parsed'):
-                published = datetime(*entry.published_parsed[:6]).isoformat()
-            
-            image_url = None
-            if hasattr(entry, 'media_content'):
-                image_url = entry.media_content[0].get('url')
-            elif hasattr(entry, 'enclosures') and entry.enclosures:
-                image_url = entry.enclosures[0].get('href')
-            
-            description = entry.get('summary', entry.get('description', ''))
+            if published:
+                try:
+                    published = datetime.fromisoformat(published).isoformat()
+                except Exception:
+                    pass
+
+            description = entry.get('description', '')
             if description:
-                import re
                 description = re.sub('<[^<]+?>', '', description).strip()
                 description = description[:280] + '...' if len(description) > 280 else description
-            
+
             return NewsArticle(
                 title=entry.get('title', 'No title'),
                 description=description,
@@ -110,7 +171,7 @@ class DutchNewsScraper:
                 published_date=published,
                 source=source,
                 category=category,
-                image_url=image_url
+                image_url=entry.get('image_url')
             )
         except Exception as e:
             logger.error(f"Error parsing entry: {str(e)}")

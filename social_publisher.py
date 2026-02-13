@@ -1,11 +1,16 @@
 """Social Media Publisher"""
-import tweepy
 import os
 import logging
 import requests
 import time
-from datetime import datetime
 from typing import Optional
+
+try:
+    import tweepy
+    HAS_TWEEPY = True
+except ImportError:
+    tweepy = None
+    HAS_TWEEPY = False
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -16,18 +21,13 @@ try:
     HAS_TOKEN_MANAGER = True
 except ImportError:
     HAS_TOKEN_MANAGER = False
-    logger.debug("token_manager not available - using static tokens")
-
-# Import token manager for Instagram
-try:
-    from token_manager import InstagramTokenManager
-    HAS_TOKEN_MANAGER = True
-except ImportError:
-    HAS_TOKEN_MANAGER = False
     logger.warning("⚠️  token_manager not available - using static tokens")
 
 class TwitterPublisher:
     def __init__(self):
+        if not HAS_TWEEPY:
+            raise ImportError("tweepy is not installed. Install it to enable Twitter publishing.")
+
         self.api_key = os.getenv('TWITTER_API_KEY')
         self.api_secret = os.getenv('TWITTER_API_SECRET')
         self.access_token = os.getenv('TWITTER_ACCESS_TOKEN')
@@ -107,49 +107,8 @@ class InstagramPublisher:
         logger.info(f"📋 Instagram API Configuration:")
         logger.info(f"   API Version: v24.0")
         logger.info(f"   Account ID: {self.instagram_account_id}")
-        logger.info(f"   Access Token: {self.access_token[:20]}...{self.access_token[-10:] if len(self.access_token) > 30 else '***'}")
-        logger.info(f"   Base URL: {self.graph_api_url}")
-        if self.token_manager:
-            logger.info(f"   ✅ Token Refresh: Enabled")
-        else:
-            logger.info(f"   ⚠️  Token Refresh: Disabled")
-    
-    def _download_image(self, image_url: str) -> Optional[bytes]:
-        """Download image from URL"""
-        try:
-            response = requests.get(image_url, timeout=30)
-            response.raise_for_status()
-            return response.content
-        except Exception as e:
-            logger.error(f"Error downloading image from {image_url}: {str(e)}")
-            return None
-    
-    def _upload_image(self, image_data: bytes, caption: str) -> Optional[str]:
-        """Upload image to Instagram using Graph API"""
-        try:
-            # Step 1: Create media container
-            container_url = f"{self.graph_api_url}/{self.instagram_account_id}/media"
-            container_params = {
-                'image_url': '',  # We'll upload directly
-                'caption': caption,
-                'access_token': self.access_token
-            }
-            
-            # For direct upload, we need to upload the image first
-            # Instagram Graph API requires image to be publicly accessible
-            # So we'll use a different approach: upload to a temporary location
-            # or use image_url if available
-            
-            # Alternative: Use image_url directly if it's publicly accessible
-            # For now, we'll use a simplified approach
-            logger.warning("Instagram image upload requires publicly accessible URL")
-            logger.info("Using caption-only post (image upload needs public URL)")
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"Error uploading image: {str(e)}")
-            return None
+        logger.info(f"   Access Token: {'***' + self.access_token[-4:] if self.access_token else 'NOT SET'}")
+        logger.info(f"   Token Refresh: {'Enabled' if self.token_manager else 'Disabled'}")
     
     def _ensure_valid_token(self):
         """Ensure we have a valid token before making API calls"""

@@ -231,7 +231,7 @@ class InstagramTokenManager:
                     error_data = e.response.json().get('error', {})
                     error_msg = error_data.get('message', e.response.text)
                     logger.error(f"   Error: {error_msg}")
-                except:
+                except Exception:
                     logger.error(f"   Response: {e.response.text}")
             return None
         except Exception as e:

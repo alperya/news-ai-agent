@@ -20,6 +20,7 @@ wheels/
 .installed.cfg
 *.egg
 venv/
+.venv/
 ENV/
 env/
 
@@ -41,6 +42,7 @@ env/
 
 # Output files
 output/
+errors/
 *.json
 !requirements.json
 !package.json
@@ -65,6 +67,12 @@ htmlcov/
 *.tfstate
 *.tfstate.*
 .terraform.lock.hcl
+tfplan
+
+# Lambda
+lambda_build/
+lambda_deployment.zip
+response.json
 
 # macOS
 .DS_Store
@@ -73,3 +81,10 @@ htmlcov/
 secrets/
 credentials/
 *.key
+
+# Local-only docs/tests
+local_only/
+
+# AI Prompt templates (contain custom instructions)
+prompts/*.txt
+!prompts/*.txt.example

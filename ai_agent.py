@@ -5,10 +5,13 @@ Transforms raw news into engaging social media content
 
 import anthropic
 import os
-from typing import List, Dict, Optional
-import logging
-from dataclasses import dataclass
+import re
 import json
+import logging
+from typing import List, Dict, Optional
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -16,6 +19,8 @@ load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+PROMPTS_DIR = Path(__file__).parent / 'prompts'
 
 
 @dataclass
@@ -29,6 +34,7 @@ class SocialMediaPost:
     emoji: str
     platform: str = "twitter"
     image_url: Optional[str] = None
+    _corrected: bool = field(default=False, init=False, repr=False)
     
     def to_dict(self) -> Dict:
         return {
@@ -44,14 +50,25 @@ class SocialMediaPost:
         }
     
     def format_post(self) -> str:
-        """Format complete social media post"""
+        """Format complete social media post with source"""
         hashtags_str = ' '.join(self.hashtags)
-        if self.platform == "instagram":
-            # Instagram format: emoji + content + hashtags (no link in caption)
-            return f"{self.emoji} {self.content}\n\n{hashtags_str}"
-        else:
-            # Twitter format: emoji + content + hashtags + link
-            return f"{self.emoji} {self.content}\n\n{hashtags_str}\n\n🔗 {self.original_url}"
+        source_text = f"\n📰 Kaynak: {self.source}"
+        # Only prepend emoji if content doesn't already start with one
+        content = self.content
+        if not content or not self._starts_with_emoji(content):
+            content = f"{self.emoji} {content}"
+        # Add dot separator before hashtags if content was corrected by quality gate
+        separator = "\n.\n" if self._corrected else "\n\n"
+        return f"{content}{source_text}\n🔗 {self.original_url}{separator}{hashtags_str}"
+
+    @staticmethod
+    def _starts_with_emoji(text: str) -> bool:
+        """Check if text starts with an emoji character."""
+        if not text:
+            return False
+        cp = ord(text[0])
+        # Common emoji ranges: Misc Symbols, Dingbats, Emoticons, Transport, Supplemental
+        return cp > 0x2600
 
 
 class NewsAIAgent:
@@ -63,7 +80,19 @@ class NewsAIAgent:
             raise ValueError("ANTHROPIC_API_KEY not found in environment")
         
         self.client = anthropic.Anthropic(api_key=self.api_key)
-        self.model = "claude-sonnet-4-20250514"
+        self.model = "claude-opus-4-6"
+        self.review_model = os.getenv('REVIEW_MODEL', 'claude-haiku-4-5-20251001')
+
+    @staticmethod
+    def _load_prompt(filename: str, env_var: str) -> str:
+        """Load prompt from file, fall back to env var (for Lambda)."""
+        prompt_file = PROMPTS_DIR / filename
+        if prompt_file.exists():
+            return prompt_file.read_text(encoding='utf-8')
+        value = os.getenv(env_var)
+        if value:
+            return value.replace('\\n', '\n')
+        raise ValueError(f"Prompt not found: {prompt_file} or env var {env_var}")
     
     def process_article(self, article: Dict, target_platform: str = "twitter") -> SocialMediaPost:
         """Process single article into social media post"""
@@ -104,24 +133,14 @@ class NewsAIAgent:
         if platform == "twitter":
             max_length = 280
         elif platform == "instagram":
-            max_length = 2200  # Instagram caption limit
+            max_length = 2200
         else:
             max_length = 500
-        
-        # Get prompt template from environment variable (required)
-        prompt_template = os.getenv('AI_PROMPT_SINGLE_ARTICLE')
-        if not prompt_template:
-            raise ValueError(
-                "AI_PROMPT_SINGLE_ARTICLE environment variable is required. "
-                "Please set it in your .env file. See .env.example for the format."
-            )
-        
-        # Convert \n to actual newlines (for .env file format)
-        prompt_template = prompt_template.replace('\\n', '\n')
-        
+
+        prompt_template = self._load_prompt('single_article.txt', 'AI_PROMPT_SINGLE_ARTICLE')
         hashtag_instruction = '5-10 ilgili hashtag içersin (sadece Türkçe)' if platform == 'instagram' else '3-5 ilgili hashtag içersin (sadece Türkçe)'
-        
-        prompt = prompt_template.format(
+
+        return prompt_template.format(
             title=article['title'],
             description=article['description'],
             source=article['source'].upper(),
@@ -130,13 +149,10 @@ class NewsAIAgent:
             max_length=max_length,
             hashtag_instruction=hashtag_instruction
         )
-        
-        return prompt
     
     def _parse_response(self, response_text: str) -> Dict:
         """Parse Claude's JSON response"""
         try:
-            import re
             json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
             if json_match:
                 result = json.loads(json_match.group())
@@ -156,6 +172,114 @@ class NewsAIAgent:
                 'emoji': '📰',
                 'hashtags': ['#Hollanda', '#Haberler', '#Gündem']
             }
+
+    def quality_check(self, post: SocialMediaPost) -> Optional[SocialMediaPost]:
+        """Quality gate: structural checks + lightweight AI language review.
+        Returns the (possibly corrected) post if it passes, None if rejected.
+        """
+        errors = []
+
+        # ── Structural checks (no API call needed) ──
+        if not post.content or len(post.content.strip()) < 20:
+            errors.append("Content is empty or too short (min 20 chars)")
+        if not post.emoji:
+            errors.append("Emoji is missing")
+        if not post.hashtags or len(post.hashtags) == 0:
+            errors.append("Hashtags are missing")
+        if not post.original_url:
+            errors.append("Source URL is missing")
+        if not post.source:
+            errors.append("Source name is missing")
+
+        if errors:
+            logger.error(f"❌ Quality gate REJECTED (structural): {errors}")
+            self._save_error(post, errors)
+            return None
+
+        # ── AI language review (fast/cheap model) ──
+        try:
+            prompt_template = self._load_prompt('quality_check.txt', 'AI_PROMPT_QUALITY_CHECK')
+            prompt = prompt_template.format(content=post.content)
+
+            response = self.client.messages.create(
+                model=self.review_model,
+                max_tokens=1500,
+                temperature=0,
+                messages=[{"role": "user", "content": prompt}]
+            )
+
+            raw = response.content[0].text
+            json_match = re.search(r'\{.*\}', raw, re.DOTALL)
+            result = json.loads(json_match.group()) if json_match else json.loads(raw)
+
+            if not result.get('pass', True):
+                reason = result.get('reason', 'AI language review failed')
+                logger.error(f"❌ Quality gate REJECTED (language): {reason}")
+                self._save_error(post, [reason])
+                return None
+
+            if result.get('corrected_content'):
+                issues = result.get('issues', [])
+                logger.info(f"✏️  Quality gate corrected content: {issues}")
+                original_content = post.content
+                post.content = result['corrected_content']
+                post._corrected = True
+                self._save_correction(post, original_content, result['corrected_content'], issues)
+            else:
+                logger.info("✅ Quality gate: content is clean")
+
+        except Exception as e:
+            # AI review failure is non-blocking — structural checks already passed
+            logger.warning(f"⚠️  Quality gate AI review skipped (error): {e}")
+
+        return post
+
+    def _save_error(self, post: SocialMediaPost, reasons: List[str]):
+        """Save rejected post details to errors/ directory."""
+        errors_dir = Path(__file__).parent / 'errors'
+        errors_dir.mkdir(exist_ok=True)
+
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        error_data = {
+            'timestamp': timestamp,
+            'rejected_reasons': reasons,
+            'original_content': post.content,
+            'full_post': post.format_post(),
+            'original_title': post.original_title,
+            'original_url': post.original_url,
+            'source': post.source,
+            'emoji': post.emoji,
+            'hashtags': post.hashtags,
+            'platform': post.platform,
+        }
+
+        filepath = errors_dir / f'rejected_{timestamp}.json'
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(error_data, f, ensure_ascii=False, indent=2)
+        logger.info(f"📝 Error details saved: {filepath}")
+
+    def _save_correction(self, post: SocialMediaPost, original: str, corrected: str, issues: List[str]):
+        """Save correction details (before/after) to errors/ directory."""
+        errors_dir = Path(__file__).parent / 'errors'
+        errors_dir.mkdir(exist_ok=True)
+
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        correction_data = {
+            'timestamp': timestamp,
+            'type': 'correction',
+            'issues': issues,
+            'original_content': original,
+            'corrected_content': corrected,
+            'original_title': post.original_title,
+            'original_url': post.original_url,
+            'source': post.source,
+            'platform': post.platform,
+        }
+
+        filepath = errors_dir / f'corrected_{timestamp}.json'
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(correction_data, f, ensure_ascii=False, indent=2)
+        logger.info(f"📝 Correction details saved: {filepath}")
     
     def process_batch(self, articles: List[Dict], max_posts: int = 10, platform: str = "twitter") -> List[SocialMediaPost]:
         """Process multiple articles - selects which articles to post in a single API call"""
@@ -180,7 +304,7 @@ class NewsAIAgent:
                     logger.info("Falling back to processing first article only")
                     post = self.process_article(articles[0], target_platform=platform)
                     return [post]
-                except:
+                except Exception:
                     pass
             return []
     
@@ -214,8 +338,7 @@ class NewsAIAgent:
             max_length = 2200
         else:
             max_length = 500
-        
-        # Format all articles for the prompt
+
         articles_text = ""
         for i, article in enumerate(articles, 1):
             articles_text += f"""
@@ -226,21 +349,11 @@ HABER {i}:
 - Kategori: {article.get('category', 'genel')}
 - URL: {article['url']}
 """
-        
-        # Get prompt template from environment variable (required)
-        prompt_template = os.getenv('AI_PROMPT_BATCH_SELECTION')
-        if not prompt_template:
-            raise ValueError(
-                "AI_PROMPT_BATCH_SELECTION environment variable is required. "
-                "Please set it in your .env file. See .env.example for the format."
-            )
-        
-        # Convert \n to actual newlines (for .env file format)
-        prompt_template = prompt_template.replace('\\n', '\n')
-        
+
+        prompt_template = self._load_prompt('batch_selection.txt', 'AI_PROMPT_BATCH_SELECTION')
         hashtag_instruction = '5-10 ilgili hashtag içersin (sadece Türkçe)' if platform == 'instagram' else '3-5 ilgili hashtag içersin (sadece Türkçe)'
-        
-        prompt = prompt_template.format(
+
+        return prompt_template.format(
             article_count=len(articles),
             max_posts=max_posts,
             platform=platform,
@@ -248,13 +361,10 @@ HABER {i}:
             max_length=max_length,
             hashtag_instruction=hashtag_instruction
         )
-        
-        return prompt
     
     def _parse_batch_response(self, response_text: str, articles: List[Dict], platform: str) -> List[SocialMediaPost]:
         """Parse batch response and create SocialMediaPost objects"""
         try:
-            import re
             json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
             if json_match:
                 result = json.loads(json_match.group())

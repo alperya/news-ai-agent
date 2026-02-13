@@ -1,0 +1,18 @@
+# Terraform Variables
+# Copy this to terraform.tfvars and customize
+
+# AWS Region
+aws_region = "eu-central-1"  # Frankfurt - closest to Amsterdam
+
+# Project name
+project_name = "news-ai-agent"
+
+# Lambda timeout (seconds)
+# Default: 180 (3 minutes) - minimal cost
+# Increase to 300 if timeouts occur
+lambda_timeout = 180
+
+# Lambda memory (MB)
+# Default: 256 MB - minimal cost (~$0.20/month)
+# Increase to 512 if memory errors occur (~$0.40/month)
+lambda_memory = 256

@@ -4,8 +4,6 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-
-
 import logging
 import argparse
 import json
@@ -116,12 +114,26 @@ class NewsAIPipeline:
             save_posts_json(posts, str(self.output_dir / f'posts_{timestamp}.json'))
             results['stages']['ai_processing'] = {'success': True, 'count': len(posts)}
             logger.info(f"Generated {len(posts)} posts")
-            
+
+            # Quality gate: review posts before publishing
+            if posts:
+                logger.info("\n🔍 QUALITY GATE: Reviewing posts...")
+                reviewed = [self.ai_agent.quality_check(p) for p in posts]
+                rejected_count = sum(1 for p in reviewed if p is None)
+                posts = [p for p in reviewed if p is not None]
+                if rejected_count:
+                    logger.warning(f"⚠️  {rejected_count} post(s) failed quality gate (see errors/ folder)")
+
             if posts:
                 logger.info("\nSample post:")
                 logger.info("-" * 60)
                 logger.info(posts[0].format_post())
                 logger.info("-" * 60)
+            else:
+                logger.warning("⚠️  All posts failed quality gate, skipping publish.")
+                results['stages']['publishing'] = {'success': False, 'reason': 'quality_gate_rejected_all'}
+                self._save_results(results, timestamp)
+                return results
             
             # STAGE 3: Publishing
             logger.info("\n📱 STAGE 3: Publishing to social media...")
@@ -437,13 +449,8 @@ def main():
     
     args = parser.parse_args()
     
-    # Determine dry_run mode
-    if args.no_dry_run:
-        dry_run = False
-    elif args.dry_run:
-        dry_run = True
-    else:
-        dry_run = True  # Default to safe mode
+    # Default to safe mode (dry_run=True) unless explicitly disabled
+    dry_run = not args.no_dry_run
     
     config = {
         'output_dir': args.output_dir,

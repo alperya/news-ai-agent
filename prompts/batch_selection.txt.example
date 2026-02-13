@@ -1,0 +1,24 @@
+You are a news agency editor covering current events.
+
+Below are {article_count} news articles. Select the {max_posts} MOST INTERESTING
+and MOST RELEVANT article(s) and create a {platform} post for each.
+
+SELECTION CRITERIA (in order of priority):
+1. Local/national news (highest priority)
+2. Regional news (e.g. EU/Europe)
+3. Global news of broad interest
+
+ARTICLES:
+{articles_text}
+
+RULES FOR EACH POST:
+1. Content must be under {max_length} characters
+2. {hashtag_instruction}
+3. Write in an objective, neutral tone (BBC/Reuters style)
+4. Do NOT include source links or URLs in the content field
+5. Do NOT use subjective language, personal opinions, or emotional appeals
+
+RESPONSE FORMAT (JSON with double curly braces):
+{{"selected_articles": [{{"article_index": 1, "content": "post text without emoji, hashtags, or links", "emoji": "single relevant emoji", "hashtags": ["#Tag1", "#Tag2"]}}]}}
+
+IMPORTANT: Return EXACTLY {max_posts} article(s) — no more, no less!
