@@ -3,6 +3,10 @@
 
 set -e
 
+# Always run from project root
+PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$PROJECT_ROOT"
+
 echo "🚀 Deploying News AI Agent to AWS Lambda"
 echo "========================================"
 
@@ -21,7 +25,7 @@ fi
 # Step 1: Build Lambda package
 echo ""
 echo "📦 Step 1: Building Lambda deployment package..."
-./build_lambda.sh
+./scripts/build_lambda.sh
 
 if [ ! -f "lambda_deployment.zip" ]; then
     echo "❌ Lambda deployment package not created!"

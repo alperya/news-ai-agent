@@ -6,7 +6,9 @@ set -e
 
 # Use virtual environment's AWS CLI
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
-AWS_CMD="$SCRIPT_DIR/.venv/bin/aws"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_ROOT"
+AWS_CMD="$PROJECT_ROOT/.venv/bin/aws"
 
 echo "🚀 News AI Agent - AWS Deployment Wizard"
 echo "========================================="
@@ -113,7 +115,7 @@ echo ""
 # Step 6: Build Lambda Package
 echo "📋 Adım 6/8: Lambda Package Build"
 echo "Lambda deployment package oluşturuluyor..."
-./build_lambda.sh
+./scripts/build_lambda.sh
 echo ""
 
 # Step 7: Setup Secrets

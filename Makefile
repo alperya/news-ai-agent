@@ -10,7 +10,7 @@ help:
 
 install:
 	python3 -m pip install --upgrade pip
-	pip3 install -r requirements.txt
+	pip3 install -r requirements/base.txt
 	@echo "✅ Installed"
 
 test:
@@ -32,5 +32,5 @@ clean:
 	@echo "🧹 Cleaned"
 
 deploy:
-	@chmod +x deploy.sh
-	@./deploy.sh
+	@chmod +x scripts/deploy.sh
+	@./scripts/deploy.sh

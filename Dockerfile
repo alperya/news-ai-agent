@@ -2,7 +2,7 @@ FROM public.ecr.aws/lambda/python:3.11 as builder
 
 RUN yum install -y gcc gcc-c++ make
 
-COPY requirements.txt .
+COPY requirements/base.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt -t /opt/python
 
 FROM public.ecr.aws/lambda/python:3.11

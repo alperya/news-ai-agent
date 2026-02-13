@@ -3,6 +3,10 @@
 
 set -e
 
+# Always run from project root
+PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$PROJECT_ROOT"
+
 echo "🏗️  Building Lambda deployment package..."
 
 # Create build directory
@@ -19,9 +23,9 @@ if [ -d "prompts" ]; then
 	echo "📝 Copied prompts/"
 fi
 
-REQ_FILE="requirements.txt"
-if [ -f "requirements_lambda.txt" ]; then
-	REQ_FILE="requirements_lambda.txt"
+REQ_FILE="requirements/base.txt"
+if [ -f "requirements/lambda.txt" ]; then
+	REQ_FILE="requirements/lambda.txt"
 fi
 cp "$REQ_FILE" $BUILD_DIR/requirements.txt
 
@@ -29,12 +33,12 @@ echo "📚 Installing dependencies..."
 cd $BUILD_DIR
 
 PIP_CMD=""
-if [ -x "../.venv/bin/pip" ]; then
-	PIP_CMD="../.venv/bin/pip"
+if [ -x "$PROJECT_ROOT/.venv/bin/pip" ]; then
+	PIP_CMD="$PROJECT_ROOT/.venv/bin/pip"
 elif command -v pip &> /dev/null; then
 	PIP_CMD="pip"
 else
-	echo "❌ pip bulunamadı. Önce virtualenv'i kur veya pip'i yükle."
+	echo "❌ pip not found. Install virtualenv or pip first."
 	exit 1
 fi
 

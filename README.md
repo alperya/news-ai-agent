@@ -33,7 +33,7 @@ python3.12 -m venv .venv
 source .venv/bin/activate
 
 # Install dependencies
-pip install -r requirements.txt
+pip install -r requirements/base.txt
 
 # Configure API keys
 # Create a .env file with the following variables:
@@ -53,10 +53,10 @@ python main.py --no-dry-run --platform instagram --max-posts 1
 
 ```bash
 # One-step deployment (build + Terraform)
-./deploy.sh
+./scripts/deploy.sh
 
 # Or step by step:
-./build_lambda.sh                    # Build Lambda deployment package
+./scripts/build_lambda.sh                # Build Lambda deployment package
 cd infrastructure/terraform
 terraform init && terraform apply     # Deploy infrastructure
 ```
@@ -70,14 +70,17 @@ terraform init && terraform apply     # Deploy infrastructure
 ├── token_manager.py             # Instagram token refresh management
 ├── main.py                      # Local pipeline runner (CLI)
 ├── lambda_handler.py            # AWS Lambda entry point
-├── update_secrets_translation.py # Push .env prompts to AWS Secrets Manager
-├── build_lambda.sh              # Build Lambda deployment ZIP
-├── deploy.sh                    # Full deployment script
-├── aws_deploy_wizard.sh         # Interactive AWS setup wizard
-├── requirements.txt             # Development dependencies
-├── requirements_lambda.txt      # Lambda runtime dependencies
-├── Dockerfile                   # Container build
 ├── Makefile                     # Build shortcuts
+├── Dockerfile                   # Container build
+├── scripts/                     # Shell & utility scripts
+│   ├── build_lambda.sh          # Build Lambda deployment ZIP
+│   ├── deploy.sh                # Full deployment script
+│   ├── run_pipeline.sh          # Local pipeline runner
+│   ├── aws_deploy_wizard.sh     # Interactive AWS setup wizard
+│   └── update_secrets.py        # Push .env & prompts to AWS Secrets Manager
+├── requirements/                # Python dependencies
+│   ├── base.txt                 # Development dependencies
+│   └── lambda.txt               # Lambda runtime dependencies
 ├── prompts/                     # AI prompt templates (editable text files)
 │   ├── batch_selection.txt      # News selection & prioritization prompt
 │   ├── single_article.txt       # Single article content generation prompt

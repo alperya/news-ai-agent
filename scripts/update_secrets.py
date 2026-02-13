@@ -7,11 +7,11 @@ from pathlib import Path
 import boto3
 from botocore.exceptions import ClientError
 
-SCRIPT_DIR = Path(__file__).parent
+PROJECT_ROOT = Path(__file__).parent.parent
 
 # Read .env file for credentials
 env_vars = {}
-with open(SCRIPT_DIR / '.env', 'r') as f:
+with open(PROJECT_ROOT / '.env', 'r') as f:
     for line in f:
         line = line.rstrip()
         if not line or line.startswith('#'):
@@ -23,7 +23,7 @@ with open(SCRIPT_DIR / '.env', 'r') as f:
             env_vars[key] = value
 
 # Read prompt templates from files
-prompts_dir = SCRIPT_DIR / 'prompts'
+prompts_dir = PROJECT_ROOT / 'prompts'
 batch_prompt = (prompts_dir / 'batch_selection.txt').read_text(encoding='utf-8')
 single_prompt = (prompts_dir / 'single_article.txt').read_text(encoding='utf-8')
 quality_prompt = (prompts_dir / 'quality_check.txt').read_text(encoding='utf-8')
@@ -54,14 +54,14 @@ try:
     print(f"   ✓ AI_PROMPT_BATCH_SELECTION: {len(secret_payload['AI_PROMPT_BATCH_SELECTION'])} chars")
     print(f"   ✓ AI_PROMPT_QUALITY_CHECK: {len(secret_payload['AI_PROMPT_QUALITY_CHECK'])} chars")
     print(f"\n📋 Next steps:")
-    print(f"   1. Rebuild Lambda: ./build_lambda.sh")
+    print(f"   1. Rebuild Lambda: ./scripts/build_lambda.sh")
     print(f"   2. Deploy: cd infrastructure/terraform && terraform apply -auto-approve")
     print(f"   3. Test: aws lambda invoke --function-name news-ai-agent ...")
     
 except ClientError as e:
     if e.response['Error']['Code'] == 'ResourceNotFoundException':
         print("❌ Secrets Manager secret bulunamadı")
-        print("   Komutu çalıştır: ./deploy.sh")
+        print("   Run: ./scripts/deploy.sh")
     else:
         print(f"❌ Hata: {e}")
         exit(1)
