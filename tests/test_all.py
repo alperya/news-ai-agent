@@ -7,7 +7,13 @@ import json
 import os
 from unittest.mock import patch, MagicMock
 
+import sys
+from pathlib import Path
+
 import pytest
+
+# Add src/ to path so tests can import application modules
+sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
 from news_scraper import DutchNewsScraper, NewsArticle, save_articles_json
 from ai_agent import NewsAIAgent, SocialMediaPost, save_posts_json
@@ -310,9 +316,9 @@ def test_quality_gate_saves_error_file(tmp_path, monkeypatch):
         source="nos", content="Bad content",
         hashtags=["#Test"], emoji="📰", platform="instagram",
     )
-    # Override __file__ parent to redirect errors/ to tmp_path
+    # Override PROJECT_ROOT to redirect errors/ to tmp_path
     import ai_agent as ai_mod
-    monkeypatch.setattr(ai_mod, '__file__', str(tmp_path / 'ai_agent.py'))
+    monkeypatch.setattr(ai_mod, 'PROJECT_ROOT', tmp_path)
 
     agent._save_error(post, ["Content is empty or too short"])
 

@@ -18,13 +18,13 @@ test:
 
 run:
 	@echo "🚀 Running (DRY RUN)..."
-	python3 main.py --dry-run --max-posts 5
+	PYTHONPATH=src python3 src/main.py --dry-run --max-posts 5
 
 run-live:
 	@echo "⚠️  WARNING: This will ACTUALLY POST to social media!"
 	@echo "Press Ctrl+C to cancel, or Enter to continue..."
 	@read line
-	@bash -c 'export $$(cat .env | grep -v "^\#" | xargs) && python3 main.py --no-dry-run --max-posts 3'
+	@bash -c 'export $$(cat .env | grep -v "^\#" | xargs) && PYTHONPATH=src python3 src/main.py --no-dry-run --max-posts 3'
 
 clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true

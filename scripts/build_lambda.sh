@@ -15,7 +15,8 @@ rm -rf $BUILD_DIR
 mkdir -p $BUILD_DIR
 
 echo "📦 Copying Python files..."
-cp *.py $BUILD_DIR/
+cp src/*.py $BUILD_DIR/
+cp lambda_handler.py $BUILD_DIR/
 
 # Copy prompt templates
 if [ -d "prompts" ]; then

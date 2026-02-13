@@ -11,8 +11,10 @@ from datetime import datetime
 import boto3
 from botocore.exceptions import ClientError
 
-# Add current directory to path for imports
-sys.path.insert(0, os.path.dirname(__file__))
+# Add src/ directory to path for imports (locally src/ is a subfolder, in Lambda ZIP all files are flat)
+_dir = os.path.dirname(__file__)
+sys.path.insert(0, os.path.join(_dir, 'src'))
+sys.path.insert(0, _dir)
 
 from news_scraper import DutchNewsScraper
 from ai_agent import NewsAIAgent

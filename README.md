@@ -64,12 +64,13 @@ terraform init && terraform apply     # Deploy infrastructure
 ## 📁 Project Structure
 
 ```
-├── ai_agent.py                  # Claude AI content processing
-├── news_scraper.py              # RSS scraping (NOS, NU.nl)
-├── social_publisher.py          # Instagram & Twitter publishing
-├── token_manager.py             # Instagram token refresh management
-├── main.py                      # Local pipeline runner (CLI)
 ├── lambda_handler.py            # AWS Lambda entry point
+├── src/                         # Application source code
+│   ├── ai_agent.py              # Claude AI content processing
+│   ├── news_scraper.py          # RSS scraping (NOS, NU.nl)
+│   ├── social_publisher.py      # Instagram publishing
+│   ├── token_manager.py         # Instagram token refresh management
+│   └── main.py                  # Local pipeline runner (CLI)
 ├── Makefile                     # Build shortcuts
 ├── scripts/                     # Shell & utility scripts
 │   ├── build_lambda.sh          # Build Lambda deployment ZIP

@@ -20,7 +20,10 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-PROMPTS_DIR = Path(__file__).parent / 'prompts'
+# Project root: parent of src/ locally, same dir in Lambda flat ZIP
+_THIS_DIR = Path(__file__).parent
+PROJECT_ROOT = _THIS_DIR.parent if (_THIS_DIR / '__init__.py').exists() or _THIS_DIR.name == 'src' else _THIS_DIR
+PROMPTS_DIR = PROJECT_ROOT / 'prompts'
 
 
 @dataclass
@@ -236,7 +239,7 @@ class NewsAIAgent:
 
     def _save_error(self, post: SocialMediaPost, reasons: List[str]):
         """Save rejected post details to errors/ directory."""
-        errors_dir = Path(__file__).parent / 'errors'
+        errors_dir = PROJECT_ROOT / 'errors'
         errors_dir.mkdir(exist_ok=True)
 
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -260,7 +263,7 @@ class NewsAIAgent:
 
     def _save_correction(self, post: SocialMediaPost, original: str, corrected: str, issues: List[str]):
         """Save correction details (before/after) to errors/ directory."""
-        errors_dir = Path(__file__).parent / 'errors'
+        errors_dir = PROJECT_ROOT / 'errors'
         errors_dir.mkdir(exist_ok=True)
 
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
