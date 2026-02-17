@@ -54,6 +54,27 @@ resource "aws_s3_bucket_versioning" "results" {
   }
 }
 
+resource "aws_s3_bucket_lifecycle_configuration" "errors_cleanup" {
+  bucket = aws_s3_bucket.results.id
+
+  rule {
+    id     = "delete-errors-after-30-days"
+    status = "Enabled"
+
+    filter {
+      prefix = "errors/"
+    }
+
+    expiration {
+      days = 30
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 30
+    }
+  }
+}
+
 # ===== Secrets Manager for Credentials =====
 resource "aws_secretsmanager_secret" "credentials" {
   name        = "${var.project_name}/credentials"
@@ -109,9 +130,17 @@ resource "aws_iam_role_policy" "lambda_policy" {
         Effect = "Allow"
         Action = [
           "s3:PutObject",
-          "s3:GetObject"
+          "s3:GetObject",
+          "s3:DeleteObject"
         ]
         Resource = "${aws_s3_bucket.results.arn}/*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:ListBucket"
+        ]
+        Resource = aws_s3_bucket.results.arn
       },
       {
         Effect = "Allow"

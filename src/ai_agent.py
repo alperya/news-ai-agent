@@ -14,6 +14,11 @@ from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
 
+try:
+    import boto3
+except ImportError:
+    boto3 = None
+
 # Load environment variables
 load_dotenv()
 
@@ -238,10 +243,7 @@ class NewsAIAgent:
         return post
 
     def _save_error(self, post: SocialMediaPost, reasons: List[str]):
-        """Save rejected post details to errors/ directory."""
-        errors_dir = PROJECT_ROOT / 'errors'
-        errors_dir.mkdir(exist_ok=True)
-
+        """Save rejected post details to S3 (Lambda) or local errors/ directory."""
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         error_data = {
             'timestamp': timestamp,
@@ -256,16 +258,11 @@ class NewsAIAgent:
             'platform': post.platform,
         }
 
-        filepath = errors_dir / f'rejected_{timestamp}.json'
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(error_data, f, ensure_ascii=False, indent=2)
-        logger.info(f"📝 Error details saved: {filepath}")
+        filename = f'rejected_{timestamp}.json'
+        self._persist_json(f'errors/{filename}', error_data)
 
     def _save_correction(self, post: SocialMediaPost, original: str, corrected: str, issues: List[str]):
-        """Save correction details (before/after) to errors/ directory."""
-        errors_dir = PROJECT_ROOT / 'errors'
-        errors_dir.mkdir(exist_ok=True)
-
+        """Save correction details (before/after) to S3 (Lambda) or local errors/ directory."""
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         correction_data = {
             'timestamp': timestamp,
@@ -279,10 +276,33 @@ class NewsAIAgent:
             'platform': post.platform,
         }
 
-        filepath = errors_dir / f'corrected_{timestamp}.json'
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(correction_data, f, ensure_ascii=False, indent=2)
-        logger.info(f"📝 Correction details saved: {filepath}")
+        filename = f'corrected_{timestamp}.json'
+        self._persist_json(f'errors/{filename}', correction_data)
+
+    def _persist_json(self, key: str, data: dict):
+        """Write JSON to S3 (when RESULTS_BUCKET is set) or local filesystem."""
+        bucket = os.environ.get('RESULTS_BUCKET')
+
+        if bucket and boto3:
+            try:
+                s3 = boto3.client('s3')
+                s3.put_object(
+                    Bucket=bucket,
+                    Key=key,
+                    Body=json.dumps(data, ensure_ascii=False, indent=2),
+                    ContentType='application/json',
+                )
+                logger.info(f"📝 Saved to S3: s3://{bucket}/{key}")
+                return
+            except Exception as e:
+                logger.warning(f"⚠️  S3 write failed, falling back to local: {e}")
+
+        # Local fallback (development)
+        local_path = PROJECT_ROOT / key
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(local_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        logger.info(f"📝 Saved locally: {local_path}")
     
     def process_batch(self, articles: List[Dict], max_posts: int = 10, platform: str = "twitter") -> List[SocialMediaPost]:
         """Process multiple articles - selects which articles to post in a single API call"""

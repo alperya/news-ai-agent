@@ -254,16 +254,6 @@ def lambda_handler(event, context):
 
         if rejected_count:
             logger.warning(f"⚠️  {rejected_count} post(s) failed quality gate")
-            # Upload local error/correction files to S3
-            from pathlib import Path
-            errors_dir = Path(__file__).parent / 'errors'
-            if errors_dir.exists():
-                for err_file in errors_dir.glob('*.json'):
-                    try:
-                        err_data = json.loads(err_file.read_text(encoding='utf-8'))
-                        save_to_s3(err_data, f'errors/{err_file.name}', bucket_name)
-                    except Exception:
-                        pass
 
         if not posts:
             logger.warning("⚠️  All posts failed quality gate, skipping publish.")
