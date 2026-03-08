@@ -9,4 +9,4 @@ cd "$PROJECT_ROOT"
 export $(cat .env | grep -v '^#' | xargs)
 
 # Run pipeline
-python3 main.py "$@"
+python3 src/main.py "$@"

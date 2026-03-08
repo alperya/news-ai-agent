@@ -1,8 +1,13 @@
 # Runtime dependencies for AWS Lambda
 anthropic>=0.39.0
 requests>=2.31.0
-facebook-sdk>=3.1.0
 boto3>=1.34.0
 botocore>=1.34.0
 python-dateutil>=2.8.2
 python-dotenv>=1.0.0
+
+# Video / TTS (Reels)
+edge-tts>=6.1.0
+moviepy>=2.0.0
+Pillow>=10.0.0
+numpy>=1.26.0

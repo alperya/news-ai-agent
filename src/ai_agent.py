@@ -12,7 +12,6 @@ from typing import List, Dict, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from dotenv import load_dotenv
 
 try:
     import boto3
@@ -20,7 +19,6 @@ except ImportError:
     boto3 = None
 
 # Load environment variables
-load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

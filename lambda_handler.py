@@ -19,6 +19,7 @@ sys.path.insert(0, _dir)
 from news_scraper import DutchNewsScraper
 from ai_agent import NewsAIAgent
 from social_publisher import InstagramPublisher
+from video import create_news_video
 
 # Configure logging for Lambda
 logger = logging.getLogger()
@@ -55,6 +56,16 @@ def get_secrets():
     os.environ['INSTAGRAM_ACCESS_TOKEN'] = secret['INSTAGRAM_ACCESS_TOKEN']
     os.environ['INSTAGRAM_ACCOUNT_ID'] = secret['INSTAGRAM_ACCOUNT_ID']
     
+    # Set Pexels API key for stock footage (optional)
+    if 'PEXELS_API_KEY' in secret:
+        os.environ['PEXELS_API_KEY'] = secret['PEXELS_API_KEY']
+
+    # Set ElevenLabs API key for natural TTS voice (optional)
+    if 'ELEVENLABS_API_KEY' in secret:
+        os.environ['ELEVENLABS_API_KEY'] = secret['ELEVENLABS_API_KEY']
+    if 'ELEVENLABS_VOICE_ID' in secret:
+        os.environ['ELEVENLABS_VOICE_ID'] = secret['ELEVENLABS_VOICE_ID']
+
     # Set AI prompts if available
     if 'AI_PROMPT_BATCH_SELECTION' in secret:
         os.environ['AI_PROMPT_BATCH_SELECTION'] = secret['AI_PROMPT_BATCH_SELECTION']
@@ -274,20 +285,59 @@ def lambda_handler(event, context):
 
         posts_data = [post.to_dict() for post in posts]
 
+        # Detect if this is a Reels run (afternoon schedule)
+        is_reels = event.get('format') == 'reels' if isinstance(event, dict) else False
+
         # STAGE 3: Publish to Instagram
-        logger.info("\n📱 STAGE 3: Publishing to Instagram...")
+        logger.info(f"\n📱 STAGE 3: Publishing to Instagram {'(REELS)' if is_reels else '(PHOTO)'}...")
         publisher = InstagramPublisher()
         
         published_count = 0
         for idx, post in enumerate(posts_data, 1):
             try:
                 logger.info(f"\n📤 Publishing post {idx}/{len(posts)}...")
-                
-                result = publisher.publish_post(
-                    content=post['full_post'],
-                    image_url=post.get('image_url'),
-                    dry_run=False
-                )
+
+                if is_reels:
+                    # Generate video and publish as Reels
+                    video_path = f'/tmp/reels_{timestamp}.mp4'
+                    create_news_video(
+                        title=post.get('original_title', ''),
+                        content=post.get('full_post', ''),
+                        source=post.get('source', ''),
+                        hashtags=post.get('hashtags', []),
+                        output_path=video_path,
+                        emoji=post.get('emoji', '📰'),
+                        image_url=post.get('image_url'),
+                    )
+
+                    # Upload video to S3 and get a pre-signed URL for Meta
+                    s3_video_key = f'reels/reels_{timestamp}.mp4'
+                    s3_client = boto3.client('s3')
+                    with open(video_path, 'rb') as vf:
+                        s3_client.put_object(
+                            Bucket=bucket_name,
+                            Key=s3_video_key,
+                            Body=vf,
+                            ContentType='video/mp4',
+                        )
+                    video_url = s3_client.generate_presigned_url(
+                        'get_object',
+                        Params={'Bucket': bucket_name, 'Key': s3_video_key},
+                        ExpiresIn=3600,
+                    )
+                    logger.info(f"✅ Video uploaded to S3: {s3_video_key}")
+
+                    result = publisher.publish_reels(
+                        content=post['full_post'],
+                        video_url=video_url,
+                        dry_run=False,
+                    )
+                else:
+                    result = publisher.publish_post(
+                        content=post['full_post'],
+                        image_url=post.get('image_url'),
+                        dry_run=False,
+                    )
                 
                 logger.info(f"✅ Post {idx} published: {result}")
                 published_count += 1

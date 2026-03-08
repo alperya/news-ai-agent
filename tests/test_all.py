@@ -15,8 +15,13 @@ import pytest
 # Add src/ to path so tests can import application modules
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
-from news_scraper import DutchNewsScraper, NewsArticle, save_articles_json
-from ai_agent import NewsAIAgent, SocialMediaPost, save_posts_json
+from news_scraper import DutchNewsScraper, NewsArticle
+from ai_agent import NewsAIAgent, SocialMediaPost
+from video import SubtitleSegment
+from video.tts import clean_for_narration, group_subtitle_segments, _chars_to_words
+from video.audio import find_music_file
+from video.footage import download_image, fetch_stock_image
+from video.effects import make_gradient_overlay
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -81,10 +86,10 @@ def sample_post():
 
 # ── 1. Scraper: RSS feed config ──────────────────────────────────────────────
 
-def test_scraper_has_nos_and_nu_feeds(scraper):
-    """RSS_FEEDS should contain NOS and NU.nl (not Telegraaf)."""
+def test_scraper_has_nos_and_rtl_feeds(scraper):
+    """RSS_FEEDS should contain NOS and RTL (not Telegraaf)."""
     assert "nos" in scraper.RSS_FEEDS
-    assert "nu" in scraper.RSS_FEEDS
+    assert "rtl" in scraper.RSS_FEEDS
     assert "telegraaf" not in scraper.RSS_FEEDS
 
 
@@ -346,3 +351,226 @@ def test_corrected_post_has_dot_before_hashtags():
     post._corrected = True
     corrected = post.format_post()
     assert "\n.\n" in corrected
+
+
+# ── 18. Video: narration text is cleaned ─────────────────────────────────────
+
+def test_clean_for_narration_removes_hashtags_and_urls():
+    """_clean_for_narration should strip hashtags, URLs, and Kaynak lines."""
+    text = (
+        "🚲 Hollanda'da yeni yasa yürürlükte.\n"
+        "📰 Kaynak: https://nos.nl/artikel/1\n\n"
+        "#Hollanda #Bisiklet #Haberler"
+    )
+    result = clean_for_narration(text)
+    assert "#Hollanda" not in result
+    assert "https://" not in result
+    assert "Kaynak" not in result
+    assert "yasa yürürlükte" in result
+
+
+# ── 19. Video: subtitle grouping ─────────────────────────────────────────────
+
+def test_subtitle_grouping_respects_max_words():
+    """group_subtitle_segments should group words ≤ max_words per segment."""
+    words = [
+        SubtitleSegment(text="Hollanda'da", start=0.0, end=0.5),
+        SubtitleSegment(text="yeni", start=0.5, end=0.8),
+        SubtitleSegment(text="bir", start=0.8, end=1.0),
+        SubtitleSegment(text="bisiklet", start=1.0, end=1.5),
+        SubtitleSegment(text="altyapı", start=1.5, end=2.0),
+        SubtitleSegment(text="planı", start=2.0, end=2.5),
+        SubtitleSegment(text="açıklandı.", start=2.5, end=3.0),
+        SubtitleSegment(text="Detaylar", start=3.0, end=3.3),
+        SubtitleSegment(text="burada.", start=3.3, end=3.8),
+    ]
+    grouped = group_subtitle_segments(words, max_words=4)
+    for seg in grouped:
+        assert len(seg.text.split()) <= 4
+    # Timing should be preserved
+    assert grouped[0].start == 0.0
+    assert grouped[-1].end == 3.8
+    assert len(grouped) == 3  # 4+4+1 words → 3 groups
+
+
+# ── 20. Video: empty subtitle list ───────────────────────────────────────────
+
+def test_subtitle_grouping_empty_list():
+    """_group_subtitle_segments should handle empty list."""
+    result = group_subtitle_segments([])
+    assert result == []
+
+
+# ── 21. InstagramPublisher has publish_reels method ──────────────────────────
+
+def test_instagram_publisher_has_reels_method():
+    """InstagramPublisher should have a publish_reels method."""
+    from social_publisher import InstagramPublisher
+    assert hasattr(InstagramPublisher, 'publish_reels')
+
+
+# ── 22. publish_reels dry run returns correct type ───────────────────────────
+
+def test_publish_reels_dry_run():
+    """publish_reels in dry_run mode should return type='reels'."""
+    from social_publisher import InstagramPublisher
+    with patch.dict(os.environ, {
+        'INSTAGRAM_ACCESS_TOKEN': 'test-token',
+        'INSTAGRAM_ACCOUNT_ID': 'test-id',
+    }):
+        publisher = InstagramPublisher()
+    result = publisher.publish_reels(
+        content="Test reel",
+        video_url="https://example.com/video.mp4",
+        dry_run=True,
+    )
+    assert result['type'] == 'reels'
+    assert result['id'] == 'dry_run'
+
+
+# ── 23. Video: music file locator ────────────────────────────────────────────
+
+def test_find_music_file():
+    """find_music_file should locate the background music MP3."""
+    from video.config import MUSIC_FILE
+    path = find_music_file()
+    if MUSIC_FILE.exists():
+        assert path is not None
+        assert str(path).endswith(".mp3")
+    else:
+        # In CI without the file, None is acceptable
+        assert path is None
+
+
+# ── 24. Video: image download returns None on bad URL ────────────────────────
+
+def test_download_image_bad_url(tmp_path):
+    """_download_image should return None for unreachable URLs."""
+    result = download_image("https://this-domain-does-not-exist.invalid/img.jpg", str(tmp_path))
+    assert result is None
+
+
+# ── 25. Video: image download returns None for empty URL ─────────────────────
+
+def test_download_image_empty_url(tmp_path):
+    """_download_image should return None for empty/None URLs."""
+    assert download_image("", str(tmp_path)) is None
+    assert download_image(None, str(tmp_path)) is None
+
+
+# ── 26. Video: gradient overlay shape ────────────────────────────────────────
+
+def test_gradient_overlay_has_correct_dimensions():
+    """_make_gradient_overlay should produce a clip with VIDEO dimensions."""
+    from video.config import VIDEO_WIDTH, VIDEO_HEIGHT
+    clip = make_gradient_overlay(3.0)
+    assert clip.duration == 3.0
+    assert clip.size == (VIDEO_WIDTH, VIDEO_HEIGHT)
+
+
+# ── 27. Video: create_news_video accepts image_url parameter ────────────────
+
+def test_create_news_video_signature():
+    """create_news_video should accept image_url as a keyword argument."""
+    import inspect
+    from video import create_news_video
+    sig = inspect.signature(create_news_video)
+    assert "image_url" in sig.parameters
+
+
+# ── 28. Stock footage: keyword extraction ────────────────────────────────────
+
+def test_extract_search_query_from_turkish():
+    """extract_search_query should translate Turkish keywords to English."""
+    from video.footage import extract_search_query
+    query = extract_search_query(
+        "Hollanda'da bisiklet altyapı planı",
+        "Hollanda hükümeti yeni bisiklet yolu yapacak.",
+    )
+    assert "netherlands" in query or "cycling" in query
+
+
+# ── 29. Video: package exports are accessible ────────────────────────────────
+
+def test_video_package_exports():
+    """video package should export create_news_video and helpers."""
+    from video import (
+        create_news_video,
+        SubtitleSegment,
+        clean_for_narration,
+        group_subtitle_segments,
+    )
+    assert callable(create_news_video)
+    assert callable(clean_for_narration)
+    assert callable(group_subtitle_segments)
+
+
+# ── 30. TTS: char-to-word timestamp conversion ──────────────────────────────
+
+def test_chars_to_words():
+    """_chars_to_words should convert character-level alignment to words."""
+    chars = list("Merhaba dünya")
+    starts = [i * 0.05 for i in range(len(chars))]
+    ends = [(i + 1) * 0.05 for i in range(len(chars))]
+    words = _chars_to_words(chars, starts, ends)
+    assert len(words) == 2
+    assert words[0].text == "Merhaba"
+    assert words[1].text == "dünya"
+    assert words[0].start == 0.0
+    assert words[1].end == ends[-1]
+
+
+# ── 31. TTS: ElevenLabs fallback when no API key ────────────────────────────
+
+def test_tts_uses_edge_tts_without_elevenlabs_key():
+    """generate_tts should fall back to edge-tts when ELEVENLABS_API_KEY is empty."""
+    from video.config import ELEVENLABS_API_KEY
+    # When there's no key, it should NOT raise — it falls back to edge-tts
+    # (we just verify the import and fallback path exist)
+    from video.tts import generate_tts, _edge_tts
+    assert callable(generate_tts)
+    assert callable(_edge_tts)
+
+
+# ── 32. Subtitle colors match brand ─────────────────────────────────────────
+
+def test_subtitle_colors():
+    """Subtitle clips should use orange bg and cream text."""
+    from video.config import SUBTITLE_BG_COLOR, SUBTITLE_TEXT_COLOR
+    assert SUBTITLE_BG_COLOR == "#FF5B14"
+    assert SUBTITLE_TEXT_COLOR == "#F9E8D9"
+
+
+# ── 33. Pexels image search returns None without key ─────────────────────────
+
+def test_fetch_stock_image_no_key(tmp_path):
+    """fetch_stock_image should return None when PEXELS_API_KEY is empty."""
+    with patch.dict(os.environ, {"PEXELS_API_KEY": ""}, clear=False), \
+         patch("video.footage.PEXELS_API_KEY", ""):
+        result = fetch_stock_image("test", "test content", str(tmp_path))
+    assert result is None
+
+
+# ── 34. Gradient overlay must have transparency mask ─────────────────────────
+
+def test_gradient_overlay_has_mask():
+    """Gradient overlay must use a mask — not opaque black."""
+    clip = make_gradient_overlay(3.0)
+    assert clip.mask is not None, "Gradient overlay must have a mask for transparency"
+
+
+# ── 35. Subtitle clip returns [bg, text] list ────────────────────────────────
+
+def test_subtitle_clip_per_line_bg():
+    """make_subtitle_clip should return a masked clip with per-line bg."""
+    from video.effects import make_subtitle_clip
+    from video.config import VIDEO_WIDTH
+    seg = SubtitleSegment(text="Kısa metin burada", start=0.0, end=2.0)
+    clips = make_subtitle_clip(seg)
+    assert isinstance(clips, list)
+    assert len(clips) == 1
+    clip = clips[0]
+    # Must have transparency mask (per-line bg, not full rectangle)
+    assert clip.mask is not None
+    # Clip is full video width (text is centred inside)
+    assert clip.w == VIDEO_WIDTH

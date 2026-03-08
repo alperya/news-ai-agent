@@ -1,6 +1,6 @@
-# 🤖 News AI Agent - Dutch News Automation
+# 🤖 News AI Agent — Dutch News Automation
 
-An intelligent AI-powered pipeline that automatically scrapes Dutch news from NOS and NU.nl, processes them with Claude AI, and publishes engaging content to Instagram. Prioritizes Holland-related news with a tiered selection system.
+An intelligent AI-powered pipeline that automatically scrapes Dutch news from NOS and NU.nl, processes them with Claude AI, and publishes engaging content to Instagram — both as photo posts and auto-generated Reels videos with TTS narration.
 
 ## 📦 Features
 
@@ -8,13 +8,26 @@ An intelligent AI-powered pipeline that automatically scrapes Dutch news from NO
 - ✅ Claude Opus 4.6 AI content generation with Holland-priority news selection
 - ✅ Quality gate: structural validation + AI language review (Claude Haiku 4.5) before publishing
 - ✅ Instagram Graph API integration with automatic token refresh
+- ✅ **Instagram Reels** — auto-generated news videos with TTS narration, stock footage & subtitles
 - ✅ Tiered news selection (🇳🇱 Holland → 🇪🇺 Europe → 🌍 Global)
 - ✅ Source attribution with article links in posts
 - ✅ Duplicate detection (prevents reposting same articles)
-- ✅ AWS Lambda deployment with scheduled posting (3x daily)
+- ✅ AWS Lambda deployment with scheduled posting (3× daily)
 - ✅ Infrastructure as Code (Terraform)
 - ✅ AWS Secrets Manager for credential management
 - ✅ Objective, news-agency style content (BBC/Reuters style)
+
+## 🎬 Reels Video Pipeline
+
+The afternoon posting slot automatically generates an Instagram Reels video:
+
+1. **TTS Narration** — ElevenLabs Multilingual v2 (natural voice) with edge-tts fallback (free)
+2. **Stock Footage** — Pexels API auto-selects relevant HD clips based on article keywords
+3. **Subtitles** — Word-timed subtitle overlay with rounded orange background
+4. **Background Music** — Ambient news music with 1-second fade-out
+5. **4-tier Visual Fallback** — Pexels video → article image → Pexels photo → animated gradient
+
+Video specs: 1080×1920 (9:16), 30 FPS, H.264 High, 4000 kbps, AAC audio.
 
 ## 🚀 Quick Start
 
@@ -35,18 +48,22 @@ source .venv/bin/activate
 # Install dependencies
 pip install -r requirements/base.txt
 
-# Configure API keys
-# Create a .env file with the following variables:
-#   ANTHROPIC_API_KEY=your_key
-#   INSTAGRAM_ACCESS_TOKEN=your_token
-#   INSTAGRAM_ACCOUNT_ID=your_account_id
+# Configure environment variables
+cp .env.example .env
+# Edit .env with your API keys
+
 # AI prompts are stored in prompts/ folder (see prompts/*.txt.example)
 
-# Run pipeline (dry-run mode - no actual posting)
-python main.py --dry-run
+# Run pipeline (dry-run mode — no actual posting)
+PYTHONPATH=src python3 src/main.py --dry-run
 
 # Run with actual posting
-python main.py --no-dry-run --platform instagram --max-posts 1
+PYTHONPATH=src python3 src/main.py --no-dry-run --platform instagram --max-posts 1
+
+# Or use Makefile shortcuts
+make run          # dry-run
+make run-live     # post to Instagram
+make test         # run tests
 ```
 
 ### AWS Lambda Deployment
@@ -56,71 +73,103 @@ python main.py --no-dry-run --platform instagram --max-posts 1
 ./scripts/deploy.sh
 
 # Or step by step:
-./scripts/build_lambda.sh                # Build Lambda deployment package
+./scripts/build_lambda.sh              # Build Lambda deployment package
 cd infrastructure/terraform
-terraform init && terraform apply     # Deploy infrastructure
+terraform init && terraform apply      # Deploy infrastructure
+
+# Push secrets & prompts to AWS Secrets Manager
+python3 scripts/update_secrets.py
 ```
 
 ## 📁 Project Structure
 
 ```
-├── lambda_handler.py            # AWS Lambda entry point
-├── src/                         # Application source code
-│   ├── ai_agent.py              # Claude AI content processing
-│   ├── news_scraper.py          # RSS scraping (NOS, NU.nl)
-│   ├── social_publisher.py      # Instagram publishing
-│   ├── token_manager.py         # Instagram token refresh management
-│   └── main.py                  # Local pipeline runner (CLI)
-├── Makefile                     # Build shortcuts
-├── scripts/                     # Shell & utility scripts
-│   ├── build_lambda.sh          # Build Lambda deployment ZIP
-│   ├── deploy.sh                # Full deployment script
-│   └── update_secrets.py        # Push .env & prompts to AWS Secrets Manager
-├── requirements/                # Python dependencies
-│   ├── base.txt                 # Development dependencies
-│   └── lambda.txt               # Lambda runtime dependencies
-├── prompts/                     # AI prompt templates (editable text files)
-│   ├── batch_selection.txt      # News selection & prioritization prompt
-│   ├── single_article.txt       # Single article content generation prompt
-│   └── quality_check.txt        # Quality gate review prompt
+├── lambda_handler.py              # AWS Lambda entry point
+├── src/                           # Application source code
+│   ├── main.py                    # Local pipeline runner (CLI)
+│   ├── ai_agent.py                # Claude AI content processing
+│   ├── news_scraper.py            # RSS scraping (NOS, NU.nl)
+│   ├── social_publisher.py        # Instagram publishing (photo + Reels)
+│   ├── token_manager.py           # Instagram token refresh management
+│   ├── video/                     # 🎬 Reels video generation package
+│   │   ├── __init__.py            # Public API exports
+│   │   ├── config.py              # Video constants & env configuration
+│   │   ├── tts.py                 # TTS narration (ElevenLabs + edge-tts)
+│   │   ├── footage.py             # Pexels stock video/photo fetcher
+│   │   ├── effects.py             # Ken Burns, gradients, subtitle clips
+│   │   ├── audio.py               # Narration + background music mixing
+│   │   └── creator.py             # Main orchestrator
+│   ├── fonts/                     # Bundled fonts (Montserrat Bold, OFL)
+│   └── music/                     # Background music for Reels
+├── prompts/                       # AI prompt templates (editable text files)
+│   ├── batch_selection.txt        # News selection & prioritization prompt
+│   ├── single_article.txt         # Single article content generation prompt
+│   └── quality_check.txt          # Quality gate review prompt
+├── scripts/                       # Shell & utility scripts
+│   ├── build_lambda.sh            # Build Lambda deployment ZIP
+│   ├── deploy.sh                  # Full deployment script
+│   ├── run_pipeline.sh            # Local pipeline runner
+│   ├── preview_reels.sh           # Generate a preview Reels video locally
+│   ├── aws_deploy_wizard.sh       # Interactive AWS setup wizard
+│   └── update_secrets.py          # Push .env & prompts to AWS Secrets Manager
+├── requirements/                  # Python dependencies
+│   ├── base.txt                   # Development dependencies
+│   └── lambda.txt                 # Lambda runtime dependencies
 ├── infrastructure/
-│   └── terraform/               # AWS infrastructure (Lambda, S3, EventBridge)
-├── output/                      # Generated articles & posts (gitignored)
-├── errors/                      # Rejected/corrected posts log (gitignored)
-└── tests/                       # Test suite
+│   └── terraform/                 # AWS infrastructure (Lambda, S3, EventBridge)
+├── tests/                         # Test suite (35 tests)
+├── output/                        # Generated articles & posts (gitignored)
+└── errors/                        # Rejected/corrected posts log (gitignored)
 ```
 
 ## 📅 Posting Schedule
 
-When deployed to AWS Lambda (EventBridge cron, UTC → Amsterdam):
-| Schedule | UTC | Amsterdam (CET) |
-|----------|-----|-----------------|
-| Morning  | 07:00 | 08:00 |
-| Afternoon | 11:30 | 12:30 |
-| Evening  | 16:30 | 17:30 |
+AWS Lambda runs 3× daily via EventBridge (UTC → Amsterdam CET/CEST):
+
+| Schedule  | UTC   | Amsterdam | Format         |
+|-----------|-------|-----------|----------------|
+| Morning   | 07:00 | 08:00     | 📷 Photo post  |
+| Afternoon | 11:30 | 12:30     | 🎬 Reels video |
+| Evening   | 16:30 | 17:30     | 📷 Photo post  |
 
 ## 🛠️ Tech Stack
 
-- **AI**: Claude Opus 4.6 (content generation) + Claude Haiku 4.5 (quality review)
-- **Cloud**: AWS Lambda, S3, EventBridge, Secrets Manager
-- **IaC**: Terraform
-- **Language**: Python 3.12
-- **API**: Instagram Graph API v24.0
+| Category | Technology |
+|----------|-----------|
+| **AI** | Claude Opus 4.6 (content) + Claude Haiku 4.5 (quality gate) |
+| **TTS** | ElevenLabs Multilingual v2 (primary) + edge-tts (free fallback) |
+| **Video** | moviepy, Pillow, FFmpeg (H.264 / AAC) |
+| **Stock Media** | Pexels API (free — video & photo) |
+| **Cloud** | AWS Lambda, S3, EventBridge, Secrets Manager |
+| **IaC** | Terraform |
+| **Language** | Python 3.12 |
+| **API** | Instagram Graph API v24.0 |
 
 ## ⚙️ Configuration
 
-All configuration is managed through environment variables (`.env` locally, AWS Secrets Manager in production):
+All configuration is managed through environment variables (`.env` locally, AWS Secrets Manager in production). See [.env.example](.env.example) for the full template.
 
-| Variable | Description |
-|----------|-------------|
-| `ANTHROPIC_API_KEY` | Anthropic API key for Claude |
-| `INSTAGRAM_ACCESS_TOKEN` | Instagram Graph API long-lived token |
-| `INSTAGRAM_ACCOUNT_ID` | Instagram Business Account ID |
-| `REVIEW_MODEL` | Quality gate model (default: `claude-haiku-4-5-20251001`) |
-| `AI_PROMPT_BATCH_SELECTION` | Prompt for news selection (Lambda fallback, loaded from `prompts/` locally) |
-| `AI_PROMPT_SINGLE_ARTICLE` | Prompt for article processing (Lambda fallback) |
-| `AI_PROMPT_QUALITY_CHECK` | Prompt for quality gate review (Lambda fallback) |
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `ANTHROPIC_API_KEY` | ✅ | Anthropic API key for Claude |
+| `INSTAGRAM_ACCESS_TOKEN` | ✅ | Instagram Graph API long-lived token |
+| `INSTAGRAM_ACCOUNT_ID` | ✅ | Instagram Business Account ID |
+| `ELEVENLABS_API_KEY` | ❌ | ElevenLabs TTS API key (falls back to free edge-tts) |
+| `ELEVENLABS_VOICE_ID` | ❌ | ElevenLabs voice ID (default: Daniel) |
+| `PEXELS_API_KEY` | ❌ | Pexels API key for stock footage (falls back to article image) |
+| `REVIEW_MODEL` | ❌ | Quality gate model (default: `claude-haiku-4-5-20251001`) |
+
+## 🧪 Testing
+
+```bash
+# Run all tests
+make test
+# or
+pytest tests/ -v
+
+# 35 tests covering scraper, AI agent, quality gate, video pipeline, social publisher
+```
 
 ## 📝 License
 
-MIT License - See [LICENSE](LICENSE) for details.
+MIT License — See [LICENSE](LICENSE) for details.

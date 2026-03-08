@@ -1,6 +1,6 @@
 """
 News Scraper for Dutch News Sites
-Supports: NOS.nl, NU.nl
+Supports: NOS.nl, RTL Nieuws
 """
 
 import requests
@@ -42,11 +42,8 @@ class DutchNewsScraper:
             'buitenland': 'https://feeds.nos.nl/nosnieuwsbuitenland',
             'sport': 'https://feeds.nos.nl/nossportalgemeen'
         },
-        'nu': {
-            'general': 'https://www.nu.nl/rss/Algemeen',
-            'binnenland': 'https://www.nu.nl/rss/Binnenland',
-            'economie': 'https://www.nu.nl/rss/Economie',
-            'tech': 'https://www.nu.nl/rss/Tech'
+        'rtl': {
+            'general': 'https://www.rtl.nl/rss.xml'
         }
     }
     

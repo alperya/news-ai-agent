@@ -16,6 +16,9 @@ mkdir -p $BUILD_DIR
 
 echo "📦 Copying Python files..."
 cp src/*.py $BUILD_DIR/
+cp -r src/video $BUILD_DIR/video
+cp -r src/music $BUILD_DIR/music
+cp src/fonts/Montserrat-Bold.ttf $BUILD_DIR/Montserrat-Bold.ttf
 cp lambda_handler.py $BUILD_DIR/
 
 # Copy prompt templates
@@ -48,7 +51,10 @@ $PIP_CMD install -r requirements.txt -t . \
 	--only-binary=:all:
 
 echo "🗜️  Creating deployment package..."
-zip -r ../lambda_deployment.zip . -x "*.pyc" -x "__pycache__/*" -x "*.dist-info/*"
+zip -r ../lambda_deployment.zip . -x "*.pyc" -x "__pycache__/*" \
+	-x "*.dist-info/RECORD" -x "*.dist-info/LICENSE*" -x "*.dist-info/AUTHORS*" \
+	-x "*.dist-info/top_level.txt" -x "*/tests/*" -x "*/test/*" \
+	-x "numpy/f2py/*" -x "numpy/testing/*" -x "numpy/doc/*"
 
 cd ..
 echo "✅ Deployment package created: lambda_deployment.zip"

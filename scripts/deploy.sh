@@ -63,11 +63,11 @@ EOF
         --name news-ai-agent/credentials \
         --description "News AI Agent credentials" \
         --secret-string "$SECRET_JSON" \
-        --region eu-west-1 2>/dev/null || \
+        --region eu-central-1 2>/dev/null || \
     aws secretsmanager update-secret \
         --secret-id news-ai-agent/credentials \
         --secret-string "$SECRET_JSON" \
-        --region eu-west-1
+        --region eu-central-1
     
     echo "✅ Secrets configured"
 else
@@ -108,8 +108,8 @@ echo "   - Afternoon: 12:30"
 echo "   - Evening:   17:30"
 echo ""
 echo "📝 To view logs:"
-echo "   aws logs tail /aws/lambda/news-ai-agent --follow --region eu-west-1"
+echo "   aws logs tail /aws/lambda/news-ai-agent --follow --region eu-central-1"
 echo ""
 echo "🧪 To test Lambda manually:"
-echo "   aws lambda invoke --function-name news-ai-agent --region eu-west-1 response.json"
+echo "   aws lambda invoke --function-name news-ai-agent --region eu-central-1 response.json"
 echo ""

@@ -242,3 +242,83 @@ class InstagramPublisher:
         except Exception as e:
             logger.error(f"❌ Error posting to Instagram: {str(e)}")
             raise
+
+    def publish_reels(self, content: str, video_url: str, dry_run: bool = False):
+        """Publish a Reels video to Instagram.
+
+        Args:
+            content: Caption text for the Reel.
+            video_url: Public URL to the video file (must be accessible by Meta).
+            dry_run: If True, skip actual API calls.
+
+        Returns:
+            dict with media id and URL.
+        """
+        if dry_run:
+            logger.info(f"[DRY RUN] Would post Reel to Instagram:\n{content}")
+            logger.info(f"[DRY RUN] Video URL: {video_url}")
+            return {'id': 'dry_run', 'text': content, 'type': 'reels'}
+
+        try:
+            # STEP 0: Ensure valid token
+            logger.info("🔐 Validating Instagram token...")
+            self._ensure_valid_token()
+
+            # Step 1: Create REELS media container
+            logger.info("📦 Creating Reels media container...")
+            container_url = f"{self.graph_api_url}/{self.instagram_account_id}/media"
+            container_params = {
+                'media_type': 'REELS',
+                'video_url': video_url,
+                'caption': content,
+                'access_token': self.access_token,
+            }
+
+            response = requests.post(container_url, params=container_params)
+            response.raise_for_status()
+            creation_id = response.json().get('id')
+
+            if not creation_id:
+                raise ValueError("No creation_id returned from Instagram API")
+
+            logger.info(f"✅ Reels container created: {creation_id}")
+
+            # Step 2: Wait for video processing (videos take longer)
+            logger.info("⏳ Waiting for video to be processed...")
+            if not self._check_container_status(creation_id, max_attempts=60, delay=3):
+                raise ValueError("Reels container not ready after maximum attempts")
+
+            # Step 3: Ensure token still valid
+            logger.info("🔐 Validating token before publishing...")
+            self._ensure_valid_token()
+
+            # Step 4: Publish the Reels container
+            logger.info("📤 Publishing Reels...")
+            publish_url = f"{self.graph_api_url}/{self.instagram_account_id}/media_publish"
+            publish_params = {
+                'creation_id': creation_id,
+                'access_token': self.access_token,
+            }
+
+            publish_response = requests.post(publish_url, params=publish_params)
+            publish_response.raise_for_status()
+
+            media_id = publish_response.json().get('id')
+            logger.info(f"✅ Reels published: {media_id}")
+
+            return {
+                'id': media_id,
+                'creation_id': creation_id,
+                'type': 'reels',
+                'url': f"https://www.instagram.com/reel/{media_id}/",
+            }
+
+        except requests.exceptions.HTTPError as e:
+            error_msg = f"Instagram Reels API error: {str(e)}"
+            if hasattr(e.response, 'text'):
+                error_msg += f" - {e.response.text}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        except Exception as e:
+            logger.error(f"❌ Error posting Reels: {str(e)}")
+            raise

@@ -9,10 +9,7 @@ import logging
 import requests
 from datetime import datetime
 from typing import Optional, Dict
-from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

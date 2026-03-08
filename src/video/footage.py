@@ -1,0 +1,265 @@
+"""
+Video package — Stock Footage Fetcher (Pexels API).
+
+Searches Pexels for royalty-free video clips matching the news topic.
+Falls back to downloading the article's static image for Ken Burns.
+
+Cost: $0/month  (Pexels API is free — https://www.pexels.com/api/)
+"""
+
+import logging
+import os
+import re
+from typing import List, Optional
+
+import requests as http_requests
+from PIL import Image
+
+from .config import (
+    PEXELS_API_KEY,
+    PEXELS_IMAGE_SEARCH_URL,
+    PEXELS_PER_PAGE,
+    PEXELS_VIDEO_SEARCH_URL,
+    STOCK_CLIP_COUNT,
+)
+
+logger = logging.getLogger(__name__)
+
+# ── Turkish → English keyword map for better Pexels results ──────────────────
+
+_TR_EN = {
+    "hollanda": "netherlands", "türkiye": "turkey", "almanya": "germany",
+    "fransa": "france", "ingiltere": "england", "avrupa": "europe",
+    "bisiklet": "cycling bicycle", "deprem": "earthquake",
+    "sel": "flood", "savaş": "war", "barış": "peace",
+    "ekonomi": "economy finance", "sağlık": "health hospital",
+    "eğitim": "education school", "teknoloji": "technology",
+    "hükümet": "government parliament", "seçim": "election voting",
+    "iklim": "climate weather", "enerji": "energy solar wind",
+    "polis": "police", "mahkeme": "court justice",
+    "futbol": "football soccer", "spor": "sports",
+    "ulaşım": "transport traffic", "altyapı": "infrastructure road",
+    "göç": "migration immigration", "çevre": "environment nature",
+    "tarım": "agriculture farm", "konut": "housing building",
+    "havacılık": "aviation airplane", "deniz": "sea ocean",
+    "orman": "forest fire", "nükleer": "nuclear energy",
+}
+
+_STOP_WORDS = {
+    "ve", "bir", "bu", "da", "de", "için", "ile", "olan", "olarak",
+    "gibi", "daha", "en", "çok", "var", "yok", "ne", "kadar",
+    "sonra", "önce", "şu", "her", "o", "mi", "mu", "mı", "mü",
+    "ise", "ya", "ki", "hem", "ama", "fakat", "ancak", "yeni",
+    "büyük", "küçük", "iyi", "kötü", "ilk", "son", "tüm",
+}
+
+
+# ── Public API ────────────────────────────────────────────────────────────────
+
+def extract_search_query(title: str, content: str = "") -> str:
+    """Extract English search keywords from Turkish title/content."""
+    text = f"{title} {content}".lower()
+    words = re.findall(r"[a-zçğıöşü]+", text)
+
+    english: List[str] = []
+    for w in words:
+        if w in _STOP_WORDS or len(w) < 3:
+            continue
+        if w in _TR_EN:
+            english.append(_TR_EN[w])
+        elif len(w) > 5:
+            english.append(w)
+
+    if not english:
+        english = [w for w in words if w not in _STOP_WORDS and len(w) > 4][:3]
+    if not english:
+        english = ["news", "breaking"]
+
+    return " ".join(english[:4])
+
+
+def fetch_stock_clips(
+    title: str,
+    content: str,
+    tmp_dir: str,
+    count: int = STOCK_CLIP_COUNT,
+) -> List[str]:
+    """Fetch stock video clips from Pexels matching the news topic.
+
+    Requests more than *count* to compensate for download failures, then
+    falls back to a broader single-keyword search if the first query
+    returns too few results.
+
+    Returns list of local file paths (up to *count*).
+    """
+    api_key = PEXELS_API_KEY or os.environ.get("PEXELS_API_KEY", "")
+    if not api_key:
+        logger.info("ℹ️  PEXELS_API_KEY not set — skipping stock footage")
+        return []
+
+    query = extract_search_query(title, content)
+    logger.info(f"🔍 Searching Pexels videos for: '{query}'")
+
+    videos = _pexels_video_search(api_key, query, per_page=PEXELS_PER_PAGE)
+
+    # Broader fallback — first keyword only
+    if len(videos) < count:
+        broad = query.split()[0] if query.split() else "news"
+        if broad != query:
+            logger.info(f"🔍 Broadening search to: '{broad}'")
+            extra = _pexels_video_search(api_key, broad, per_page=PEXELS_PER_PAGE)
+            seen_ids = {v.get("id") for v in videos}
+            videos.extend(v for v in extra if v.get("id") not in seen_ids)
+
+    if not videos:
+        logger.warning(f"⚠️  No Pexels video results for '{query}'")
+        return []
+
+    paths: List[str] = []
+    for idx, video in enumerate(videos):
+        if len(paths) >= count:
+            break
+        clip_path = _download_clip(video, idx, tmp_dir)
+        if clip_path:
+            paths.append(clip_path)
+
+    logger.info(f"📥 Downloaded {len(paths)}/{count} stock clips")
+    return paths
+
+
+def _pexels_video_search(
+    api_key: str, query: str, per_page: int = 15,
+) -> list:
+    """Search Pexels videos API. Returns list of video dicts."""
+    try:
+        resp = http_requests.get(
+            PEXELS_VIDEO_SEARCH_URL,
+            headers={"Authorization": api_key},
+            params={"query": query, "per_page": per_page},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        return resp.json().get("videos", [])
+    except Exception as e:
+        logger.warning(f"⚠️  Pexels video search error: {e}")
+        return []
+
+
+def download_image(url: str, tmp_dir: str) -> Optional[str]:
+    """Download news article image.  Returns local path or None."""
+    if not url:
+        return None
+    try:
+        resp = http_requests.get(
+            url,
+            timeout=15,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/122.0.0.0 Safari/537.36"
+                ),
+                "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9,nl;q=0.8",
+                "Referer": url.split("/")[0] + "//" + url.split("/")[2] + "/",
+            },
+            allow_redirects=True,
+        )
+        resp.raise_for_status()
+        img_path = os.path.join(tmp_dir, "news_image.jpg")
+        with open(img_path, "wb") as f:
+            f.write(resp.content)
+        with Image.open(img_path) as img:
+            img.verify()
+        return img_path
+    except Exception as e:
+        logger.warning(f"⚠️  Could not download image: {e}")
+        return None
+
+
+def fetch_stock_image(
+    title: str, content: str, tmp_dir: str,
+) -> Optional[str]:
+    """Search Pexels for a single stock PHOTO matching the news topic.
+
+    Returns local path to downloaded image, or None.
+    Useful as a Ken Burns fallback when video clips aren't available.
+    """
+    api_key = PEXELS_API_KEY or os.environ.get("PEXELS_API_KEY", "")
+    if not api_key:
+        return None
+
+    query = extract_search_query(title, content)
+    logger.info(f"🖼️  Searching Pexels images for: '{query}'")
+
+    try:
+        resp = http_requests.get(
+            PEXELS_IMAGE_SEARCH_URL,
+            headers={"Authorization": api_key},
+            params={"query": query, "per_page": 1, "orientation": "portrait"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        photos = resp.json().get("photos", [])
+        if not photos:
+            logger.warning(f"⚠️  No Pexels images for '{query}'")
+            return None
+
+        img_url = photos[0]["src"].get("large2x") or photos[0]["src"]["large"]
+        return download_image(img_url, tmp_dir)
+    except Exception as e:
+        logger.warning(f"⚠️  Pexels image search error: {e}")
+        return None
+
+
+# ── Internal ──────────────────────────────────────────────────────────────────
+
+def _download_clip(
+    video_data: dict, idx: int, tmp_dir: str,
+) -> Optional[str]:
+    """Download a single Pexels video clip.
+
+    Prefers the highest-quality MP4 (≥1080p → ≥720p → any).
+    """
+    video_files = video_data.get("video_files", [])
+    if not video_files:
+        return None
+
+    mp4s = [vf for vf in video_files if vf.get("file_type") == "video/mp4"]
+    if not mp4s:
+        mp4s = video_files
+    mp4s.sort(
+        key=lambda v: v.get("height", 0) * v.get("width", 0), reverse=True,
+    )
+
+    chosen = None
+    for vf in mp4s:
+        if vf.get("height", 0) >= 1080:
+            chosen = vf
+            break
+    if not chosen:
+        for vf in mp4s:
+            if vf.get("height", 0) >= 720:
+                chosen = vf
+                break
+    if not chosen:
+        chosen = mp4s[0]
+
+    url = chosen.get("link")
+    if not url:
+        return None
+
+    try:
+        resp = http_requests.get(url, timeout=60, stream=True)
+        resp.raise_for_status()
+        path = os.path.join(tmp_dir, f"stock_{idx}.mp4")
+        with open(path, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=65536):
+                f.write(chunk)
+        logger.info(
+            f"   📥 clip {idx}: {chosen.get('width')}×{chosen.get('height')}"
+        )
+        return path
+    except Exception as e:
+        logger.warning(f"⚠️  Failed to download clip {idx}: {e}")
+        return None

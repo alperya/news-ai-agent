@@ -24,13 +24,13 @@ variable "project_name" {
 variable "lambda_timeout" {
   description = "Lambda timeout in seconds"
   type        = number
-  default     = 180  # 3 minutes - reduced from 300 for cost optimization
+  default     = 900  # 15 minutes - video rendering on Lambda needs generous timeout
 }
 
 variable "lambda_memory" {
   description = "Lambda memory in MB"
   type        = number
-  default     = 256  # 256 MB - reduced from 512 for cost optimization
+  default     = 2048  # 2 GB - video rendering needs RAM + more memory = more Lambda CPU
 }
 
 data "aws_caller_identity" "current" {}
@@ -167,7 +167,8 @@ resource "aws_cloudwatch_log_group" "lambda_logs" {
 
 # ===== Lambda Function =====
 resource "aws_lambda_function" "news_agent" {
-  filename         = "../../lambda_deployment.zip"
+  s3_bucket        = aws_s3_bucket.results.id
+  s3_key           = "deployments/lambda_deployment.zip"
   function_name    = var.project_name
   role            = aws_iam_role.lambda_role.arn
   handler         = "lambda_handler.lambda_handler"
@@ -242,6 +243,7 @@ resource "aws_cloudwatch_event_target" "afternoon_target" {
   input = jsonencode({
     schedule = "afternoon"
     time     = "12:30"
+    format   = "reels"
   })
 }
 
