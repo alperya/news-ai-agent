@@ -68,6 +68,7 @@ htmlcov/
 *.tfstate.*
 .terraform.lock.hcl
 tfplan
+terraform.tfvars
 
 # Lambda
 lambda_build/

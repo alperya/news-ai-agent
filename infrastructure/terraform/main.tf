@@ -33,6 +33,12 @@ variable "lambda_memory" {
   default     = 3008  # ~3 GB (Lambda max) - video rendering needs RAM + more memory = more Lambda CPU
 }
 
+variable "alert_email" {
+  description = "Email address for error alerts (leave empty to disable)"
+  type        = string
+  default     = ""
+}
+
 data "aws_caller_identity" "current" {}
 
 # ===== S3 Bucket for Results =====
@@ -85,6 +91,25 @@ resource "aws_secretsmanager_secret" "credentials" {
     Environment = "production"
     ManagedBy   = "terraform"
   }
+}
+
+# ===== SNS Topic for Error Alerts =====
+resource "aws_sns_topic" "alerts" {
+  count = var.alert_email != "" ? 1 : 0
+  name  = "${var.project_name}-alerts"
+
+  tags = {
+    Name        = "${var.project_name}-alerts"
+    Environment = "production"
+    ManagedBy   = "terraform"
+  }
+}
+
+resource "aws_sns_topic_subscription" "alert_email" {
+  count     = var.alert_email != "" ? 1 : 0
+  topic_arn = aws_sns_topic.alerts[0].arn
+  protocol  = "email"
+  endpoint  = var.alert_email
 }
 
 # ===== IAM Role for Lambda =====
@@ -148,6 +173,13 @@ resource "aws_iam_role_policy" "lambda_policy" {
           "secretsmanager:GetSecretValue"
         ]
         Resource = aws_secretsmanager_secret.credentials.arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "sns:Publish"
+        ]
+        Resource = "arn:aws:sns:${var.aws_region}:${data.aws_caller_identity.current.account_id}:${var.project_name}-*"
       }
     ]
   })
@@ -160,6 +192,34 @@ resource "aws_cloudwatch_log_group" "lambda_logs" {
   
   tags = {
     Name        = "${var.project_name}-logs"
+    Environment = "production"
+    ManagedBy   = "terraform"
+  }
+}
+
+# ===== CloudWatch Alarm for Lambda Errors (OOM, Timeout, Crashes) =====
+resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
+  count               = var.alert_email != "" ? 1 : 0
+  alarm_name          = "${var.project_name}-lambda-errors"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "Errors"
+  namespace           = "AWS/Lambda"
+  period              = 300
+  statistic           = "Sum"
+  threshold           = 0
+  alarm_description   = "Alert on Lambda errors — OOM, timeout, unhandled crashes"
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    FunctionName = var.project_name
+  }
+
+  alarm_actions = [aws_sns_topic.alerts[0].arn]
+  ok_actions    = [aws_sns_topic.alerts[0].arn]
+
+  tags = {
+    Name        = "${var.project_name}-error-alarm"
     Environment = "production"
     ManagedBy   = "terraform"
   }
@@ -180,8 +240,9 @@ resource "aws_lambda_function" "news_agent" {
 
   environment {
     variables = {
-      RESULTS_BUCKET = aws_s3_bucket.results.id
-      SECRET_NAME    = aws_secretsmanager_secret.credentials.name
+      RESULTS_BUCKET      = aws_s3_bucket.results.id
+      SECRET_NAME         = aws_secretsmanager_secret.credentials.name
+      SNS_ALERT_TOPIC_ARN = var.alert_email != "" ? aws_sns_topic.alerts[0].arn : ""
     }
   }
   
@@ -320,4 +381,9 @@ output "secrets_manager_secret_name" {
 output "cloudwatch_log_group" {
   description = "CloudWatch log group name"
   value       = aws_cloudwatch_log_group.lambda_logs.name
+}
+
+output "sns_alert_topic_arn" {
+  description = "SNS topic ARN for error alerts"
+  value       = var.alert_email != "" ? aws_sns_topic.alerts[0].arn : "disabled"
 }

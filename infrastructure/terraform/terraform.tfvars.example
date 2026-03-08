@@ -16,3 +16,7 @@ lambda_timeout = 180
 # Default: 256 MB - minimal cost (~$0.20/month)
 # Increase to 512 if memory errors occur (~$0.40/month)
 lambda_memory = 256
+
+# Error alert email (optional — leave empty to disable)
+# Must match ALERT_EMAIL in .env
+alert_email = ""

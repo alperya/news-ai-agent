@@ -20,6 +20,7 @@ from news_scraper import DutchNewsScraper
 from ai_agent import NewsAIAgent
 from social_publisher import InstagramPublisher
 from video import create_news_video
+from notifier import send_alert, alert_on_exception, detect_error_type
 
 # Configure logging for Lambda
 logger = logging.getLogger()
@@ -344,6 +345,12 @@ def lambda_handler(event, context):
                 
             except Exception as e:
                 logger.error(f"❌ Failed to publish post {idx}: {str(e)}")
+                error_type = detect_error_type(e)
+                alert_on_exception(
+                    f"Post {idx} publish failed",
+                    e,
+                    error_type,
+                )
                 # Continue with next post if available
                 continue
         
@@ -352,6 +359,15 @@ def lambda_handler(event, context):
         logger.info(f"✅ Lambda execution completed successfully!")
         logger.info(f"📊 Published: {published_count}/{len(posts)} posts")
         logger.info("="*60)
+
+        if published_count == 0 and len(posts) > 0:
+            send_alert(
+                "Hiçbir post yayınlanamadı",
+                f"{len(posts)} post oluşturuldu ama hiçbiri yayınlanamadı.\n"
+                f"Timestamp: {timestamp}\n"
+                f"Olası neden: Instagram token süresi dolmuş olabilir.",
+                "PUBLISH_FAILED",
+            )
         
         # Save results to S3
         results = {
@@ -380,6 +396,8 @@ def lambda_handler(event, context):
         
     except Exception as e:
         logger.error(f"\n❌ Lambda execution failed: {str(e)}", exc_info=True)
+        error_type = detect_error_type(e)
+        alert_on_exception("Lambda execution failed", e, error_type)
         return {
             'statusCode': 500,
             'body': json.dumps({
