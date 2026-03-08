@@ -100,9 +100,18 @@ def fetch_stock_clips(
     query = extract_search_query(title, content)
     logger.info(f"🔍 Searching Pexels videos for: '{query}'")
 
-    videos = _pexels_video_search(api_key, query, per_page=PEXELS_PER_PAGE)
+    # Prefer portrait clips for 9:16 Reels
+    videos = _pexels_video_search(
+        api_key, query, per_page=PEXELS_PER_PAGE, orientation="portrait",
+    )
 
-    # Broader fallback — first keyword only
+    # Fallback: any orientation if portrait yields too few
+    if len(videos) < count:
+        extra = _pexels_video_search(api_key, query, per_page=PEXELS_PER_PAGE)
+        seen_ids = {v.get("id") for v in videos}
+        videos.extend(v for v in extra if v.get("id") not in seen_ids)
+
+    # Broader fallback — first keyword, any orientation
     if len(videos) < count:
         broad = query.split()[0] if query.split() else "news"
         if broad != query:
@@ -128,14 +137,17 @@ def fetch_stock_clips(
 
 
 def _pexels_video_search(
-    api_key: str, query: str, per_page: int = 15,
+    api_key: str, query: str, per_page: int = 15, orientation: str = "",
 ) -> list:
     """Search Pexels videos API. Returns list of video dicts."""
     try:
+        params: dict = {"query": query, "per_page": per_page}
+        if orientation:
+            params["orientation"] = orientation
         resp = http_requests.get(
             PEXELS_VIDEO_SEARCH_URL,
             headers={"Authorization": api_key},
-            params={"query": query, "per_page": per_page},
+            params=params,
             timeout=15,
         )
         resp.raise_for_status()
@@ -219,7 +231,9 @@ def _download_clip(
 ) -> Optional[str]:
     """Download a single Pexels video clip.
 
-    Prefers the highest-quality MP4 (≥1080p → ≥720p → any).
+    Strictly caps at 1080×1920 — 4K is never downloaded because
+    Instagram Reels downscales to 1080×1920 anyway, and 4K
+    clips consume too much Lambda RAM.
     """
     video_files = video_data.get("video_files", [])
     if not video_files:
@@ -228,22 +242,21 @@ def _download_clip(
     mp4s = [vf for vf in video_files if vf.get("file_type") == "video/mp4"]
     if not mp4s:
         mp4s = video_files
+
+    # Hard cap: discard anything above 1920 in either dimension
+    mp4s = [
+        vf for vf in mp4s
+        if vf.get("height", 0) <= 1920 and vf.get("width", 0) <= 1920
+    ]
+    if not mp4s:
+        logger.info(f"   ⏭️  clip {idx}: skipped (only 4K available)")
+        return None
+
+    # Sort by resolution descending — pick the best within our cap
     mp4s.sort(
         key=lambda v: v.get("height", 0) * v.get("width", 0), reverse=True,
     )
-
-    chosen = None
-    for vf in mp4s:
-        if vf.get("height", 0) >= 1080:
-            chosen = vf
-            break
-    if not chosen:
-        for vf in mp4s:
-            if vf.get("height", 0) >= 720:
-                chosen = vf
-                break
-    if not chosen:
-        chosen = mp4s[0]
+    chosen = mp4s[0]  # highest within ≤1920 cap
 
     url = chosen.get("link")
     if not url:

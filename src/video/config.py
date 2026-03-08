@@ -78,8 +78,8 @@ MUSIC_FILE = _SRC_DIR / "music" / "news_music.mp3"
 PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY", "")
 PEXELS_VIDEO_SEARCH_URL = "https://api.pexels.com/videos/search"
 PEXELS_IMAGE_SEARCH_URL = "https://api.pexels.com/v1/search"
-STOCK_CLIP_COUNT = 6
-PEXELS_PER_PAGE = 15       # request extra, pick best N
+STOCK_CLIP_COUNT = 9
+PEXELS_PER_PAGE = 20       # request extra, pick best N
 MIN_CLIP_DURATION = 3.0    # seconds — minimum per scene
 
 # ── Ken Burns ─────────────────────────────────────────────────────────────────

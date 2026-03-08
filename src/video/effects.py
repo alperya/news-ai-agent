@@ -6,10 +6,13 @@ Ken Burns, gradient overlays, subtitle clips, stock-footage scene assembly.
 
 import logging
 import os
+import shutil
+import subprocess
+import tempfile
 from typing import List
 
 import numpy as np
-from PIL import Image, ImageFilter
+from PIL import Image, ImageEnhance, ImageFilter
 from moviepy import (
     ColorClip,
     CompositeVideoClip,
@@ -44,32 +47,110 @@ def compose_stock_scenes(
 ) -> CompositeVideoClip:
     """Compose multiple stock video clips into a single portrait video.
 
-    Each clip is resized to fill 1080×1920 (centre-cropped) and trimmed
-    to an equal share of *total_duration*.
+    Processes clips **sequentially** via ffmpeg to stay within Lambda's
+    3 GB RAM limit:
+      1. Each clip → trim + resize to 1080×1920 → temp file (then close)
+      2. All temp files → ffmpeg concat demuxer → single merged.mp4
+      3. Open merged.mp4 as one VideoFileClip (1 reader, not 9)
+
+    Landscape clips get a blurred-dark background so the full frame is
+    visible instead of being aggressively cropped.
     """
     if not clip_paths:
         return make_fallback_background(total_duration)
 
-    segment_dur = max(total_duration / len(clip_paths), MIN_CLIP_DURATION)
-    trimmed: list = []
+    from imageio_ffmpeg import get_ffmpeg_exe
+    ffmpeg_bin = get_ffmpeg_exe()
 
-    for path in clip_paths:
+    segment_dur = max(total_duration / len(clip_paths), MIN_CLIP_DURATION)
+    proc_dir = os.path.join(tempfile.gettempdir(), "_stock_proc")
+    if os.path.exists(proc_dir):
+        shutil.rmtree(proc_dir, ignore_errors=True)
+    os.makedirs(proc_dir, exist_ok=True)
+
+    trimmed: list[str] = []
+
+    for i, path in enumerate(clip_paths):
         try:
             clip = VideoFileClip(path)
             dur = min(segment_dur, clip.duration)
-            clip = clip.subclipped(0, dur)
-            clip = _fit_to_portrait(clip)
-            trimmed.append(clip)
+            is_portrait = (clip.h / clip.w) >= (VIDEO_HEIGHT / VIDEO_WIDTH) * 0.85
+            clip.close()
+
+            out = os.path.join(proc_dir, f"seg_{i}.mp4")
+
+            if is_portrait:
+                vf = (
+                    f"scale={VIDEO_WIDTH}:{VIDEO_HEIGHT}:"
+                    f"force_original_aspect_ratio=increase,"
+                    f"crop={VIDEO_WIDTH}:{VIDEO_HEIGHT}"
+                )
+                cmd = [
+                    ffmpeg_bin, "-y", "-i", path, "-t", str(dur),
+                    "-vf", vf,
+                    "-an", "-c:v", "libx264", "-preset", "ultrafast",
+                    "-pix_fmt", "yuv420p", "-r", str(FPS), out,
+                ]
+            else:
+                # Landscape: blurred dark background + centered foreground
+                fc = (
+                    f"split[bg][fg];"
+                    f"[bg]scale={VIDEO_WIDTH}:{VIDEO_HEIGHT}:"
+                    f"force_original_aspect_ratio=increase,"
+                    f"crop={VIDEO_WIDTH}:{VIDEO_HEIGHT},"
+                    f"gblur=sigma=25,eq=brightness=-0.75[bgo];"
+                    f"[fg]scale={VIDEO_WIDTH}:{VIDEO_HEIGHT}:"
+                    f"force_original_aspect_ratio=decrease[fgo];"
+                    f"[bgo][fgo]overlay=(W-w)/2:(H-h)/2"
+                )
+                cmd = [
+                    ffmpeg_bin, "-y", "-i", path, "-t", str(dur),
+                    "-filter_complex", fc,
+                    "-an", "-c:v", "libx264", "-preset", "ultrafast",
+                    "-pix_fmt", "yuv420p", "-r", str(FPS), out,
+                ]
+
+            result = subprocess.run(cmd, capture_output=True, timeout=60)
+            if result.returncode == 0 and os.path.exists(out):
+                trimmed.append(out)
+                logger.info(f"   ✂️  scene {i+1}/{len(clip_paths)} ready")
+            else:
+                stderr = result.stderr.decode(errors="replace")[-300:]
+                logger.warning(f"⚠️  ffmpeg clip {i}: {stderr}")
         except Exception as e:
             logger.warning(f"⚠️  Could not process clip {path}: {e}")
-            continue
 
     if not trimmed:
+        shutil.rmtree(proc_dir, ignore_errors=True)
         return make_fallback_background(total_duration)
 
-    combined = concatenate_videoclips(trimmed, method="compose")
+    # Concatenate all segments — re-encode to guarantee compatibility
+    # (segments from different Pexels sources may have incompatible
+    # codec profiles / timestamp bases that break -c copy concat)
+    concat_file = os.path.join(proc_dir, "list.txt")
+    with open(concat_file, "w") as f:
+        for p in trimmed:
+            f.write(f"file '{p}'\n")
 
-    # Loop if shorter than needed
+    merged_path = os.path.join(proc_dir, "merged.mp4")
+    concat_result = subprocess.run(
+        [ffmpeg_bin, "-y", "-f", "concat", "-safe", "0",
+         "-i", concat_file,
+         "-c:v", "libx264", "-preset", "ultrafast",
+         "-pix_fmt", "yuv420p", "-r", str(FPS),
+         "-an", merged_path],
+        capture_output=True, timeout=180,
+    )
+    if concat_result.returncode != 0:
+        stderr = concat_result.stderr.decode(errors="replace")[-500:]
+        logger.error(f"❌ ffmpeg concat failed: {stderr}")
+        shutil.rmtree(proc_dir, ignore_errors=True)
+        return make_fallback_background(total_duration)
+
+    logger.info(f"   🎞️  Merged {len(trimmed)} scenes → merged.mp4")
+
+    # Open single merged file (1 ffmpeg reader instead of 9)
+    combined = VideoFileClip(merged_path)
     if combined.duration < total_duration:
         loops = int(total_duration / combined.duration) + 1
         combined = concatenate_videoclips(
@@ -86,29 +167,41 @@ def compose_stock_scenes(
 # ── Ken Burns (still image) ──────────────────────────────────────────────────
 
 def prepare_image_for_portrait(img_path: str, tmp_dir: str) -> str:
-    """Resize / crop image with ~35 % overshoot for Ken Burns room."""
+    """Create portrait composite: full image centred + blurred dark background.
+
+    Result is ~35 % larger than VIDEO dimensions to give Ken Burns room.
+    Landscape images are shown in full (no aggressive crop) with a
+    blurred, darkened version of the image filling the background.
+    """
     with Image.open(img_path) as img:
         img = img.convert("RGB")
         target_w = int(VIDEO_WIDTH * 1.35)
         target_h = int(VIDEO_HEIGHT * 1.35)
-        img_ratio = img.width / img.height
-        target_ratio = target_w / target_h
 
-        if img_ratio > target_ratio:
-            new_h = target_h
-            new_w = int(img.width * (target_h / img.height))
-        else:
-            new_w = target_w
-            new_h = int(img.height * (target_w / img.width))
+        # 1. Blurred background — fill the canvas
+        bg_scale = max(target_w / img.width, target_h / img.height)
+        bg = img.resize(
+            (int(img.width * bg_scale), int(img.height * bg_scale)),
+            Image.LANCZOS,
+        )
+        left = (bg.width - target_w) // 2
+        top = (bg.height - target_h) // 2
+        bg = bg.crop((left, top, left + target_w, top + target_h))
+        bg = bg.filter(ImageFilter.GaussianBlur(radius=30))
+        bg = ImageEnhance.Brightness(bg).enhance(0.25)
 
-        img = img.resize((new_w, new_h), Image.LANCZOS)
-        left = (new_w - target_w) // 2
-        top = (new_h - target_h) // 2
-        img = img.crop((left, top, left + target_w, top + target_h))
-        img = img.filter(ImageFilter.GaussianBlur(radius=2))
+        # 2. Foreground — fit original within canvas (no crop)
+        fg_scale = min(target_w / img.width, target_h / img.height)
+        fg = img.resize(
+            (int(img.width * fg_scale), int(img.height * fg_scale)),
+            Image.LANCZOS,
+        )
+        x = (target_w - fg.width) // 2
+        y = (target_h - fg.height) // 2
+        bg.paste(fg, (x, y))
 
         out = os.path.join(tmp_dir, "portrait_bg.jpg")
-        img.save(out, "JPEG", quality=92)
+        bg.save(out, "JPEG", quality=92)
         return out
 
 
@@ -300,15 +393,50 @@ def make_fallback_background(duration: float) -> CompositeVideoClip:
 # ── Internal ──────────────────────────────────────────────────────────────────
 
 def _fit_to_portrait(clip) -> VideoClip:
-    """Resize and centre-crop any clip to fill 1080×1920."""
-    scale = max(VIDEO_WIDTH / clip.w, VIDEO_HEIGHT / clip.h)
-    new_w = int(clip.w * scale)
-    new_h = int(clip.h * scale)
-    clip = clip.resized((new_w, new_h))
-    x1 = (new_w - VIDEO_WIDTH) // 2
-    y1 = (new_h - VIDEO_HEIGHT) // 2
-    return clip.cropped(
-        x1=x1, y1=y1, x2=x1 + VIDEO_WIDTH, y2=y1 + VIDEO_HEIGHT,
+    """Fit clip into 1080×1920 portrait frame.
+
+    Portrait-ish clips → simple fill-and-centre-crop (minimal loss).
+    Landscape / square  → blurred static background + centred fitted clip
+    so the full content remains visible.
+    """
+    # If clip is already close to portrait ratio, simple fill is fine
+    if clip.h / clip.w >= (VIDEO_HEIGHT / VIDEO_WIDTH) * 0.85:
+        scale = max(VIDEO_WIDTH / clip.w, VIDEO_HEIGHT / clip.h)
+        new_w = int(clip.w * scale)
+        new_h = int(clip.h * scale)
+        resized = clip.resized((new_w, new_h))
+        x1 = (new_w - VIDEO_WIDTH) // 2
+        y1 = (new_h - VIDEO_HEIGHT) // 2
+        return resized.cropped(
+            x1=x1, y1=y1, x2=x1 + VIDEO_WIDTH, y2=y1 + VIDEO_HEIGHT,
+        )
+
+    # Landscape / square → blurred first-frame background + centred clip
+    frame0 = clip.get_frame(0)
+    pil_bg = Image.fromarray(frame0)
+    bg_scale = max(VIDEO_WIDTH / pil_bg.width, VIDEO_HEIGHT / pil_bg.height)
+    pil_bg = pil_bg.resize(
+        (int(pil_bg.width * bg_scale), int(pil_bg.height * bg_scale)),
+        Image.LANCZOS,
+    )
+    left = (pil_bg.width - VIDEO_WIDTH) // 2
+    top = (pil_bg.height - VIDEO_HEIGHT) // 2
+    pil_bg = pil_bg.crop((left, top, left + VIDEO_WIDTH, top + VIDEO_HEIGHT))
+    pil_bg = pil_bg.filter(ImageFilter.GaussianBlur(radius=25))
+    pil_bg = ImageEnhance.Brightness(pil_bg).enhance(0.25)
+
+    bg_clip = ImageClip(np.array(pil_bg)).with_duration(clip.duration)
+
+    fg_scale = min(VIDEO_WIDTH / clip.w, VIDEO_HEIGHT / clip.h)
+    fg_w = int(clip.w * fg_scale)
+    fg_h = int(clip.h * fg_scale)
+    fg = clip.resized((fg_w, fg_h))
+    fg = fg.with_position(
+        ((VIDEO_WIDTH - fg_w) // 2, (VIDEO_HEIGHT - fg_h) // 2),
+    )
+
+    return CompositeVideoClip(
+        [bg_clip, fg], size=(VIDEO_WIDTH, VIDEO_HEIGHT),
     )
 
 

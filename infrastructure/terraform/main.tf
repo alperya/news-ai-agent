@@ -30,7 +30,7 @@ variable "lambda_timeout" {
 variable "lambda_memory" {
   description = "Lambda memory in MB"
   type        = number
-  default     = 2048  # 2 GB - video rendering needs RAM + more memory = more Lambda CPU
+  default     = 3008  # ~3 GB (Lambda max) - video rendering needs RAM + more memory = more Lambda CPU
 }
 
 data "aws_caller_identity" "current" {}

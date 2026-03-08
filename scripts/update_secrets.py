@@ -38,6 +38,11 @@ secret_payload = {
     'AI_PROMPT_QUALITY_CHECK': quality_prompt,
 }
 
+# Include optional API keys if set in .env
+for _key in ('ELEVENLABS_API_KEY', 'ELEVENLABS_VOICE_ID', 'PEXELS_API_KEY'):
+    if env_vars.get(_key):
+        secret_payload[_key] = env_vars[_key]
+
 # Update AWS Secrets Manager
 try:
     client = boto3.client('secretsmanager', region_name='eu-central-1')
