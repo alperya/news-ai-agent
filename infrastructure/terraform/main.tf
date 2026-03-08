@@ -216,7 +216,6 @@ resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
   }
 
   alarm_actions = [aws_sns_topic.alerts[0].arn]
-  ok_actions    = [aws_sns_topic.alerts[0].arn]
 
   tags = {
     Name        = "${var.project_name}-error-alarm"

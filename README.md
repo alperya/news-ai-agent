@@ -1,10 +1,10 @@
 # 🤖 News AI Agent — Dutch News Automation
 
-An intelligent AI-powered pipeline that automatically scrapes Dutch news from NOS and NU.nl, processes them with Claude AI, and publishes engaging content to Instagram — both as photo posts and auto-generated Reels videos with TTS narration.
+An intelligent AI-powered pipeline that automatically scrapes Dutch news from NOS and RTL Nieuws, processes them with Claude AI, and publishes engaging content to Instagram — both as photo posts and auto-generated Reels videos with TTS narration.
 
 ## 📦 Features
 
-- ✅ Multi-source RSS scraping (NOS, NU.nl)
+- ✅ Multi-source RSS scraping (NOS, RTL Nieuws)
 - ✅ Claude Opus 4.6 AI content generation with Holland-priority news selection
 - ✅ Quality gate: structural validation + AI language review (Claude Haiku 4.5) before publishing
 - ✅ Instagram Graph API integration with automatic token refresh
@@ -15,6 +15,7 @@ An intelligent AI-powered pipeline that automatically scrapes Dutch news from NO
 - ✅ AWS Lambda deployment with scheduled posting (3× daily)
 - ✅ Infrastructure as Code (Terraform)
 - ✅ AWS Secrets Manager for credential management
+- ✅ Email alerts on errors (OOM, token expiry, publish failures) via AWS SNS
 - ✅ Objective, news-agency style content (BBC/Reuters style)
 
 ## 🎬 Reels Video Pipeline
@@ -27,7 +28,7 @@ The afternoon posting slot automatically generates an Instagram Reels video:
 4. **Background Music** — Ambient news music with 1-second fade-out
 5. **4-tier Visual Fallback** — Pexels video → article image → Pexels photo → animated gradient
 
-Video specs: 1080×1920 (9:16), 30 FPS, H.264 High, 4000 kbps, AAC audio.
+Video specs: 1080×1920 (9:16), 30 FPS, H.264 High, 4000 kbps, AAC audio, 9 stock clips per video.
 
 ## 🚀 Quick Start
 
@@ -88,9 +89,10 @@ python3 scripts/update_secrets.py
 ├── src/                           # Application source code
 │   ├── main.py                    # Local pipeline runner (CLI)
 │   ├── ai_agent.py                # Claude AI content processing
-│   ├── news_scraper.py            # RSS scraping (NOS, NU.nl)
+│   ├── news_scraper.py            # RSS scraping (NOS, RTL Nieuws)
 │   ├── social_publisher.py        # Instagram publishing (photo + Reels)
 │   ├── token_manager.py           # Instagram token refresh management
+│   ├── notifier.py                # Error alerts via AWS SNS (email)
 │   ├── video/                     # 🎬 Reels video generation package
 │   │   ├── __init__.py            # Public API exports
 │   │   ├── config.py              # Video constants & env configuration
@@ -157,6 +159,7 @@ All configuration is managed through environment variables (`.env` locally, AWS 
 | `ELEVENLABS_API_KEY` | ❌ | ElevenLabs TTS API key (falls back to free edge-tts) |
 | `ELEVENLABS_VOICE_ID` | ❌ | ElevenLabs voice ID (default: Daniel) |
 | `PEXELS_API_KEY` | ❌ | Pexels API key for stock footage (falls back to article image) |
+| `ALERT_EMAIL` | ❌ | Email for Lambda error alerts — OOM, token expiry, publish failures |
 | `REVIEW_MODEL` | ❌ | Quality gate model (default: `claude-haiku-4-5-20251001`) |
 
 ## 🧪 Testing
