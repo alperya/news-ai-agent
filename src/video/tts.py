@@ -21,6 +21,7 @@ from .config import (
     EDGE_TTS_PITCH,
     ELEVENLABS_API_KEY,
     ELEVENLABS_MODEL,
+    ELEVENLABS_SPEED,
     ELEVENLABS_TTS_URL,
     ELEVENLABS_VOICE_ID,
 )
@@ -66,21 +67,92 @@ def generate_tts(
 def clean_for_narration(text: str) -> str:
     """Clean post text for TTS narration.
 
-    Removes hashtags, URLs, emojis, 'Kaynak:' lines.
+    Removes hashtags, URLs, emojis, 'Source:' lines, and title lines
+    so the narration starts directly with the story body.
+
+    Title detection patterns (applied only to the first non-empty line):
+      1. ALL CAPS PREFIX: body text  →  strip prefix, keep body if >80 chars
+      2. Entire line ALL CAPS         →  skip line
+      3. Mixed-case short headline followed by blank line  →  skip line
     """
     lines = text.split("\n")
-    cleaned = []
-    for line in lines:
+    cleaned: list[str] = []
+    body_started = False  # True once we've seen the first real body line
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
         stripped = line.strip()
+
+        # Skip hashtag lines
         if stripped.startswith("#") or all(
             w.startswith("#") for w in stripped.split() if w
         ):
+            i += 1
             continue
-        if "Kaynak:" in line:
+        # Skip Source: lines
+        if "Source:" in line:
+            i += 1
             continue
+        # Skip dot separators
         if stripped == ".":
+            i += 1
             continue
+
+        # Remove emojis to analyse the text content
+        text_only = re.sub(r'[\U00002600-\U0001FFFF]', '', stripped).strip()
+
+        # Skip blank / emoji-only lines before body starts
+        if not text_only:
+            if body_started:
+                cleaned.append(line)
+            i += 1
+            continue
+
+        if not body_started:
+            # ── Pattern 1: ALL CAPS PREFIX: body text (inline title) ──
+            # e.g. "ROTTERDAM SYNAGOGUE ARSON: Dutch Minister said..."
+            # e.g. "BREAKING: Explosion at Jewish school in Amsterdam"
+            colon_match = re.match(r'^([A-Z][A-Z0-9\s\-\',]+):\s*(.*)', text_only)
+            if colon_match:
+                prefix = colon_match.group(1)
+                remainder = colon_match.group(2).strip()
+                alpha = [c for c in prefix if c.isalpha()]
+                if alpha and sum(1 for c in alpha if c.isupper()) / len(alpha) > 0.80:
+                    # Prefix is ALL CAPS — it's a title prefix
+                    if remainder and len(remainder) > 80:
+                        # Long body text follows after colon — keep only the body
+                        cleaned.append(remainder)
+                    # else: short or empty remainder = headline, skip entirely
+                    body_started = True
+                    i += 1
+                    continue
+
+            # ── Pattern 2: Entire line is ALL CAPS (standalone title) ──
+            # e.g. "DUTCH COALITION DIVIDED OVER PRISON OVERCROWDING"
+            alpha_chars = [c for c in text_only if c.isalpha()]
+            if (alpha_chars
+                    and len(text_only.split()) >= 2
+                    and sum(1 for c in alpha_chars if c.isupper()) / len(alpha_chars) > 0.80):
+                body_started = True
+                i += 1
+                continue
+
+            # ── Pattern 3: Mixed-case title line + blank line ──
+            # e.g. "Arson attack at Rotterdam synagogue sparks anger"
+            #      followed by an empty line and then the body paragraph.
+            if (len(text_only) < 80
+                    and not text_only.endswith('.')
+                    and i + 1 < len(lines)
+                    and lines[i + 1].strip() == ''):
+                body_started = True
+                i += 1
+                continue
+
+            body_started = True
+
         cleaned.append(line)
+        i += 1
 
     result = "\n".join(cleaned).strip()
     result = re.sub(r"https?://\S+", "", result)
@@ -185,6 +257,7 @@ def _elevenlabs_tts(
             "stability": 0.55,
             "similarity_boost": 0.80,
             "style": 0.35,
+            "speed": ELEVENLABS_SPEED,
         },
     }
     headers = {
@@ -232,35 +305,55 @@ def _elevenlabs_tts(
 
     # Other errors — raise so caller can fall back to edge-tts
     resp.raise_for_status()
+    # Unreachable: raise_for_status() always raises on non-2xx, but satisfy type checker
+    return []  # pragma: no cover
 
 
 def _chars_to_words(
     chars: list, starts: list, ends: list,
 ) -> List[SubtitleSegment]:
-    """Convert character-level timestamps to word-level segments."""
+    """Convert character-level timestamps to word-level segments.
+
+    Handles None / missing timestamps from ElevenLabs by interpolating
+    from the nearest known timing so that no words are silently dropped.
+    """
     segments: List[SubtitleSegment] = []
     word = ""
     word_start: Optional[float] = None
     word_end: Optional[float] = None
+    last_known_end: float = 0.0  # track last valid timestamp
 
     for i, ch in enumerate(chars):
         if ch in (" ", "\n"):
-            if word.strip() and word_start is not None:
+            if word.strip():
+                # Ensure we always have valid start/end
+                ws = word_start if word_start is not None else last_known_end
+                we = word_end if word_end is not None else ws + 0.15
                 segments.append(SubtitleSegment(
-                    text=word.strip(), start=word_start, end=word_end,
+                    text=word.strip(), start=ws, end=we,
                 ))
+                last_known_end = we
             word = ""
             word_start = None
             word_end = None
         else:
-            if word_start is None:
-                word_start = starts[i] if i < len(starts) else 0.0
-            word += ch
-            word_end = ends[i] if i < len(ends) else word_start + 0.1
+            # Get start time — handle missing / None values
+            t_start = starts[i] if i < len(starts) else None
+            t_end = ends[i] if i < len(ends) else None
 
-    if word.strip() and word_start is not None:
+            if word_start is None:
+                word_start = t_start if t_start is not None else last_known_end
+            word += ch
+            if t_end is not None:
+                word_end = t_end
+                last_known_end = t_end
+
+    # Flush last word
+    if word.strip():
+        ws = word_start if word_start is not None else last_known_end
+        we = word_end if word_end is not None else ws + 0.15
         segments.append(SubtitleSegment(
-            text=word.strip(), start=word_start, end=word_end,
+            text=word.strip(), start=ws, end=we,
         ))
     return segments
 

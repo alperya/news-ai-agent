@@ -31,6 +31,33 @@ from .audio import mix_audio
 
 logger = logging.getLogger(__name__)
 
+# Keywords/emojis that signal positive/happy news
+_POSITIVE_EMOJIS = frozenset(
+    "🎉🏆✅🥇🎊🎯💪🌟⭐🏅🥈🥉👏🤝💚🎓📈🚀"
+)
+_POSITIVE_KEYWORDS = {
+    "success", "successful", "won", "winning", "victory", "champion",
+    "record", "growth", "increase", "award", "celebration", "happy",
+    "encouraging", "positive", "agreement", "peace", "supports",
+    "developed", "innovation", "breakthrough", "progress", "improvement",
+    "overwinning", "succes", "winnaar", "kampioen",
+    "groei", "stijging", "deal", "doorbraak", "innovatie",
+}
+
+
+def _detect_mood(title: str, content: str, emoji: str) -> str:
+    """Classify news sentiment as 'positive' or 'neutral'."""
+    # Check emoji
+    if any(ch in _POSITIVE_EMOJIS for ch in emoji):
+        return "positive"
+
+    # Check keywords in title + content
+    text = f"{title} {content}".lower()
+    if sum(1 for kw in _POSITIVE_KEYWORDS if kw in text) >= 2:
+        return "positive"
+
+    return "neutral"
+
 
 def create_news_video(
     title: str,
@@ -56,6 +83,9 @@ def create_news_video(
         Absolute path to the generated video file.
     """
     logger.info(f"🎬 Creating news video: {title[:50]}...")
+
+    # Clean up leftover /tmp files from previous (timed-out) Lambda runs
+    _cleanup_tmp()
 
     tmp_dir = tempfile.mkdtemp()
     audio_path = os.path.join(tmp_dir, "narration.mp3")
@@ -90,7 +120,9 @@ def create_news_video(
 
         # ── 4. Mix audio ─────────────────────────────────────────────
         logger.info("🎵 Mixing audio...")
-        mixed = mix_audio(audio_path, narration_duration, total_duration)
+        mood = _detect_mood(title, content, emoji)
+        logger.info(f"   🎭 Detected mood: {mood}")
+        mixed = mix_audio(audio_path, narration_duration, total_duration, mood=mood)
         video = video.with_audio(mixed)
 
         # ── 5. Render ────────────────────────────────────────────────
@@ -105,7 +137,7 @@ def create_news_video(
             fps=FPS,
             codec="libx264",
             audio_codec="aac",
-            preset="medium",
+            preset="ultrafast",
             bitrate="4000k",
             threads=4,
             logger=None,
@@ -127,6 +159,29 @@ def create_news_video(
 
 # ── Internal ──────────────────────────────────────────────────────────────────
 
+def _cleanup_tmp():
+    """Remove leftover temp files from previous Lambda invocations.
+
+    When a Lambda times out during video rendering, the `finally` cleanup
+    never runs, leaving large video files in /tmp.  On retry the same
+    execution environment is reused, causing 'No space left on device'.
+    """
+    tmp_root = tempfile.gettempdir()
+    for entry in os.listdir(tmp_root):
+        path = os.path.join(tmp_root, entry)
+        try:
+            if os.path.isdir(path) and entry.startswith("tmp"):
+                shutil.rmtree(path, ignore_errors=True)
+            elif os.path.isfile(path) and (
+                entry.endswith(".mp4")
+                or entry.endswith(".mp3")
+                or entry.endswith(".srt")
+            ):
+                os.remove(path)
+        except OSError:
+            pass
+
+
 def _build_background(
     title: str,
     content: str,
@@ -147,7 +202,7 @@ def _build_background(
         return compose_stock_scenes(clip_paths, duration)
 
     # Priority 2 — Ken Burns on article image
-    img_path = download_image(image_url, tmp_dir)
+    img_path = download_image(image_url, tmp_dir) if image_url else None
     if img_path:
         prepared = prepare_image_for_portrait(img_path, tmp_dir)
         logger.info("   🖼️  Ken Burns effect on news image")

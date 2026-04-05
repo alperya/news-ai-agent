@@ -58,7 +58,7 @@ class SocialMediaPost:
     def format_post(self) -> str:
         """Format complete social media post with source"""
         hashtags_str = ' '.join(self.hashtags)
-        source_line = f"\n📰 Kaynak: {self.original_url}"
+        source_line = f"\n📰 Source: {self.original_url}"
         # Only prepend emoji if content doesn't already start with one
         content = self.content
         if not content or not self._starts_with_emoji(content):
@@ -80,7 +80,7 @@ class SocialMediaPost:
 class NewsAIAgent:
     """AI Agent for processing news into social media content"""
     
-    def __init__(self, api_key: str = None):
+    def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or os.getenv('ANTHROPIC_API_KEY')
         if not self.api_key:
             raise ValueError("ANTHROPIC_API_KEY not found in environment")
@@ -117,7 +117,8 @@ class NewsAIAgent:
                 }]
             )
             
-            result = self._parse_response(response.content[0].text)
+            content_block = response.content[0]
+            result = self._parse_response(getattr(content_block, 'text', ''))  # type: ignore[union-attr]
             
             return SocialMediaPost(
                 original_title=article['title'],
@@ -144,13 +145,13 @@ class NewsAIAgent:
             max_length = 500
 
         prompt_template = self._load_prompt('single_article.txt', 'AI_PROMPT_SINGLE_ARTICLE')
-        hashtag_instruction = '5-10 ilgili hashtag içersin (sadece Türkçe)' if platform == 'instagram' else '3-5 ilgili hashtag içersin (sadece Türkçe)'
+        hashtag_instruction = 'Include 5-10 relevant hashtags (in English)' if platform == 'instagram' else 'Include 3-5 relevant hashtags (in English)'
 
         return prompt_template.format(
             title=article['title'],
             description=article['description'],
             source=article['source'].upper(),
-            category=article.get('category', 'genel'),
+            category=article.get('category', 'general'),
             platform=platform,
             max_length=max_length,
             hashtag_instruction=hashtag_instruction
@@ -176,7 +177,7 @@ class NewsAIAgent:
             return {
                 'content': 'Son dakika haberi',
                 'emoji': '📰',
-                'hashtags': ['#Hollanda', '#Haberler', '#Gündem']
+                'hashtags': ['#Netherlands', '#News', '#Europe']
             }
 
     def quality_check(self, post: SocialMediaPost) -> Optional[SocialMediaPost]:
@@ -214,7 +215,8 @@ class NewsAIAgent:
                 messages=[{"role": "user", "content": prompt}]
             )
 
-            raw = response.content[0].text
+            content_block = response.content[0]
+            raw = getattr(content_block, 'text', '')  # type: ignore[union-attr]
             json_match = re.search(r'\{.*\}', raw, re.DOTALL)
             result = json.loads(json_match.group()) if json_match else json.loads(raw)
 
@@ -344,7 +346,8 @@ class NewsAIAgent:
                 }]
             )
             
-            result = self._parse_batch_response(response.content[0].text, articles, platform)
+            content_block = response.content[0]
+            result = self._parse_batch_response(getattr(content_block, 'text', ''), articles, platform)  # type: ignore[union-attr]
             return result
             
         except Exception as e:
@@ -363,16 +366,16 @@ class NewsAIAgent:
         articles_text = ""
         for i, article in enumerate(articles, 1):
             articles_text += f"""
-HABER {i}:
-- Başlık: {article['title']}
-- Açıklama: {article['description']}
-- Kaynak: {article['source'].upper()}
-- Kategori: {article.get('category', 'genel')}
+ARTICLE {i}:
+- Title: {article['title']}
+- Description: {article['description']}
+- Source: {article['source'].upper()}
+- Category: {article.get('category', 'general')}
 - URL: {article['url']}
 """
 
         prompt_template = self._load_prompt('batch_selection.txt', 'AI_PROMPT_BATCH_SELECTION')
-        hashtag_instruction = '5-10 ilgili hashtag içersin (sadece Türkçe)' if platform == 'instagram' else '3-5 ilgili hashtag içersin (sadece Türkçe)'
+        hashtag_instruction = 'Include 5-10 relevant hashtags (in English)' if platform == 'instagram' else 'Include 3-5 relevant hashtags (in English)'
 
         return prompt_template.format(
             article_count=len(articles),

@@ -35,7 +35,7 @@ def get_secrets():
     region_name = os.environ.get('AWS_REGION', 'eu-central-1')
     
     # Create a Secrets Manager client
-    session = boto3.session.Session()
+    session = boto3.Session()
     client = session.client(
         service_name='secretsmanager',
         region_name=region_name
@@ -203,9 +203,9 @@ def lambda_handler(event, context):
         # Filter out already published articles
         logger.info("\n🔍 DUPLICATE CHECK: Checking for previously published articles...")
         published_urls = get_published_urls(bucket_name)
+        original_count = len(articles_data)
         
         if published_urls:
-            original_count = len(articles_data)
             articles_data = [a for a in articles_data if a.get('url') not in published_urls]
             filtered_count = len(articles_data)
             
@@ -258,14 +258,16 @@ def lambda_handler(event, context):
         posts_data = [post.to_dict() for post in posts]
         logger.info(f"✅ Generated {len(posts_data)} post(s)")
 
-        # Quality gate: review posts before publishing
-        logger.info("\n🔍 QUALITY GATE: Reviewing posts...")
+        # Quality gate: review posts before publishing (runs for BOTH photo & Reels)
+        logger.info("\n🔍 QUALITY GATE: Reviewing posts with Claude Haiku...")
         reviewed = [ai_agent.quality_check(p) for p in posts]
         rejected_count = sum(1 for p in reviewed if p is None)
         posts = [p for p in reviewed if p is not None]
 
         if rejected_count:
             logger.warning(f"⚠️  {rejected_count} post(s) failed quality gate")
+        else:
+            logger.info(f"✅ Quality gate passed — {len(posts)} post(s) approved")
 
         if not posts:
             logger.warning("⚠️  All posts failed quality gate, skipping publish.")
@@ -286,8 +288,10 @@ def lambda_handler(event, context):
 
         posts_data = [post.to_dict() for post in posts]
 
-        # Detect if this is a Reels run (afternoon schedule)
-        is_reels = event.get('format') == 'reels' if isinstance(event, dict) else False
+        # Detect if this is a Reels run (afternoon schedule or manual trigger)
+        is_reels = False
+        if isinstance(event, dict):
+            is_reels = event.get('format') == 'reels' or event.get('mode') == 'reels'
 
         # STAGE 3: Publish to Instagram
         logger.info(f"\n📱 STAGE 3: Publishing to Instagram {'(REELS)' if is_reels else '(PHOTO)'}...")
@@ -299,11 +303,16 @@ def lambda_handler(event, context):
                 logger.info(f"\n📤 Publishing post {idx}/{len(posts)}...")
 
                 if is_reels:
+                    # Run quality check on narration text before video creation
+                    from video.tts import clean_for_narration
+                    narration_preview = clean_for_narration(post.get('content', ''))
+                    logger.info(f"🔊 Narration preview (first 120 chars): {narration_preview[:120]}...")
+
                     # Generate video and publish as Reels
                     video_path = f'/tmp/reels_{timestamp}.mp4'
                     create_news_video(
                         title=post.get('original_title', ''),
-                        content=post.get('full_post', ''),
+                        content=post.get('content', ''),
                         source=post.get('source', ''),
                         hashtags=post.get('hashtags', []),
                         output_path=video_path,
@@ -362,10 +371,10 @@ def lambda_handler(event, context):
 
         if published_count == 0 and len(posts) > 0:
             send_alert(
-                "Hiçbir post yayınlanamadı",
-                f"{len(posts)} post oluşturuldu ama hiçbiri yayınlanamadı.\n"
+                "No posts were published",
+                f"{len(posts)} posts were generated but none could be published.\n"
                 f"Timestamp: {timestamp}\n"
-                f"Olası neden: Instagram token süresi dolmuş olabilir.",
+                f"Possible cause: Instagram token may have expired.",
                 "PUBLISH_FAILED",
             )
         

@@ -25,49 +25,51 @@ from .config import (
 
 logger = logging.getLogger(__name__)
 
-# ── Turkish → English keyword map for better Pexels results ──────────────────
+# ── Dutch → English keyword map for better Pexels results ────────────────────
 
-_TR_EN = {
-    "hollanda": "netherlands", "türkiye": "turkey", "almanya": "germany",
-    "fransa": "france", "ingiltere": "england", "avrupa": "europe",
-    "bisiklet": "cycling bicycle", "deprem": "earthquake",
-    "sel": "flood", "savaş": "war", "barış": "peace",
-    "ekonomi": "economy finance", "sağlık": "health hospital",
-    "eğitim": "education school", "teknoloji": "technology",
-    "hükümet": "government parliament", "seçim": "election voting",
-    "iklim": "climate weather", "enerji": "energy solar wind",
-    "polis": "police", "mahkeme": "court justice",
-    "futbol": "football soccer", "spor": "sports",
-    "ulaşım": "transport traffic", "altyapı": "infrastructure road",
-    "göç": "migration immigration", "çevre": "environment nature",
-    "tarım": "agriculture farm", "konut": "housing building",
-    "havacılık": "aviation airplane", "deniz": "sea ocean",
-    "orman": "forest fire", "nükleer": "nuclear energy",
+_NL_EN = {
+    "nederland": "netherlands", "turkije": "turkey", "duitsland": "germany",
+    "frankrijk": "france", "engeland": "england", "europa": "europe",
+    "fiets": "cycling bicycle", "aardbeving": "earthquake",
+    "overstroming": "flood", "oorlog": "war", "vrede": "peace",
+    "economie": "economy finance", "gezondheid": "health hospital",
+    "onderwijs": "education school", "technologie": "technology",
+    "regering": "government parliament", "verkiezing": "election voting",
+    "klimaat": "climate weather", "energie": "energy solar wind",
+    "politie": "police", "rechtbank": "court justice",
+    "voetbal": "football soccer", "sport": "sports",
+    "vervoer": "transport traffic", "infrastructuur": "infrastructure road",
+    "migratie": "migration immigration", "milieu": "environment nature",
+    "landbouw": "agriculture farm", "woning": "housing building",
+    "luchtvaart": "aviation airplane", "zee": "sea ocean",
+    "bos": "forest fire", "nucleair": "nuclear energy",
 }
 
 _STOP_WORDS = {
-    "ve", "bir", "bu", "da", "de", "için", "ile", "olan", "olarak",
-    "gibi", "daha", "en", "çok", "var", "yok", "ne", "kadar",
-    "sonra", "önce", "şu", "her", "o", "mi", "mu", "mı", "mü",
-    "ise", "ya", "ki", "hem", "ama", "fakat", "ancak", "yeni",
-    "büyük", "küçük", "iyi", "kötü", "ilk", "son", "tüm",
+    "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
+    "of", "with", "by", "from", "is", "are", "was", "were", "be", "been",
+    "has", "have", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "can", "shall", "not", "no", "nor", "so",
+    "if", "then", "than", "that", "this", "these", "those", "it", "its",
+    "as", "up", "out", "about", "into", "over", "after", "before", "new",
+    "also", "more", "very", "most", "all", "some", "any", "each", "every",
 }
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def extract_search_query(title: str, content: str = "") -> str:
-    """Extract English search keywords from Turkish title/content."""
+    """Extract English search keywords from title/content for Pexels."""
     text = f"{title} {content}".lower()
-    words = re.findall(r"[a-zçğıöşü]+", text)
+    words = re.findall(r"[a-z]+", text)
 
     english: List[str] = []
     for w in words:
         if w in _STOP_WORDS or len(w) < 3:
             continue
-        if w in _TR_EN:
-            english.append(_TR_EN[w])
-        elif len(w) > 5:
+        if w in _NL_EN:
+            english.append(_NL_EN[w])
+        elif len(w) > 4:
             english.append(w)
 
     if not english:

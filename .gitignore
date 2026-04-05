@@ -46,6 +46,7 @@ errors/
 *.json
 !requirements.json
 !package.json
+!pyrightconfig.json
 
 # Logs
 *.log

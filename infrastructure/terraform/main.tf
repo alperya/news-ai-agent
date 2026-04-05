@@ -224,6 +224,33 @@ resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
   }
 }
 
+# ===== CloudWatch Alarm for Lambda Timeouts (Duration ≥ 14 min) =====
+resource "aws_cloudwatch_metric_alarm" "lambda_timeout" {
+  count               = var.alert_email != "" ? 1 : 0
+  alarm_name          = "${var.project_name}-lambda-timeout"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = 1
+  metric_name         = "Duration"
+  namespace           = "AWS/Lambda"
+  period              = 300
+  statistic           = "Maximum"
+  threshold           = 840000   # 14 minutes in ms (timeout = 15 min)
+  alarm_description   = "Alert when Lambda approaches timeout — video rendering too slow"
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    FunctionName = var.project_name
+  }
+
+  alarm_actions = [aws_sns_topic.alerts[0].arn]
+
+  tags = {
+    Name        = "${var.project_name}-timeout-alarm"
+    Environment = "production"
+    ManagedBy   = "terraform"
+  }
+}
+
 # ===== Lambda Function =====
 resource "aws_lambda_function" "news_agent" {
   s3_bucket        = aws_s3_bucket.results.id
@@ -236,6 +263,10 @@ resource "aws_lambda_function" "news_agent" {
   memory_size     = var.lambda_memory
   
   source_code_hash = filebase64sha256("../../lambda_deployment.zip")
+
+  ephemeral_storage {
+    size = 2048  # MB — video rendering needs more than the default 512 MB
+  }
 
   environment {
     variables = {

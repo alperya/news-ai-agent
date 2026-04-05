@@ -17,7 +17,7 @@ from moviepy import (
 )
 from moviepy.audio.fx import AudioFadeOut
 
-from .config import BG_MUSIC_VOLUME, MUSIC_FILE
+from .config import BG_MUSIC_VOLUME, CALM_MUSIC_FILE, MUSIC_FILE
 
 logger = logging.getLogger(__name__)
 
@@ -26,11 +26,13 @@ def mix_audio(
     narration_path: str,
     narration_duration: float,
     total_duration: float,
+    mood: str = "neutral",
 ) -> AudioClip:
     """Mix TTS narration with background music.
 
     • Narration at full volume.
     • Background music at BG_MUSIC_VOLUME, trimmed/looped to *total_duration*.
+    • *mood*: 'positive' → news_music, anything else → calm_music.
     """
     narration = AudioFileClip(narration_path)
 
@@ -43,7 +45,7 @@ def mix_audio(
         )
         narration = concatenate_audioclips([narration, silence])
 
-    music_path = find_music_file()
+    music_path = find_music_file(mood)
     if music_path:
         try:
             music = AudioFileClip(str(music_path))
@@ -59,8 +61,9 @@ def mix_audio(
             mixed = CompositeAudioClip([narration, music]).with_duration(
                 total_duration,
             )
+            music_name = music_path.name
             logger.info(
-                f"🎵 Background music mixed at {BG_MUSIC_VOLUME * 100:.0f}% volume",
+                f"🎵 Background music: {music_name} at {BG_MUSIC_VOLUME * 100:.0f}% volume (mood={mood})",
             )
             return mixed
         except Exception as e:
@@ -69,13 +72,26 @@ def mix_audio(
     return narration
 
 
-def find_music_file() -> Optional[Path]:
-    """Locate the background music file."""
-    if MUSIC_FILE.exists():
-        return MUSIC_FILE
+def find_music_file(mood: str = "neutral") -> Optional[Path]:
+    """Locate the background music file based on news mood.
+
+    *mood* = 'positive' → upbeat news_music.mp3
+    *mood* = anything else → calm_music.mp3
+    """
+    if mood == "positive":
+        primary, fallback_name = MUSIC_FILE, "news_music.mp3"
+    else:
+        primary, fallback_name = CALM_MUSIC_FILE, "calm_music.mp3"
+
+    if primary.exists():
+        return primary
     # Lambda flat-layout fallback
-    alt = Path(__file__).parent.parent / "music" / "news_music.mp3"
+    alt = Path(__file__).parent.parent / "music" / fallback_name
     if alt.exists():
         return alt
+    # Ultimate fallback: try the other music file
+    for f in (MUSIC_FILE, CALM_MUSIC_FILE):
+        if f.exists():
+            return f
     logger.warning("⚠️  No background music file found")
     return None

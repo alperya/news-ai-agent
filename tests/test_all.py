@@ -143,7 +143,7 @@ def test_post_format_contains_required_parts(sample_post):
 
     assert "🚲" in formatted
     assert "Hollanda'da yeni bisiklet yasası" in formatted
-    assert "📰 Kaynak: https://nos.nl/artikel/test-123" in formatted
+    assert "📰 Source: https://nos.nl/artikel/test-123" in formatted
     assert "#Hollanda" in formatted
 
 
@@ -356,17 +356,59 @@ def test_corrected_post_has_dot_before_hashtags():
 # ── 18. Video: narration text is cleaned ─────────────────────────────────────
 
 def test_clean_for_narration_removes_hashtags_and_urls():
-    """_clean_for_narration should strip hashtags, URLs, and Kaynak lines."""
-    text = (
-        "🚲 Hollanda'da yeni yasa yürürlükte.\n"
-        "📰 Kaynak: https://nos.nl/artikel/1\n\n"
-        "#Hollanda #Bisiklet #Haberler"
+    """_clean_for_narration should strip hashtags, URLs, Source lines, and titles."""
+    # Pattern 1: standalone ALL CAPS title line
+    text1 = (
+        "🚲 NETHERLANDS INTRODUCES NEW CYCLING LAW\n\n"
+        "The Dutch government has introduced a new cycling law.\n"
+        "📰 Source: https://nos.nl/artikel/1\n\n"
+        "#Netherlands #Cycling #News"
     )
-    result = clean_for_narration(text)
-    assert "#Hollanda" not in result
-    assert "https://" not in result
-    assert "Kaynak" not in result
-    assert "yasa yürürlükte" in result
+    result1 = clean_for_narration(text1)
+    assert "#Netherlands" not in result1
+    assert "https://" not in result1
+    assert "Source" not in result1
+    assert "NETHERLANDS INTRODUCES" not in result1  # title stripped
+    assert "Dutch government" in result1  # body kept
+
+    # Pattern 2: inline ALL CAPS title prefix before colon (long body >80 chars)
+    text2 = (
+        "🔴 ROTTERDAM SYNAGOGUE ARSON: Dutch Minister of Justice and Security "
+        "David van Weel has called the arson attack at a synagogue in Rotterdam "
+        "terrible news.\n\n"
+        "Van Weel spoke about the incident.\n"
+    )
+    result2 = clean_for_narration(text2)
+    assert "ROTTERDAM SYNAGOGUE ARSON" not in result2  # title prefix stripped
+    assert "Dutch Minister" in result2  # body kept after colon
+
+    # Pattern 3: BREAKING: with short headline (≤80 chars) – entire line skipped
+    text3 = (
+        "🔴 BREAKING: Explosion at Jewish school in Amsterdam\n\n"
+        "An explosion occurred overnight at the outer wall.\n"
+    )
+    result3 = clean_for_narration(text3)
+    assert "BREAKING" not in result3  # BREAKING stripped
+    assert "Jewish school" not in result3  # short headline also stripped
+    assert "explosion occurred" in result3  # body kept
+
+    # Pattern 4: Mixed-case title line followed by blank line
+    text4 = (
+        "🔴 Arson attack at Rotterdam synagogue sparks anger\n\n"
+        "An explosion occurred at approximately 03:45 AM at the synagogue.\n"
+    )
+    result4 = clean_for_narration(text4)
+    assert "Arson attack" not in result4  # mixed-case title stripped
+    assert "explosion occurred" in result4  # body kept
+
+    # Direct body text (no title) — should be preserved as-is
+    text5 = (
+        "🚢 Dozens of Dutch ships are in a precarious situation in the "
+        "Persian Gulf as maritime vessels from multiple countries come "
+        "under fire. Ships have been targeted by Iranian rockets.\n"
+    )
+    result5 = clean_for_narration(text5)
+    assert "Dozens of Dutch ships" in result5  # body text preserved
 
 
 # ── 19. Video: subtitle grouping ─────────────────────────────────────────────
@@ -480,14 +522,14 @@ def test_create_news_video_signature():
 
 # ── 28. Stock footage: keyword extraction ────────────────────────────────────
 
-def test_extract_search_query_from_turkish():
-    """extract_search_query should translate Turkish keywords to English."""
+def test_extract_search_query_from_english():
+    """extract_search_query should extract meaningful English keywords."""
     from video.footage import extract_search_query
     query = extract_search_query(
-        "Hollanda'da bisiklet altyapı planı",
-        "Hollanda hükümeti yeni bisiklet yolu yapacak.",
+        "Netherlands announces new cycling infrastructure plan",
+        "The Dutch government will build new bicycle lanes.",
     )
-    assert "netherlands" in query or "cycling" in query
+    assert "netherlands" in query or "cycling" in query or "infrastructure" in query
 
 
 # ── 29. Video: package exports are accessible ────────────────────────────────
