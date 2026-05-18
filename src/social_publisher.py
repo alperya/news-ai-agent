@@ -283,9 +283,10 @@ class InstagramPublisher:
 
             logger.info(f"✅ Reels container created: {creation_id}")
 
-            # Step 2: Wait for video processing (videos take longer)
+            # Step 2: Wait for video processing (videos take longer than photos).
+            # max_attempts=80, delay=8 → polls up to ~10 minutes, matching Lambda 2 timeout.
             logger.info("⏳ Waiting for video to be processed...")
-            if not self._check_container_status(creation_id, max_attempts=60, delay=3):
+            if not self._check_container_status(creation_id, max_attempts=80, delay=8):
                 raise ValueError("Reels container not ready after maximum attempts")
 
             # Step 3: Ensure token still valid

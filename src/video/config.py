@@ -25,16 +25,13 @@ ELEVENLABS_VOICE_ID = os.environ.get(
 )
 ELEVENLABS_MODEL = "eleven_multilingual_v2"
 ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech"
+ELEVENLABS_SPEED = 1.0  # 0.7–1.2; 1.0 = normal, lower = slower/calmer narration
 
 # ── TTS — edge-tts fallback (free, $0) ───────────────────────────────────────
 
-EDGE_TTS_VOICE = "en-US-GuyNeural"
-EDGE_TTS_RATE = "-15%"   # default natural pace
+EDGE_TTS_VOICE = "tr-TR-AhmetNeural"
+EDGE_TTS_RATE = "-15%"
 EDGE_TTS_PITCH = "+2Hz"
-
-# ── TTS Speed multiplier (ElevenLabs) ─────────────────────────────────────────
-
-ELEVENLABS_SPEED = 1.0      # normal speed
 
 # ── Audio ─────────────────────────────────────────────────────────────────────
 

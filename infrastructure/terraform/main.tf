@@ -180,6 +180,13 @@ resource "aws_iam_role_policy" "lambda_policy" {
           "sns:Publish"
         ]
         Resource = "arn:aws:sns:${var.aws_region}:${data.aws_caller_identity.current.account_id}:${var.project_name}-*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "lambda:InvokeFunction"
+        ]
+        Resource = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-reels-publish"
       }
     ]
   })
@@ -224,18 +231,20 @@ resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
   }
 }
 
-# ===== CloudWatch Alarm for Lambda Timeouts (Duration ≥ 14 min) =====
-resource "aws_cloudwatch_metric_alarm" "lambda_timeout" {
+# ===== CloudWatch Alarm — Lambda approaching 15-min timeout =====
+# Duration metric is in milliseconds; 840 000 ms = 14 minutes.
+# Fires if any single invocation runs longer than 14 min (1 min before the hard kill).
+resource "aws_cloudwatch_metric_alarm" "lambda_duration" {
   count               = var.alert_email != "" ? 1 : 0
-  alarm_name          = "${var.project_name}-lambda-timeout"
-  comparison_operator = "GreaterThanOrEqualToThreshold"
+  alarm_name          = "${var.project_name}-lambda-slow"
+  comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 1
   metric_name         = "Duration"
   namespace           = "AWS/Lambda"
   period              = 300
   statistic           = "Maximum"
-  threshold           = 840000   # 14 minutes in ms (timeout = 15 min)
-  alarm_description   = "Alert when Lambda approaches timeout — video rendering too slow"
+  threshold           = 840000
+  alarm_description   = "Lambda runtime exceeded 14 min — approaching 15-min hard timeout"
   treat_missing_data  = "notBreaching"
 
   dimensions = {
@@ -245,7 +254,7 @@ resource "aws_cloudwatch_metric_alarm" "lambda_timeout" {
   alarm_actions = [aws_sns_topic.alerts[0].arn]
 
   tags = {
-    Name        = "${var.project_name}-timeout-alarm"
+    Name        = "${var.project_name}-slow-alarm"
     Environment = "production"
     ManagedBy   = "terraform"
   }
@@ -264,9 +273,39 @@ resource "aws_lambda_function" "news_agent" {
   
   source_code_hash = filebase64sha256("../../lambda_deployment.zip")
 
-  ephemeral_storage {
-    size = 2048  # MB — video rendering needs more than the default 512 MB
+  environment {
+    variables = {
+      RESULTS_BUCKET              = aws_s3_bucket.results.id
+      SECRET_NAME                 = aws_secretsmanager_secret.credentials.name
+      SNS_ALERT_TOPIC_ARN         = var.alert_email != "" ? aws_sns_topic.alerts[0].arn : ""
+      REELS_PUBLISH_FUNCTION_NAME = "${var.project_name}-reels-publish"
+    }
   }
+
+  tags = {
+    Name        = var.project_name
+    Environment = "production"
+    ManagedBy   = "terraform"
+  }
+
+  depends_on = [
+    aws_iam_role_policy.lambda_policy,
+    aws_cloudwatch_log_group.lambda_logs
+  ]
+}
+
+# ===== Lambda Function — Reels Publisher (async, invoked by news-agent) =====
+resource "aws_lambda_function" "reels_publish" {
+  s3_bucket        = aws_s3_bucket.results.id
+  s3_key           = "deployments/lambda_deployment.zip"
+  function_name    = "${var.project_name}-reels-publish"
+  role             = aws_iam_role.lambda_role.arn
+  handler          = "reels_worker.lambda_handler"
+  runtime          = "python3.12"
+  timeout          = 600   # 10 minutes: Meta polling up to 80×8s=640s, capped here
+  memory_size      = 256   # no video processing — minimal RAM needed
+
+  source_code_hash = filebase64sha256("../../lambda_deployment.zip")
 
   environment {
     variables = {
@@ -275,17 +314,27 @@ resource "aws_lambda_function" "news_agent" {
       SNS_ALERT_TOPIC_ARN = var.alert_email != "" ? aws_sns_topic.alerts[0].arn : ""
     }
   }
-  
+
   tags = {
-    Name        = var.project_name
+    Name        = "${var.project_name}-reels-publish"
     Environment = "production"
     ManagedBy   = "terraform"
   }
-  
+
   depends_on = [
     aws_iam_role_policy.lambda_policy,
-    aws_cloudwatch_log_group.lambda_logs
   ]
+}
+
+resource "aws_cloudwatch_log_group" "reels_publish_logs" {
+  name              = "/aws/lambda/${var.project_name}-reels-publish"
+  retention_in_days = 7
+
+  tags = {
+    Name        = "${var.project_name}-reels-publish-logs"
+    Environment = "production"
+    ManagedBy   = "terraform"
+  }
 }
 
 # ===== EventBridge Rules (Amsterdam Time: UTC+1) =====

@@ -189,6 +189,16 @@ def lambda_handler(event, context):
         
         if not articles_data:
             logger.warning("⚠️  No articles found!")
+            save_to_s3(
+                {'status': 'no_articles', 'message': 'No articles found to process', 'timestamp': timestamp},
+                f'pipeline_results_{timestamp}.json', bucket_name,
+            )
+            send_alert(
+                "No articles found",
+                f"Scraper returned 0 articles.\nTimestamp: {timestamp}\n"
+                f"Possible cause: news sources may be unreachable or changed.",
+                "GENERAL",
+            )
             return {
                 'statusCode': 200,
                 'body': json.dumps({
@@ -244,6 +254,15 @@ def lambda_handler(event, context):
         
         if not posts:
             logger.warning("⚠️  No posts generated!")
+            save_to_s3(
+                {
+                    'status': 'no_posts',
+                    'message': 'No posts generated from articles',
+                    'timestamp': timestamp,
+                    'articles_count': len(articles_data),
+                },
+                f'pipeline_results_{timestamp}.json', bucket_name,
+            )
             return {
                 'statusCode': 200,
                 'body': json.dumps({
@@ -295,20 +314,42 @@ def lambda_handler(event, context):
 
         # STAGE 3: Publish to Instagram
         logger.info(f"\n📱 STAGE 3: Publishing to Instagram {'(REELS)' if is_reels else '(PHOTO)'}...")
-        publisher = InstagramPublisher()
-        
+
+        # For Reels, guard against entering video creation with too little Lambda time.
+        # Scrape+AI can occasionally run slow; if <7 min remain we cannot safely render.
+        if is_reels:
+            remaining_ms = context.get_remaining_time_in_millis()
+            if remaining_ms < 420_000:
+                msg = (
+                    f"Insufficient Lambda time for Reels video creation "
+                    f"({remaining_ms / 1000:.0f}s remaining, need ≥7 min). "
+                    f"Scrape/AI stages may have run unusually slow."
+                )
+                logger.error(f"⏱️  {msg}")
+                send_alert("Reels skipped — Lambda low on time", msg, "PUBLISH_FAILED")
+                save_to_s3(
+                    {'status': 'timeout_risk', 'message': msg, 'timestamp': timestamp},
+                    f'pipeline_results_{timestamp}.json', bucket_name,
+                )
+                return {
+                    'statusCode': 500,
+                    'body': json.dumps({'status': 'timeout_risk', 'error': msg, 'timestamp': timestamp}),
+                }
+
+        publisher = None if is_reels else InstagramPublisher()
+
         published_count = 0
         for idx, post in enumerate(posts_data, 1):
             try:
                 logger.info(f"\n📤 Publishing post {idx}/{len(posts)}...")
 
                 if is_reels:
-                    # Run quality check on narration text before video creation
+                    # Log narration preview before the heavy video work
                     from video.tts import clean_for_narration
                     narration_preview = clean_for_narration(post.get('content', ''))
                     logger.info(f"🔊 Narration preview (first 120 chars): {narration_preview[:120]}...")
 
-                    # Generate video and publish as Reels
+                    # Generate video and upload to S3
                     video_path = f'/tmp/reels_{timestamp}.mp4'
                     create_news_video(
                         title=post.get('original_title', ''),
@@ -320,7 +361,6 @@ def lambda_handler(event, context):
                         image_url=post.get('image_url'),
                     )
 
-                    # Upload video to S3 and get a pre-signed URL for Meta
                     s3_video_key = f'reels/reels_{timestamp}.mp4'
                     s3_client = boto3.client('s3')
                     with open(video_path, 'rb') as vf:
@@ -330,30 +370,40 @@ def lambda_handler(event, context):
                             Body=vf,
                             ContentType='video/mp4',
                         )
-                    video_url = s3_client.generate_presigned_url(
-                        'get_object',
-                        Params={'Bucket': bucket_name, 'Key': s3_video_key},
-                        ExpiresIn=3600,
-                    )
                     logger.info(f"✅ Video uploaded to S3: {s3_video_key}")
 
-                    result = publisher.publish_reels(
-                        content=post['full_post'],
-                        video_url=video_url,
-                        dry_run=False,
+                    # Hand off Instagram publishing to a dedicated Lambda so this
+                    # function is not killed by the 15-minute timeout during Meta's
+                    # video processing + polling phase.
+                    reels_fn = os.environ.get(
+                        'REELS_PUBLISH_FUNCTION_NAME', 'news-ai-agent-reels-publish'
                     )
+                    lambda_client = boto3.client('lambda')
+                    lambda_client.invoke(
+                        FunctionName=reels_fn,
+                        InvocationType='Event',  # async — fire and forget
+                        Payload=json.dumps({
+                            's3_video_key': s3_video_key,
+                            'post_content': post['full_post'],
+                            'bucket_name': bucket_name,
+                            'timestamp': timestamp,
+                        }).encode(),
+                    )
+                    logger.info(f"✅ Reels publish delegated to {reels_fn} (async)")
+                    result = {'status': 'queued', 'publisher': reels_fn, 's3_key': s3_video_key}
+
                 else:
                     result = publisher.publish_post(
                         content=post['full_post'],
                         image_url=post.get('image_url'),
                         dry_run=False,
                     )
-                
-                logger.info(f"✅ Post {idx} published: {result}")
+
+                logger.info(f"✅ Post {idx} processed: {result}")
                 published_count += 1
-                
+
             except Exception as e:
-                logger.error(f"❌ Failed to publish post {idx}: {str(e)}")
+                logger.error(f"❌ Failed to process post {idx}: {str(e)}")
                 error_type = detect_error_type(e)
                 alert_on_exception(
                     f"Post {idx} publish failed",
@@ -406,6 +456,11 @@ def lambda_handler(event, context):
     except Exception as e:
         logger.error(f"\n❌ Lambda execution failed: {str(e)}", exc_info=True)
         error_type = detect_error_type(e)
+        # Write error to S3 first so there is always a trace, then alert via SNS.
+        save_to_s3(
+            {'status': 'error', 'error': str(e), 'error_type': error_type, 'timestamp': timestamp},
+            f'pipeline_results_{timestamp}.json', bucket_name,
+        )
         alert_on_exception("Lambda execution failed", e, error_type)
         return {
             'statusCode': 500,
