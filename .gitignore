@@ -47,6 +47,7 @@ errors/
 !requirements.json
 !package.json
 !pyrightconfig.json
+!.claude/settings.json
 
 # Logs
 *.log
@@ -88,7 +89,7 @@ credentials/
 local_only/
 
 # Local Claude Code config (personal preferences, not for sharing)
-.claude/
+.claude/local.md
 
 # AI Prompt templates (contain custom instructions)
 prompts/*.txt
