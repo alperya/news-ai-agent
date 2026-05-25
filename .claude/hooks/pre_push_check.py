@@ -95,16 +95,22 @@ def check_readme_freshness() -> list[str]:
 
 
 def check_debug_code() -> list[str]:
+    """Only flag print()/pdb in src/ and lambda_handler.py — not in scripts or hooks."""
     issues = []
     diff = get_push_diff()
+    current_file = ""
     for line in diff.splitlines():
-        if not line.startswith("+") or line.startswith("+++"):
+        if line.startswith("+++"):
+            current_file = line[4:].split("\t")[0].lstrip("b/")
+            continue
+        in_source = current_file.startswith("src/") or current_file == "lambda_handler.py"
+        if not in_source or not line.startswith("+"):
             continue
         stripped = line[1:].strip()
         if re.match(r"print\s*\(", stripped):
-            issues.append(f"Debug `print()`: {stripped[:80]}")
+            issues.append(f"Debug `print()` in `{current_file}`: {stripped[:70]}")
         elif re.match(r"(import pdb|breakpoint\s*\(|pdb\.set_trace)", stripped):
-            issues.append(f"Debugger: {stripped[:80]}")
+            issues.append(f"Debugger in `{current_file}`: {stripped[:70]}")
     return issues[:3]
 
 
