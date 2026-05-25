@@ -17,6 +17,7 @@ An intelligent AI-powered pipeline that automatically scrapes Dutch news from NO
 - ✅ AWS Secrets Manager for credential management
 - ✅ Email alerts on errors (OOM, token expiry, publish failures) via AWS SNS
 - ✅ Objective, news-agency style content (BBC/Reuters style)
+- ✅ **LangSmith + Langfuse** observability — LLM traces, token usage, latency & cost dashboard
 
 ## 🎬 Reels Video Pipeline
 
@@ -142,6 +143,7 @@ AWS Lambda runs 3× daily via EventBridge (UTC → Amsterdam CET/CEST):
 | **TTS** | ElevenLabs Multilingual v2 (primary) + edge-tts (free fallback) |
 | **Video** | moviepy, Pillow, FFmpeg (H.264 / AAC) |
 | **Stock Media** | Pexels API (free — video & photo) |
+| **Observability** | LangSmith + Langfuse (LLM traces, token usage, cost, latency) |
 | **Cloud** | AWS Lambda, S3, EventBridge, Secrets Manager |
 | **IaC** | Terraform |
 | **Language** | Python 3.12 |
@@ -161,6 +163,31 @@ All configuration is managed through environment variables (`.env` locally, AWS 
 | `PEXELS_API_KEY` | ❌ | Pexels API key for stock footage (falls back to article image) |
 | `ALERT_EMAIL` | ❌ | Email for Lambda error alerts — OOM, token expiry, publish failures |
 | `REVIEW_MODEL` | ❌ | Quality gate model (default: `claude-haiku-4-5-20251001`) |
+| `LANGCHAIN_API_KEY` | ❌ | LangSmith API key — enables LLM trace dashboard |
+| `LANGCHAIN_PROJECT` | ❌ | LangSmith project name (default suggestion: `news-ai-agent`) |
+| `LANGCHAIN_TRACING_V2` | ❌ | Set to `true` to activate LangSmith tracing |
+| `LANGFUSE_PUBLIC_KEY` | ❌ | Langfuse public key — enables cost & quality dashboard |
+| `LANGFUSE_SECRET_KEY` | ❌ | Langfuse secret key |
+| `LANGFUSE_BASE_URL` | ❌ | Langfuse host (default: `https://cloud.langfuse.com`) |
+
+## 📊 Observability
+
+When configured, every Claude API call is traced in both dashboards:
+
+| What's tracked | LangSmith | Langfuse |
+|----------------|-----------|---------|
+| Prompt input / completion output | ✅ | ✅ |
+| Token usage (input + output) | ✅ | ✅ |
+| Request latency | ✅ | ✅ |
+| Model name | ✅ | ✅ |
+| Errors | ✅ | ✅ |
+| Cost estimation | — | ✅ |
+| Per-call metadata (platform, source) | ✅ | ✅ |
+
+**Setup:** Add the keys to `.env` and run `python scripts/update_secrets.py` to push them to AWS Secrets Manager. No code changes needed — both integrations activate automatically when the keys are present.
+
+- [LangSmith dashboard](https://smith.langchain.com) — sign up → Settings → API Keys
+- [Langfuse dashboard](https://cloud.langfuse.com) — sign up → Settings → API Keys
 
 ## 🧪 Testing
 
