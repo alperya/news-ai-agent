@@ -39,7 +39,12 @@ secret_payload = {
 }
 
 # Include optional API keys if set in .env
-for _key in ('ELEVENLABS_API_KEY', 'ELEVENLABS_VOICE_ID', 'PEXELS_API_KEY'):
+for _key in (
+    'ELEVENLABS_API_KEY', 'ELEVENLABS_VOICE_ID', 'PEXELS_API_KEY',
+    # Observability
+    'LANGCHAIN_API_KEY', 'LANGCHAIN_PROJECT', 'LANGCHAIN_TRACING_V2',
+    'LANGFUSE_PUBLIC_KEY', 'LANGFUSE_SECRET_KEY', 'LANGFUSE_HOST', 'LANGFUSE_BASE_URL',
+):
     if env_vars.get(_key):
         secret_payload[_key] = env_vars[_key]
 

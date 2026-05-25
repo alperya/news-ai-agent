@@ -14,6 +14,27 @@ from datetime import datetime
 from pathlib import Path
 
 try:
+    from langsmith.wrappers import wrap_anthropic as _ls_wrap_anthropic
+except ImportError:
+    _ls_wrap_anthropic = None  # type: ignore[assignment]
+
+try:
+    from langfuse.decorators import observe as _lf_observe, langfuse_context as _lf_ctx
+    _LANGFUSE_AVAILABLE = True
+except ImportError:
+    _LANGFUSE_AVAILABLE = False
+
+    def _lf_observe(fn=None, **kwargs):  # type: ignore[misc]
+        if fn is not None:
+            return fn
+        return lambda f: f
+
+    class _NoopCtx:
+        def update_current_observation(self, **kwargs):  # type: ignore[misc]
+            pass
+    _lf_ctx = _NoopCtx()  # type: ignore[assignment]
+
+try:
     import boto3
 except ImportError:
     boto3 = None
@@ -85,7 +106,8 @@ class NewsAIAgent:
         if not self.api_key:
             raise ValueError("ANTHROPIC_API_KEY not found in environment")
         
-        self.client = anthropic.Anthropic(api_key=self.api_key)
+        base_client = anthropic.Anthropic(api_key=self.api_key)
+        self.client = _ls_wrap_anthropic(base_client) if _ls_wrap_anthropic else base_client
         self.model = "claude-opus-4-6"
         self.review_model = os.getenv('REVIEW_MODEL', 'claude-haiku-4-5-20251001')
 
@@ -100,13 +122,14 @@ class NewsAIAgent:
             return value.replace('\\n', '\n')
         raise ValueError(f"Prompt not found: {prompt_file} or env var {env_var}")
     
+    @_lf_observe(name="process_article")
     def process_article(self, article: Dict, target_platform: str = "twitter") -> SocialMediaPost:
         """Process single article into social media post"""
         prompt = self._create_prompt(article, target_platform)
-        
+
         try:
             logger.info(f"Processing article: {article['title'][:50]}...")
-            
+
             response = self.client.messages.create(
                 model=self.model,
                 max_tokens=500,
@@ -116,7 +139,14 @@ class NewsAIAgent:
                     "content": prompt
                 }]
             )
-            
+            _lf_ctx.update_current_observation(
+                input=prompt,
+                output=getattr(response.content[0], 'text', ''),
+                usage={"input": response.usage.input_tokens, "output": response.usage.output_tokens},
+                model=self.model,
+                metadata={"platform": target_platform, "article_title": article.get('title', '')},
+            )
+
             content_block = response.content[0]
             result = self._parse_response(getattr(content_block, 'text', ''))  # type: ignore[union-attr]
             
@@ -180,6 +210,7 @@ class NewsAIAgent:
                 'hashtags': ['#Netherlands', '#News', '#Europe']
             }
 
+    @_lf_observe(name="quality_check")
     def quality_check(self, post: SocialMediaPost) -> Optional[SocialMediaPost]:
         """Quality gate: structural checks + lightweight AI language review.
         Returns the (possibly corrected) post if it passes, None if rejected.
@@ -213,6 +244,13 @@ class NewsAIAgent:
                 max_tokens=1500,
                 temperature=0,
                 messages=[{"role": "user", "content": prompt}]
+            )
+            _lf_ctx.update_current_observation(
+                input=prompt,
+                output=getattr(response.content[0], 'text', ''),
+                usage={"input": response.usage.input_tokens, "output": response.usage.output_tokens},
+                model=self.review_model,
+                metadata={"post_source": post.source, "platform": post.platform},
             )
 
             content_block = response.content[0]
@@ -331,10 +369,11 @@ class NewsAIAgent:
                     pass
             return []
     
+    @_lf_observe(name="select_and_process_articles")
     def _select_and_process_articles(self, articles: List[Dict], max_posts: int, platform: str) -> List[SocialMediaPost]:
         """Select which articles to post and create posts for them in a single API call"""
         prompt = self._create_batch_selection_prompt(articles, max_posts, platform)
-        
+
         try:
             response = self.client.messages.create(
                 model=self.model,
@@ -345,7 +384,14 @@ class NewsAIAgent:
                     "content": prompt
                 }]
             )
-            
+            _lf_ctx.update_current_observation(
+                input=prompt,
+                output=getattr(response.content[0], 'text', ''),
+                usage={"input": response.usage.input_tokens, "output": response.usage.output_tokens},
+                model=self.model,
+                metadata={"article_count": len(articles), "max_posts": max_posts, "platform": platform},
+            )
+
             content_block = response.content[0]
             result = self._parse_batch_response(getattr(content_block, 'text', ''), articles, platform)  # type: ignore[union-attr]
             return result

@@ -16,6 +16,10 @@ moviepy>=2.0.0
 Pillow>=10.0.0
 numpy>=1.26.0
 
+# Observability
+langsmith>=0.2.0
+langfuse>=2.0.0
+
 # Testing
 pytest>=8.0.0
 pytest-cov>=4.1.0

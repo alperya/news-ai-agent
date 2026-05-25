@@ -74,7 +74,17 @@ def get_secrets():
         os.environ['AI_PROMPT_SINGLE_ARTICLE'] = secret['AI_PROMPT_SINGLE_ARTICLE']
     if 'AI_PROMPT_QUALITY_CHECK' in secret:
         os.environ['AI_PROMPT_QUALITY_CHECK'] = secret['AI_PROMPT_QUALITY_CHECK']
-    
+
+    # LangSmith observability (optional)
+    for key in ('LANGCHAIN_API_KEY', 'LANGCHAIN_PROJECT', 'LANGCHAIN_TRACING_V2'):
+        if key in secret:
+            os.environ[key] = secret[key]
+
+    # Langfuse observability (optional)
+    for key in ('LANGFUSE_PUBLIC_KEY', 'LANGFUSE_SECRET_KEY', 'LANGFUSE_HOST', 'LANGFUSE_BASE_URL'):
+        if key in secret:
+            os.environ[key] = secret[key]
+
     logger.info("✅ Secrets loaded successfully")
     return secret
 
