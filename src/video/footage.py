@@ -85,12 +85,13 @@ def fetch_stock_clips(
     content: str,
     tmp_dir: str,
     count: int = STOCK_CLIP_COUNT,
+    footage_queries: Optional[List[str]] = None,
 ) -> List[str]:
     """Fetch stock video clips from Pexels matching the news topic.
 
-    Requests more than *count* to compensate for download failures, then
-    falls back to a broader single-keyword search if the first query
-    returns too few results.
+    When *footage_queries* are provided (AI-generated, most-specific first)
+    each query is tried in order until enough clips are found. Falls back to
+    keyword-extracted query if all AI queries return too few results.
 
     Returns list of local file paths (up to *count*).
     """
@@ -99,21 +100,38 @@ def fetch_stock_clips(
         logger.info("ℹ️  PEXELS_API_KEY not set — skipping stock footage")
         return []
 
-    query = extract_search_query(title, content)
+    # Build query list: AI-generated first, keyword fallback last
+    fallback_query = extract_search_query(title, content)
+    queries = list(footage_queries) + [fallback_query] if footage_queries else [fallback_query]
+
+    for query in queries:
+        paths = _fetch_clips_for_query(api_key, query, tmp_dir, count)
+        if paths:
+            return paths
+
+    logger.warning("⚠️  No Pexels video results for any query")
+    return []
+
+
+def _fetch_clips_for_query(
+    api_key: str,
+    query: str,
+    tmp_dir: str,
+    count: int,
+) -> List[str]:
+    """Try a single query and return downloaded clip paths (empty list if insufficient)."""
     logger.info(f"🔍 Searching Pexels videos for: '{query}'")
 
     # Prefer portrait clips for 9:16 Reels
-    videos = _pexels_video_search(
-        api_key, query, per_page=PEXELS_PER_PAGE, orientation="portrait",
-    )
+    videos = _pexels_video_search(api_key, query, per_page=PEXELS_PER_PAGE, orientation="portrait")
 
-    # Fallback: any orientation if portrait yields too few
+    # Any orientation if portrait yields too few
     if len(videos) < count:
         extra = _pexels_video_search(api_key, query, per_page=PEXELS_PER_PAGE)
         seen_ids = {v.get("id") for v in videos}
         videos.extend(v for v in extra if v.get("id") not in seen_ids)
 
-    # Broader fallback — first keyword, any orientation
+    # Broader fallback — first keyword only
     if len(videos) < count:
         broad = query.split()[0] if query.split() else "news"
         if broad != query:
@@ -123,7 +141,6 @@ def fetch_stock_clips(
             videos.extend(v for v in extra if v.get("id") not in seen_ids)
 
     if not videos:
-        logger.warning(f"⚠️  No Pexels video results for '{query}'")
         return []
 
     paths: List[str] = []
@@ -134,7 +151,7 @@ def fetch_stock_clips(
         if clip_path:
             paths.append(clip_path)
 
-    logger.info(f"📥 Downloaded {len(paths)}/{count} stock clips")
+    logger.info(f"📥 Downloaded {len(paths)}/{count} clips for '{query}'")
     return paths
 
 

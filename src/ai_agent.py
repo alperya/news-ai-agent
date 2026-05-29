@@ -130,6 +130,7 @@ class NewsAIAgent:
         self.client = _ls_wrap_anthropic(base_client) if _ls_wrap_anthropic else base_client
         self.model = "claude-opus-4-6"
         self.review_model = os.getenv('REVIEW_MODEL', 'claude-haiku-4-5-20251001')
+        self.footage_model = os.getenv('FOOTAGE_QUERY_MODEL', 'claude-opus-4-7')
 
     @staticmethod
     def _load_prompt(filename: str, env_var: str) -> str:
@@ -299,6 +300,53 @@ class NewsAIAgent:
             logger.warning(f"⚠️  Quality gate AI review skipped (error): {e}")
 
         return post
+
+    @_lf_observe(name="generate_footage_queries")
+    def generate_footage_queries(self, title: str, description: str) -> List[str]:
+        """Generate Pexels-optimised search queries for stock footage selection.
+
+        Returns up to 3 English queries ordered from most specific to most
+        generic. Falls back to an empty list so footage.py uses its own
+        extract_search_query as a safety net.
+        """
+        prompt = (
+            "You are selecting stock footage for a Dutch news Instagram Reel.\n\n"
+            f"Dutch article headline: {title}\n"
+            f"Article context: {description}\n\n"
+            "Generate exactly 3 Pexels search queries in English, ordered from most "
+            "specific to most generic.\n\n"
+            "Rules:\n"
+            "- Include 'netherlands' or a specific Dutch city/place when the article "
+            "is about the Netherlands or a Dutch institution\n"
+            "- Use concrete visual nouns (what would appear on screen)\n"
+            "- English only — no Dutch words\n"
+            "- 2–4 words per query\n\n"
+            'Return ONLY valid JSON: {"queries": ["...", "...", "..."]}'
+        )
+        try:
+            response = self.client.messages.create(
+                model=self.footage_model,
+                max_tokens=120,
+                temperature=0,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            _lf_ctx.update_current_observation(
+                input=prompt,
+                output=getattr(response.content[0], 'text', ''),
+                usage={"input": response.usage.input_tokens, "output": response.usage.output_tokens},
+                model=self.footage_model,
+                metadata={"article_title": title},
+            )
+            text = getattr(response.content[0], 'text', '')
+            match = re.search(r'\{.*\}', text, re.DOTALL)
+            data = json.loads(match.group() if match else text)
+            queries = [q for q in data.get('queries', []) if isinstance(q, str) and q.strip()]
+            if queries:
+                logger.info(f"🎬 Footage queries: {queries}")
+                return queries[:3]
+        except Exception as e:
+            logger.warning(f"⚠️  Footage query generation failed, falling back to keyword extraction: {e}")
+        return []
 
     def _save_error(self, post: SocialMediaPost, reasons: List[str]):
         """Save rejected post details to S3 (Lambda) or local errors/ directory."""

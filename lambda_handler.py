@@ -359,6 +359,13 @@ def lambda_handler(event, context):
                     narration_preview = clean_for_narration(post.get('content', ''))
                     logger.info(f"🔊 Narration preview (first 120 chars): {narration_preview[:120]}...")
 
+                    # Generate contextually accurate Pexels search queries
+                    logger.info("🎬 Generating footage search queries...")
+                    footage_queries = ai_agent.generate_footage_queries(
+                        title=post.get('original_title', ''),
+                        description=post.get('content', ''),
+                    )
+
                     # Generate video and upload to S3
                     video_path = f'/tmp/reels_{timestamp}.mp4'
                     create_news_video(
@@ -369,6 +376,7 @@ def lambda_handler(event, context):
                         output_path=video_path,
                         emoji=post.get('emoji', '📰'),
                         image_url=post.get('image_url'),
+                        footage_queries=footage_queries,
                     )
 
                     s3_video_key = f'reels/reels_{timestamp}.mp4'

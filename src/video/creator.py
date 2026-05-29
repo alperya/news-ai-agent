@@ -67,17 +67,20 @@ def create_news_video(
     output_path: str,
     emoji: str = "📰",
     image_url: Optional[str] = None,
+    footage_queries: Optional[List[str]] = None,
 ) -> str:
     """Create a Reels-format news video.
 
     Args:
-        title:       News headline.
-        content:     Full post text (used for TTS narration).
-        source:      News source name.
-        hashtags:    List of hashtag strings.
-        output_path: Where to save the final .mp4.
-        emoji:       Emoji for branding (unused in video).
-        image_url:   URL of the news article image (Ken Burns fallback).
+        title:           News headline.
+        content:         Full post text (used for TTS narration).
+        source:          News source name.
+        hashtags:        List of hashtag strings.
+        output_path:     Where to save the final .mp4.
+        emoji:           Emoji for branding (unused in video).
+        image_url:       URL of the news article image (Ken Burns fallback).
+        footage_queries: AI-generated Pexels queries (specific → generic).
+                         Falls back to keyword extraction when empty.
 
     Returns:
         Absolute path to the generated video file.
@@ -107,6 +110,7 @@ def create_news_video(
         logger.info("🖼️  Building background visuals...")
         background = _build_background(
             title, content, image_url, tmp_dir, total_duration,
+            footage_queries=footage_queries,
         )
 
         # ── 3. Compose layers ────────────────────────────────────────
@@ -188,6 +192,7 @@ def _build_background(
     image_url: Optional[str],
     tmp_dir: str,
     duration: float,
+    footage_queries: Optional[List[str]] = None,
 ) -> CompositeVideoClip:
     """Build visuals with 4-tier fallback:
     1. Pexels stock video clips → multi-scene composition
@@ -196,7 +201,7 @@ def _build_background(
     4. Animated gradient       → Ken Burns motion
     """
     # Priority 1 — Stock footage from Pexels
-    clip_paths = fetch_stock_clips(title, content, tmp_dir)
+    clip_paths = fetch_stock_clips(title, content, tmp_dir, footage_queries=footage_queries)
     if clip_paths:
         logger.info(f"   🎬 Using {len(clip_paths)} stock video clips")
         return compose_stock_scenes(clip_paths, duration)
