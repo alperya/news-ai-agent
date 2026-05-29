@@ -19,8 +19,28 @@ except ImportError:
     _ls_wrap_anthropic = None  # type: ignore[assignment]
 
 try:
-    from langfuse.decorators import observe as _lf_observe, langfuse_context as _lf_ctx
+    from langfuse import observe as _lf_observe, get_client as _lf_get_client
     _LANGFUSE_AVAILABLE = True
+
+    class _LangfuseCtx:
+        """Thin adapter: maps our internal call to Langfuse v4 get_client() API."""
+        def update_current_observation(
+            self, *, model: str = None, input=None, output=None,  # type: ignore[assignment]
+            usage: dict = None, metadata: dict = None, **_: object,
+        ) -> None:
+            try:
+                _lf_get_client().update_current_generation(
+                    model=model,
+                    input=input,
+                    output=output,
+                    usage_details=usage,
+                    metadata=metadata,
+                )
+            except Exception:
+                pass
+
+    _lf_ctx = _LangfuseCtx()  # type: ignore[assignment]
+
 except ImportError:
     _LANGFUSE_AVAILABLE = False
 
@@ -29,8 +49,8 @@ except ImportError:
             return fn
         return lambda f: f
 
-    class _NoopCtx:
-        def update_current_observation(self, **kwargs):  # type: ignore[misc]
+    class _NoopCtx:  # type: ignore[no-redef]
+        def update_current_observation(self, **kwargs: object) -> None:
             pass
     _lf_ctx = _NoopCtx()  # type: ignore[assignment]
 
