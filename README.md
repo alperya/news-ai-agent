@@ -26,7 +26,7 @@ The afternoon posting slot automatically generates an Instagram Reels video:
 1. **TTS Narration** — ElevenLabs Multilingual v2 (natural voice) with edge-tts fallback (free)
 2. **Stock Footage** — Pexels API auto-selects relevant HD clips based on article keywords
 3. **Subtitles** — Word-timed subtitle overlay with rounded orange background
-4. **Background Music** — Ambient news music with 1-second fade-out
+4. **Background Music** — Mood-based music selection: upbeat (`news_music.mp3`) for positive news, calm/alternative (60/40 random) for neutral news, all with 1-second fade-out
 5. **4-tier Visual Fallback** — Pexels video → article image → Pexels photo → animated gradient
 
 Video specs: 1080×1920 (9:16), 30 FPS, H.264 High, 4000 kbps, AAC audio, 9 stock clips per video.
