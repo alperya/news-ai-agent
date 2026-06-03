@@ -74,6 +74,7 @@ _VIDEO_PKG_DIR = Path(__file__).parent     # src/video/
 _SRC_DIR = _VIDEO_PKG_DIR.parent           # src/
 MUSIC_FILE = _SRC_DIR / "music" / "news_music.mp3"
 CALM_MUSIC_FILE = _SRC_DIR / "music" / "calm_music.mp3"
+ALTERNATIVE_MUSIC_FILE = _SRC_DIR / "music" / "alternative_music.mp3"
 
 # ── Stock footage (Pexels — free API) ─────────────────────────────────────────
 

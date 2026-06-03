@@ -5,6 +5,7 @@ Combines TTS narration with background music.
 """
 
 import logging
+import random
 from pathlib import Path
 from typing import Optional
 
@@ -17,7 +18,7 @@ from moviepy import (
 )
 from moviepy.audio.fx import AudioFadeOut
 
-from .config import BG_MUSIC_VOLUME, CALM_MUSIC_FILE, MUSIC_FILE
+from .config import BG_MUSIC_VOLUME, ALTERNATIVE_MUSIC_FILE, CALM_MUSIC_FILE, MUSIC_FILE
 
 logger = logging.getLogger(__name__)
 
@@ -76,12 +77,15 @@ def find_music_file(mood: str = "neutral") -> Optional[Path]:
     """Locate the background music file based on news mood.
 
     *mood* = 'positive' → upbeat news_music.mp3
-    *mood* = anything else → calm_music.mp3
+    *mood* = anything else → calm_music.mp3 (60%) or alternative_music.mp3 (40%)
     """
     if mood == "positive":
         primary, fallback_name = MUSIC_FILE, "news_music.mp3"
     else:
-        primary, fallback_name = CALM_MUSIC_FILE, "calm_music.mp3"
+        if random.random() < 0.6:
+            primary, fallback_name = CALM_MUSIC_FILE, "calm_music.mp3"
+        else:
+            primary, fallback_name = ALTERNATIVE_MUSIC_FILE, "alternative_music.mp3"
 
     if primary.exists():
         return primary
@@ -89,8 +93,8 @@ def find_music_file(mood: str = "neutral") -> Optional[Path]:
     alt = Path(__file__).parent.parent / "music" / fallback_name
     if alt.exists():
         return alt
-    # Ultimate fallback: try the other music file
-    for f in (MUSIC_FILE, CALM_MUSIC_FILE):
+    # Ultimate fallback: try the other neutral tracks, then news_music
+    for f in (CALM_MUSIC_FILE, ALTERNATIVE_MUSIC_FILE, MUSIC_FILE):
         if f.exists():
             return f
     logger.warning("⚠️  No background music file found")
