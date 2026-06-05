@@ -45,7 +45,8 @@ SUBTITLE_SAFE_MARGIN = 40        # px margin from video edge for subtitle boxes
 
 # ── Font ──────────────────────────────────────────────────────────────────────
 
-SUBTITLE_FONT_SIZE = 48
+SUBTITLE_FONT_SIZE = 62
+HOOK_FONT_SIZE = 68
 
 # Bundled Montserrat Bold (OFL license) — fallback to system fonts
 _BUNDLED_FONT = Path(__file__).parent.parent / "fonts" / "Montserrat-Bold.ttf"

@@ -170,7 +170,8 @@ resource "aws_iam_role_policy" "lambda_policy" {
       {
         Effect = "Allow"
         Action = [
-          "secretsmanager:GetSecretValue"
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:PutSecretValue"
         ]
         Resource = aws_secretsmanager_secret.credentials.arn
       },
@@ -434,6 +435,75 @@ resource "aws_lambda_permission" "allow_evening_eventbridge" {
   function_name = aws_lambda_function.news_agent.function_name
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.evening_schedule.arn
+}
+
+# ===== Token Refresh Lambda =====
+# Runs every 30 days to exchange the current Instagram long-lived token
+# (60-day TTL) for a fresh one and write it back to Secrets Manager.
+
+resource "aws_lambda_function" "token_refresh" {
+  s3_bucket        = aws_s3_bucket.results.id
+  s3_key           = "deployments/lambda_deployment.zip"
+  function_name    = "${var.project_name}-token-refresh"
+  role             = aws_iam_role.lambda_role.arn
+  handler          = "token_refresher.lambda_handler"
+  runtime          = "python3.12"
+  timeout          = 60
+  memory_size      = 256
+
+  source_code_hash = filebase64sha256("../../lambda_deployment.zip")
+
+  environment {
+    variables = {
+      SECRET_NAME         = aws_secretsmanager_secret.credentials.name
+      SNS_ALERT_TOPIC_ARN = var.alert_email != "" ? aws_sns_topic.alerts[0].arn : ""
+    }
+  }
+
+  tags = {
+    Name        = "${var.project_name}-token-refresh"
+    Environment = "production"
+    ManagedBy   = "terraform"
+  }
+
+  depends_on = [aws_iam_role_policy.lambda_policy]
+}
+
+resource "aws_cloudwatch_log_group" "token_refresh_logs" {
+  name              = "/aws/lambda/${var.project_name}-token-refresh"
+  retention_in_days = 7
+
+  tags = {
+    Name        = "${var.project_name}-token-refresh-logs"
+    Environment = "production"
+    ManagedBy   = "terraform"
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "token_refresh_schedule" {
+  name                = "${var.project_name}-token-refresh"
+  description         = "Refresh Instagram access token every 30 days (token TTL is 60 days)"
+  schedule_expression = "rate(30 days)"
+
+  tags = {
+    Name        = "${var.project_name}-token-refresh-schedule"
+    Environment = "production"
+    ManagedBy   = "terraform"
+  }
+}
+
+resource "aws_cloudwatch_event_target" "token_refresh_target" {
+  rule      = aws_cloudwatch_event_rule.token_refresh_schedule.name
+  target_id = "token-refresh-lambda"
+  arn       = aws_lambda_function.token_refresh.arn
+}
+
+resource "aws_lambda_permission" "allow_token_refresh_eventbridge" {
+  statement_id  = "AllowExecutionFromEventBridgeTokenRefresh"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.token_refresh.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.token_refresh_schedule.arn
 }
 
 # ===== Outputs =====

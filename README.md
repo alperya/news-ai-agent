@@ -9,7 +9,8 @@ An intelligent AI-powered pipeline that automatically scrapes Dutch news from NO
 - ✅ Quality gate: structural validation + AI language review (Claude Haiku 4.5) before publishing
 - ✅ Instagram Graph API integration with automatic token refresh
 - ✅ **Instagram Reels** — auto-generated news videos with TTS narration, stock footage & subtitles
-- ✅ Tiered news selection (🇳🇱 Holland → 🇪🇺 Europe → 🌍 Global)
+- ✅ **Reels hook** — AI-generated 8–12 word attention hook, displayed as a large overlay for the first 3 seconds
+- ✅ Tiered news selection (🇳🇱 Holland → 🇪🇺 Europe → 🌍 Global) with viral potential scoring
 - ✅ Source attribution with article links in posts
 - ✅ Duplicate detection (prevents reposting same articles)
 - ✅ AWS Lambda deployment with scheduled posting (3× daily)
@@ -23,13 +24,14 @@ An intelligent AI-powered pipeline that automatically scrapes Dutch news from NO
 
 The afternoon posting slot automatically generates an Instagram Reels video:
 
-1. **TTS Narration** — ElevenLabs Multilingual v2 (natural voice) with edge-tts fallback (free)
-2. **Stock Footage** — Pexels API auto-selects relevant HD clips based on article keywords
-3. **Subtitles** — Word-timed subtitle overlay with rounded orange background
-4. **Background Music** — Mood-based music selection: upbeat (`news_music.mp3`) for positive news, calm/alternative (60/40 random) for neutral news, all with 1-second fade-out
-5. **4-tier Visual Fallback** — Pexels video → article image → Pexels photo → animated gradient
+1. **Hook overlay** — AI-generated attention sentence displayed in large white text for the first 3 seconds
+2. **TTS Narration** — ElevenLabs Multilingual v2 (natural voice) with edge-tts fallback (free); 75–95 word target (~30–40 s)
+3. **Stock Footage** — Pexels API auto-selects relevant HD clips based on AI-generated queries
+4. **Subtitles** — Word-timed orange subtitle overlay (62px Montserrat Bold, lower-third TikTok placement)
+5. **Background Music** — Mood-based: upbeat (`news_music.mp3`) for positive news, calm/alternative (60/40) for neutral
+6. **4-tier Visual Fallback** — Pexels video → article image → Pexels photo → animated gradient
 
-Video specs: 1080×1920 (9:16), 30 FPS, H.264 High, 4000 kbps, AAC audio, 9 stock clips per video.
+Video specs: 1080×1920 (9:16), 30 FPS, H.264 High, 4000 kbps, AAC audio, 9 stock clips per video, target duration 30–45 s.
 
 ## 🚀 Quick Start
 
@@ -86,13 +88,13 @@ python3 scripts/update_secrets.py
 ## 📁 Project Structure
 
 ```
-├── lambda_handler.py              # AWS Lambda entry point
+├── lambda_handler.py              # AWS Lambda entry point (news pipeline)
+├── token_refresher.py             # AWS Lambda — refreshes Instagram token every 30 days
 ├── src/                           # Application source code
 │   ├── main.py                    # Local pipeline runner (CLI)
 │   ├── ai_agent.py                # Claude AI content processing
 │   ├── news_scraper.py            # RSS scraping (NOS, RTL Nieuws)
 │   ├── social_publisher.py        # Instagram publishing (photo + Reels)
-│   ├── token_manager.py           # Instagram token refresh management
 │   ├── notifier.py                # Error alerts via AWS SNS (email)
 │   ├── video/                     # 🎬 Reels video generation package
 │   │   ├── __init__.py            # Public API exports
@@ -114,7 +116,8 @@ python3 scripts/update_secrets.py
 │   ├── run_pipeline.sh            # Local pipeline runner
 │   ├── preview_reels.sh           # Generate a preview Reels video locally
 │   ├── aws_deploy_wizard.sh       # Interactive AWS setup wizard
-│   └── update_secrets.py          # Push .env & prompts to AWS Secrets Manager
+│   ├── update_secrets.py          # Push .env & prompts to AWS Secrets Manager
+│   └── get_new_instagram_token.py # Emergency: exchange short-lived token for 60-day token
 ├── requirements/                  # Python dependencies
 │   ├── base.txt                   # Development dependencies
 │   └── lambda.txt                 # Lambda runtime dependencies
@@ -156,8 +159,10 @@ All configuration is managed through environment variables (`.env` locally, AWS 
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `ANTHROPIC_API_KEY` | ✅ | Anthropic API key for Claude |
-| `INSTAGRAM_ACCESS_TOKEN` | ✅ | Instagram Graph API long-lived token |
+| `INSTAGRAM_ACCESS_TOKEN` | ✅ | Instagram Graph API long-lived token (60-day TTL, auto-refreshed) |
 | `INSTAGRAM_ACCOUNT_ID` | ✅ | Instagram Business Account ID |
+| `META_APP_ID` | ✅ | Meta App ID — required for automatic token refresh |
+| `META_APP_SECRET` | ✅ | Meta App Secret — required for automatic token refresh |
 | `ELEVENLABS_API_KEY` | ❌ | ElevenLabs TTS API key (falls back to free edge-tts) |
 | `ELEVENLABS_VOICE_ID` | ❌ | ElevenLabs voice ID (default: Daniel) |
 | `PEXELS_API_KEY` | ❌ | Pexels API key for stock footage (falls back to article image) |

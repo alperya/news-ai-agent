@@ -79,6 +79,7 @@ class SocialMediaPost:
     content: str
     hashtags: List[str]
     emoji: str
+    hook: str = ""
     platform: str = "twitter"
     image_url: Optional[str] = None
     _corrected: bool = field(default=False, init=False, repr=False)
@@ -91,6 +92,7 @@ class SocialMediaPost:
             'content': self.content,
             'hashtags': self.hashtags,
             'emoji': self.emoji,
+            'hook': self.hook,
             'platform': self.platform,
             'image_url': self.image_url,
             'full_post': self.format_post()
@@ -178,6 +180,7 @@ class NewsAIAgent:
                 content=result['content'],
                 hashtags=result['hashtags'],
                 emoji=result['emoji'],
+                hook=result.get('hook', ''),
                 platform=target_platform,
                 image_url=article.get('image_url')
             )
@@ -534,6 +537,7 @@ ARTICLE {i}:
                     content=selected.get('content', ''),
                     hashtags=selected.get('hashtags', []),
                     emoji=selected.get('emoji', '📰'),
+                    hook=selected.get('hook', ''),
                     platform=platform,
                     image_url=article.get('image_url')
                 )

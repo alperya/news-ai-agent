@@ -377,6 +377,7 @@ def lambda_handler(event, context):
                         emoji=post.get('emoji', '📰'),
                         image_url=post.get('image_url'),
                         footage_queries=footage_queries,
+                        hook=post.get('hook', ''),
                     )
 
                     s3_video_key = f'reels/reels_{timestamp}.mp4'

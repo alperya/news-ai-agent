@@ -41,6 +41,8 @@ secret_payload = {
 # Include optional API keys if set in .env
 for _key in (
     'ELEVENLABS_API_KEY', 'ELEVENLABS_VOICE_ID', 'PEXELS_API_KEY',
+    # Meta App credentials for automatic Instagram token refresh
+    'META_APP_ID', 'META_APP_SECRET',
     # Observability
     'LANGCHAIN_API_KEY', 'LANGCHAIN_PROJECT', 'LANGCHAIN_TRACING_V2',
     'LANGFUSE_PUBLIC_KEY', 'LANGFUSE_SECRET_KEY', 'LANGFUSE_HOST', 'LANGFUSE_BASE_URL',

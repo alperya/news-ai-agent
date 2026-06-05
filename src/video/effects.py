@@ -25,6 +25,7 @@ from moviepy import (
 from .config import (
     FONT_PATH,
     FPS,
+    HOOK_FONT_SIZE,
     KB_ZOOM_RANGE,
     MIN_CLIP_DURATION,
     SUBTITLE_BG_COLOR,
@@ -337,7 +338,7 @@ def make_subtitle_clip(segment: SubtitleSegment) -> list:
     alpha_img = np.array(a).astype(np.float64) / 255.0
 
     dur = segment.end - segment.start
-    y_pos = int(VIDEO_HEIGHT * 0.72)
+    y_pos = int(VIDEO_HEIGHT * 0.80)
 
     clip = ImageClip(rgb_img).with_duration(dur)
     mask = ImageClip(alpha_img, is_mask=True).with_duration(dur)
@@ -345,6 +346,94 @@ def make_subtitle_clip(segment: SubtitleSegment) -> list:
     clip = clip.with_position((0, y_pos)).with_start(segment.start)
 
     return [clip]
+
+
+def make_hook_clip(hook_text: str, duration: float = 3.0) -> list:
+    """Large centered hook overlay shown for the first N seconds.
+
+    White bold text on a full-width semi-transparent dark scrim,
+    positioned in the upper half of the frame to avoid colliding
+    with the orange subtitle bar at 80%.
+    Returns ``[scrim_clip, text_clip]``.
+    """
+    from PIL import ImageDraw, ImageFont
+
+    try:
+        font = ImageFont.truetype(FONT_PATH, HOOK_FONT_SIZE)
+    except Exception:
+        font = ImageFont.load_default(size=HOOK_FONT_SIZE)
+
+    pad_x, pad_y = 40, 20
+    max_text_width = VIDEO_WIDTH - 2 * pad_x
+
+    # Word-wrap hook text
+    words = hook_text.split()
+    lines: list[str] = []
+    current: list[str] = []
+    for word in words:
+        test = " ".join(current + [word])
+        left, _, right, _ = font.getbbox(test)
+        if (right - left) > max_text_width and current:
+            lines.append(" ".join(current))
+            current = [word]
+        else:
+            current.append(word)
+    if current:
+        lines.append(" ".join(current))
+
+    # Measure total text block height
+    line_gap = 10
+    line_heights = []
+    for line in lines:
+        left, top, right, bottom = font.getbbox(line)
+        line_heights.append((right - left, bottom - top, top))
+
+    max_lh = max(h for _, h, _ in line_heights) if line_heights else HOOK_FONT_SIZE
+    row_h = max_lh + 2 * pad_y
+    total_text_h = len(lines) * row_h + max(0, len(lines) - 1) * line_gap
+
+    # Position scrim in upper-center zone (30–50% of frame height)
+    scrim_top = int(VIDEO_HEIGHT * 0.30)
+    scrim_h = total_text_h + 2 * pad_y
+
+    # ── Scrim (full-width semi-transparent dark bar) ──
+    scrim_arr = np.zeros((scrim_h, VIDEO_WIDTH, 4), dtype=np.uint8)
+    scrim_arr[:, :, 3] = int(255 * 0.55)  # 55% opacity black
+
+    r_s, g_s, b_s, a_s = (
+        Image.fromarray(scrim_arr[:, :, 0]),
+        Image.fromarray(scrim_arr[:, :, 1]),
+        Image.fromarray(scrim_arr[:, :, 2]),
+        Image.fromarray(scrim_arr[:, :, 3]),
+    )
+    scrim_rgb = np.array(Image.merge("RGB", (r_s, g_s, b_s)))
+    scrim_alpha = np.array(a_s).astype(np.float64) / 255.0
+
+    scrim_clip = ImageClip(scrim_rgb).with_duration(duration)
+    scrim_mask = ImageClip(scrim_alpha, is_mask=True).with_duration(duration)
+    scrim_clip = scrim_clip.with_mask(scrim_mask).with_position((0, scrim_top))
+
+    # ── Text ──
+    canvas = Image.new("RGBA", (VIDEO_WIDTH, scrim_h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(canvas)
+    white = (255, 255, 255, 255)
+
+    y = pad_y
+    for line, (lw, lh, top_off) in zip(lines, line_heights):
+        text_x = (VIDEO_WIDTH - lw) // 2
+        text_y = y + (row_h - lh) // 2 - top_off
+        draw.text((text_x, text_y), line, font=font, fill=white)
+        y += row_h + line_gap
+
+    r_t, g_t, b_t, a_t = canvas.split()
+    text_rgb = np.array(Image.merge("RGB", (r_t, g_t, b_t)))
+    text_alpha = np.array(a_t).astype(np.float64) / 255.0
+
+    text_clip = ImageClip(text_rgb).with_duration(duration)
+    text_mask = ImageClip(text_alpha, is_mask=True).with_duration(duration)
+    text_clip = text_clip.with_mask(text_mask).with_position((0, scrim_top))
+
+    return [scrim_clip, text_clip]
 
 
 def make_fallback_background(duration: float) -> CompositeVideoClip:

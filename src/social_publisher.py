@@ -15,14 +15,6 @@ except ImportError:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Import token manager for Instagram token refresh
-try:
-    from token_manager import InstagramTokenManager
-    HAS_TOKEN_MANAGER = True
-except ImportError:
-    HAS_TOKEN_MANAGER = False
-    logger.warning("⚠️  token_manager not available - using static tokens")
-
 class TwitterPublisher:
     def __init__(self):
         if not HAS_TWEEPY:
@@ -71,64 +63,27 @@ class TwitterPublisher:
 
 
 class InstagramPublisher:
-    """Instagram Publisher using Meta Graph API with automatic token refresh"""
-    
+    """Instagram Publisher using Meta Graph API."""
+
     def __init__(self):
-        # Try to use token manager for automatic refresh
-        self.token_manager = None
-        self.access_token = None
-        
-        if HAS_TOKEN_MANAGER:
-            try:
-                self.token_manager = InstagramTokenManager()
-                self.access_token = self.token_manager.get_valid_token()
-                logger.info("✅ Token manager initialized - automatic token refresh enabled")
-            except Exception as e:
-                logger.debug(f"Token manager failed: {str(e)} - falling back to static token")
-                self.token_manager = None
-        
-        # Fallback to static token from environment
-        if not self.access_token:
-            self.access_token = os.getenv('INSTAGRAM_ACCESS_TOKEN')
-            if not self.token_manager and self.access_token:
-                logger.info("Using static token from .env (auto-refresh disabled)")
-        
+        self.access_token = os.getenv('INSTAGRAM_ACCESS_TOKEN')
         self.instagram_account_id = os.getenv('INSTAGRAM_ACCOUNT_ID')
-        
+
         if not self.access_token:
             raise ValueError("INSTAGRAM_ACCESS_TOKEN not found in environment")
         if not self.instagram_account_id:
             raise ValueError("INSTAGRAM_ACCOUNT_ID not found in environment")
-        
-        # Use API v24.0
+
         self.graph_api_url = "https://graph.facebook.com/v24.0"
-        
-        # Log current configuration for verification
+
         logger.info(f"📋 Instagram API Configuration:")
         logger.info(f"   API Version: v24.0")
         logger.info(f"   Account ID: {self.instagram_account_id}")
-        logger.info(f"   Access Token: {'***' + self.access_token[-4:] if self.access_token else 'NOT SET'}")
-        logger.info(f"   Token Refresh: {'Enabled' if self.token_manager else 'Disabled'}")
-    
+        logger.info(f"   Access Token: ***{self.access_token[-4:]}")
+
     def _ensure_valid_token(self):
-        """Ensure we have a valid token before making API calls"""
-        if not self.token_manager:
-            # No token manager - can't refresh, just warn
-            logger.debug("No token manager - using static token")
-            return
-        
-        try:
-            # Get fresh token from manager (will refresh if needed)
-            new_token = self.token_manager.get_valid_token()
-            
-            # Update if token changed
-            if new_token != self.access_token:
-                logger.info("🔄 Token refreshed and updated")
-                self.access_token = new_token
-            
-        except Exception as e:
-            logger.error(f"❌ Token validation failed: {str(e)}")
-            raise ValueError(f"Cannot get valid Instagram token: {str(e)}")
+        # Token kept fresh by the token-refresh Lambda (runs every 30 days)
+        pass
     
     def _check_container_status(self, creation_id: str, max_attempts: int = 30, delay: int = 2) -> bool:
         """Check if media container is ready for publishing"""

@@ -22,6 +22,7 @@ from .tts import generate_tts, clean_for_narration
 from .footage import fetch_stock_clips, fetch_stock_image, download_image
 from .effects import (
     compose_stock_scenes,
+    make_hook_clip,
     make_ken_burns_clip,
     make_fallback_background,
     make_subtitle_clip,
@@ -68,6 +69,7 @@ def create_news_video(
     emoji: str = "📰",
     image_url: Optional[str] = None,
     footage_queries: Optional[List[str]] = None,
+    hook: str = "",
 ) -> str:
     """Create a Reels-format news video.
 
@@ -97,7 +99,13 @@ def create_news_video(
     try:
         # ── 1. TTS narration ──────────────────────────────────────────
         logger.info("🔊 Generating TTS narration...")
-        narration_text = clean_for_narration(content)
+        raw_text = (hook + ". " + content) if hook else content
+        narration_text = clean_for_narration(raw_text)
+        # Hard cap: truncate to 100 words to stay within 30-45 s
+        words = narration_text.split()
+        if len(words) > 100:
+            logger.warning(f"⚠️  Narration too long ({len(words)} words), truncating to 100")
+            narration_text = " ".join(words[:100])
         subtitle_segments = generate_tts(narration_text, audio_path, subs_path)
         logger.info(f"   {len(subtitle_segments)} subtitle segments")
 
@@ -118,6 +126,8 @@ def create_news_video(
         layers = [background]
         for seg in subtitle_segments:
             layers.extend(make_subtitle_clip(seg))
+        if hook:
+            layers.extend(make_hook_clip(hook, duration=3.0))
 
         video = CompositeVideoClip(layers, size=(VIDEO_WIDTH, VIDEO_HEIGHT))
         video = video.with_duration(total_duration)
