@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 .claude/hooks/pre_push_check.py"
+            "command": "bash -c 'cd $(git rev-parse --show-toplevel) && python3 .claude/hooks/pre_push_check.py'"
           }
         ]
       }

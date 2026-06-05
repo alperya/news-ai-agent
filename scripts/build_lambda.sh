@@ -20,6 +20,7 @@ cp -r src/video $BUILD_DIR/video
 cp -r src/music $BUILD_DIR/music
 cp src/fonts/Montserrat-Bold.ttf $BUILD_DIR/Montserrat-Bold.ttf
 cp lambda_handler.py $BUILD_DIR/
+cp token_refresher.py $BUILD_DIR/
 
 # Copy prompt templates
 if [ -d "prompts" ]; then
