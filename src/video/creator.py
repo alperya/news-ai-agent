@@ -123,11 +123,14 @@ def create_news_video(
 
         # ── 3. Compose layers ────────────────────────────────────────
         logger.info("🎨 Composing video layers...")
+        hook_duration = 3.0 if hook else 0.0
         layers = [background]
         for seg in subtitle_segments:
+            if seg.start < hook_duration:
+                continue
             layers.extend(make_subtitle_clip(seg))
         if hook:
-            layers.extend(make_hook_clip(hook, duration=3.0))
+            layers.extend(make_hook_clip(hook, duration=hook_duration))
 
         video = CompositeVideoClip(layers, size=(VIDEO_WIDTH, VIDEO_HEIGHT))
         video = video.with_duration(total_duration)
