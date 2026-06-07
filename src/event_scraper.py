@@ -47,12 +47,12 @@ CATEGORY_EMOJI: Dict[str, str] = {
 
 # RSS feeds that need no API key — (source_name, url, default_location)
 _RSS_SOURCES = [
-    ("amsterdam.nl",  "https://www.amsterdam.nl/agenda/rss/",                  "Amsterdam"),
-    ("rotterdam.nl",  "https://www.rotterdam.nl/actueel/rss/?categorie=agenda", "Rotterdam"),
-    ("denhaag.nl",    "https://www.denhaag.nl/nl/agenda.rss",                   "The Hague"),
-    ("uitagenda.nl",  "https://www.uitagenda.nl/agenda.rss",                    "Netherlands"),
-    ("festileaks.nl", "https://festileaks.com/feed/",                           "Netherlands"),
-    ("doedagen.nl",   "https://www.doedagen.nl/feed/",                          "Netherlands"),
+    ("amsterdam.nl",   "https://www.amsterdam.nl/agenda/rss/",              "Amsterdam"),
+    ("iamsterdam.com", "https://www.iamsterdam.com/en/whats-on?output=rss", "Amsterdam"),
+    ("denhaag.nl",     "https://www.denhaag.nl/nl/rss/",                    "The Hague"),
+    ("crea.nl",        "https://www.crea.nl/rss",                           "Amsterdam"),
+    ("festileaks.nl",  "https://festileaks.com/feed/",                      "Netherlands"),
+    ("doedagen.nl",    "https://www.doedagen.nl/feed/",                     "Netherlands"),
 ]
 
 
@@ -94,8 +94,12 @@ class EventScraper:
     # ── Public ─────────────────────────────────────────────────────────────────
 
     def scrape_all_sources(self, days_ahead: int = 7) -> List[EventItem]:
-        """Fetch from all 8 sources, deduplicate, and return valid events."""
+        """Fetch from all 8 sources, deduplicate, and return valid events.
+
+        Per-source results are stored in ``self.source_results`` for reporting.
+        """
         all_events: List[EventItem] = []
+        self.source_results: List[dict] = []
 
         # 1 + 2 — API sources
         api_sources = [
@@ -105,9 +109,11 @@ class EventScraper:
         for name, fetcher in api_sources:
             try:
                 events = fetcher()
+                self.source_results.append({"source": name, "count": len(events), "ok": True})
                 logger.info(f"   {name}: {len(events)} events")
                 all_events.extend(events)
             except Exception as e:
+                self.source_results.append({"source": name, "count": 0, "ok": False, "error": str(e)})
                 logger.warning(f"⚠️  {name} failed: {e}")
 
         # 3–8 — RSS sources
@@ -116,9 +122,11 @@ class EventScraper:
                 resp = self.session.get(feed_url, timeout=12)
                 resp.raise_for_status()
                 events = self._parse_event_rss(resp.text, source=source_name, default_location=default_city)
+                self.source_results.append({"source": source_name, "count": len(events), "ok": True})
                 logger.info(f"   {source_name}: {len(events)} events")
                 all_events.extend(events)
             except Exception as e:
+                self.source_results.append({"source": source_name, "count": 0, "ok": False, "error": str(e)})
                 logger.warning(f"⚠️  {source_name} RSS failed: {e}")
 
         unique = self._deduplicate(all_events)
@@ -266,6 +274,8 @@ class EventScraper:
         self, xml_text: str, source: str, default_location: str
     ) -> List[EventItem]:
         try:
+            # Strip BOM and leading whitespace — some feeds (e.g. festileaks) prepend \r\n
+            xml_text = xml_text.lstrip('﻿\r\n\t ')
             root = ET.fromstring(xml_text)
         except ET.ParseError as e:
             logger.warning(f"RSS parse error ({source}): {e}")

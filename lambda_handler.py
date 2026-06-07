@@ -8,6 +8,7 @@ import logging
 import os
 import sys
 from datetime import datetime
+from typing import Optional
 import boto3
 from botocore.exceptions import ClientError
 
@@ -22,7 +23,7 @@ from social_publisher import InstagramPublisher
 from video import create_news_video
 from event_scraper import EventScraper
 from video.event_card import create_event_card
-from notifier import send_alert, alert_on_exception, detect_error_type
+from notifier import send_alert, alert_on_exception, detect_error_type, send_event_summary
 
 # Configure logging for Lambda
 logger = logging.getLogger()
@@ -177,48 +178,108 @@ def get_published_urls(bucket_name):
 
 
 def _run_event_pipeline(timestamp: str, bucket_name: str, ai_agent) -> dict:
-    """Weekly events pipeline — runs on Wednesday 18:00 (format: event_post)."""
+    """Weekly events pipeline — runs on Wednesday 18:00 (format: event_post).
+
+    Collects a full run summary, writes detailed logs to S3, and emails
+    a digest to the alert address regardless of success or failure.
+    """
     from datetime import datetime, timedelta, timezone
 
     logger.info("\n" + "="*60)
     logger.info("📅 EVENT PIPELINE: Weekly NL Events Post")
     logger.info("="*60)
 
+    ts_human = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    log_key = f"events/pipeline_{timestamp}.json"
+
+    # Summary dict — built up throughout each stage, sent as email at the end
+    summary: dict = {
+        "status": "started",
+        "timestamp": ts_human,
+        "source_results": [],
+        "raw_count": 0,
+        "unique_count": 0,
+        "valid_count": 0,
+        "scored_count": 0,
+        "all_scored": [],
+        "score_prompt": "",
+        "score_response": "",
+        "selected_events": [],
+        "caption": "",
+        "selection_prompt": "",
+        "selection_response": "",
+        "publish_result": None,
+        "s3_log_key": log_key,
+    }
+
+    def _checkpoint(extra: Optional[dict] = None):
+        """Save current summary snapshot to S3."""
+        data = {**summary, **(extra or {})}
+        save_to_s3(data, log_key, bucket_name)
+
+    def _finish(status: str, http_code: int = 200, error: str = ""):
+        summary["status"] = status
+        if error:
+            summary["error"] = error
+        _checkpoint()
+        send_event_summary(summary)
+        return {
+            "statusCode": http_code,
+            "body": json.dumps({"status": status, "timestamp": timestamp, "error": error}),
+        }
+
     try:
-        # Stage 1 — Scrape
+        # ── Stage 1: Scrape ──────────────────────────────────────────────────
         logger.info("\n🔍 STAGE 1: Scraping events from 8 sources...")
         scraper = EventScraper()
         raw_events = scraper.scrape_all_sources(days_ahead=7)
 
+        source_results = getattr(scraper, "source_results", [])
+        all_raw_count = sum(s.get("count", 0) for s in source_results)
+        summary["source_results"] = source_results
+        summary["raw_count"] = all_raw_count
+        summary["valid_count"] = len(raw_events)
+
+        # Save all raw events to S3 for audit
+        save_to_s3(
+            [e.to_dict() for e in raw_events],
+            f"events/raw_events_{timestamp}.json", bucket_name,
+        )
+        _checkpoint()
+
         if not raw_events:
-            msg = "No events found from any source."
-            logger.warning(f"⚠️  {msg}")
-            save_to_s3(
-                {"status": "no_events", "message": msg, "timestamp": timestamp},
-                f"events/pipeline_{timestamp}.json", bucket_name,
-            )
-            return {"statusCode": 200, "body": json.dumps({"status": "no_events", "timestamp": timestamp})}
+            logger.warning("⚠️  No valid events found from any source.")
+            return _finish("no_events")
 
-        logger.info(f"✅ {len(raw_events)} events after scraping")
+        logger.info(f"✅ {len(raw_events)} valid events after scraping")
 
-        # Stage 2 — AI quality scoring (Haiku)
+        # ── Stage 2: AI quality scoring (Haiku) ─────────────────────────────
         logger.info("\n🤖 STAGE 2: AI quality scoring (Haiku)...")
         events_dicts = [e.to_dict() for e in raw_events]
         scored = ai_agent.score_events(events_dicts)
 
+        all_scored = getattr(ai_agent, "_last_all_scored", [])
+        summary["scored_count"] = len(scored)
+        summary["all_scored"] = all_scored
+        summary["score_prompt"] = getattr(ai_agent, "_last_score_prompt", "")
+        summary["score_response"] = getattr(ai_agent, "_last_score_response", "")
+
+        save_to_s3(
+            {"scored_events": all_scored,
+             "prompt": summary["score_prompt"],
+             "response": summary["score_response"]},
+            f"events/scoring_{timestamp}.json", bucket_name,
+        )
+        _checkpoint()
+
         if len(scored) < 3:
-            msg = f"Only {len(scored)} events passed quality gate (need ≥ 3). Skipping post."
+            msg = f"Only {len(scored)} events passed quality gate (need ≥ 3)."
             logger.warning(f"⚠️  {msg}")
-            save_to_s3(
-                {"status": "quality_gate_failed", "message": msg, "timestamp": timestamp,
-                 "raw_count": len(raw_events), "scored_count": len(scored)},
-                f"events/pipeline_{timestamp}.json", bucket_name,
-            )
-            return {"statusCode": 200, "body": json.dumps({"status": "quality_gate_failed", "timestamp": timestamp})}
+            return _finish("quality_gate_failed", error=msg)
 
         logger.info(f"✅ {len(scored)} events passed quality gate")
 
-        # Stage 3 — AI selection + caption (Opus)
+        # ── Stage 3: AI selection + caption (Opus) ───────────────────────────
         logger.info("\n✍️  STAGE 3: AI event selection and caption (Opus)...")
         now = datetime.now(timezone.utc)
         week_end = now + timedelta(days=7)
@@ -226,80 +287,63 @@ def _run_event_pipeline(timestamp: str, bucket_name: str, ai_agent) -> dict:
 
         result = ai_agent.select_and_format_events(scored, date_range=date_range, max_events=7)
         if not result:
-            msg = "AI event selection returned empty result."
-            logger.error(f"❌ {msg}")
-            save_to_s3(
-                {"status": "ai_failed", "message": msg, "timestamp": timestamp},
-                f"events/pipeline_{timestamp}.json", bucket_name,
-            )
-            return {"statusCode": 500, "body": json.dumps({"status": "ai_failed", "timestamp": timestamp})}
+            return _finish("ai_failed", http_code=500, error="AI selection returned empty result.")
 
         selected_events = result["selected_events"]
         caption = result["caption"]
+        summary["selected_events"] = selected_events
+        summary["caption"] = caption
+        summary["selection_prompt"] = result.get("_prompt", "")
+        summary["selection_response"] = result.get("_raw_response", "")
+
+        save_to_s3(
+            {"selected_events": selected_events, "caption": caption,
+             "prompt": summary["selection_prompt"],
+             "response": summary["selection_response"]},
+            f"events/selection_{timestamp}.json", bucket_name,
+        )
+        _checkpoint()
+
         logger.info(f"✅ {len(selected_events)} events selected, caption {len(caption)} chars")
 
-        # Stage 4 — Generate infographic
+        # ── Stage 4: Generate infographic ────────────────────────────────────
         logger.info("\n🎨 STAGE 4: Generating event card (PIL infographic)...")
         card_path = f"/tmp/event_card_{timestamp}.jpg"
-        create_event_card(
-            events=selected_events,
-            date_range=date_range,
-            output_path=card_path,
-        )
+        create_event_card(events=selected_events, date_range=date_range, output_path=card_path)
 
-        # Stage 5 — Upload card to S3 (public read)
+        # ── Stage 5: Upload to S3 ────────────────────────────────────────────
         logger.info("\n☁️  STAGE 5: Uploading event card to S3...")
-        s3_key = f"events/event_card_{timestamp}.jpg"
+        s3_image_key = f"events/event_card_{timestamp}.jpg"
         s3_client = boto3.client("s3")
         with open(card_path, "rb") as f:
             s3_client.put_object(
-                Bucket=bucket_name,
-                Key=s3_key,
-                Body=f,
-                ContentType="image/jpeg",
+                Bucket=bucket_name, Key=s3_image_key,
+                Body=f, ContentType="image/jpeg",
             )
-        # Pre-signed URL valid for 1 hour — enough for Meta to fetch the image
         image_url = s3_client.generate_presigned_url(
             "get_object",
-            Params={"Bucket": bucket_name, "Key": s3_key},
+            Params={"Bucket": bucket_name, "Key": s3_image_key},
             ExpiresIn=3600,
         )
-        logger.info(f"✅ Card uploaded: {image_url}")
+        logger.info(f"✅ Card uploaded: {s3_image_key}")
 
-        # Stage 6 — Publish to Instagram
+        # ── Stage 6: Publish to Instagram ────────────────────────────────────
         logger.info("\n📱 STAGE 6: Publishing to Instagram...")
         publisher = InstagramPublisher()
         publish_result = publisher.publish_post(
-            content=caption,
-            image_url=image_url,
-            dry_run=False,
+            content=caption, image_url=image_url, dry_run=False,
         )
+        summary["publish_result"] = str(publish_result)
         logger.info(f"✅ Published: {publish_result}")
 
-        # Save results
-        save_to_s3(
-            {"status": "success", "timestamp": timestamp, "events_count": len(selected_events),
-             "image_url": image_url, "events": selected_events},
-            f"events/pipeline_{timestamp}.json", bucket_name,
-        )
+        # Final S3 records
         save_to_s3(selected_events, f"events_{timestamp}.json", bucket_name)
 
-        return {
-            "statusCode": 200,
-            "body": json.dumps({
-                "status": "success",
-                "events_published": len(selected_events),
-                "timestamp": timestamp,
-            }),
-        }
+        return _finish("success")
 
     except Exception as e:
         logger.error(f"❌ Event pipeline failed: {e}", exc_info=True)
-        save_to_s3(
-            {"status": "error", "error": str(e), "timestamp": timestamp},
-            f"events/pipeline_{timestamp}.json", bucket_name,
-        )
-        return {"statusCode": 500, "body": json.dumps({"status": "error", "error": str(e)})}
+        return _finish("error", http_code=500, error=str(e))
 
 
 def lambda_handler(event, context):

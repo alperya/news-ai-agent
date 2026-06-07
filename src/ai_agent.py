@@ -411,11 +411,22 @@ class NewsAIAgent:
                 for i in range(len(events))
                 if score_map.get(i, 0) >= 5
             ]
+            all_scored = [
+                {**events[i], "_score": score_map.get(i, 0)}
+                for i in range(len(events))
+            ]
             logger.info(f"🔍 Event scoring: {len(events)} in → {len(passed)} passed (score ≥ 5)")
+            # Store for pipeline reporting
+            self._last_score_prompt = prompt
+            self._last_score_response = raw
+            self._last_all_scored = all_scored
             return passed
 
         except Exception as e:
             logger.warning(f"⚠️  Event scoring failed, using all events unfiltered: {e}")
+            self._last_score_prompt = prompt
+            self._last_score_response = str(e)
+            self._last_all_scored = []
             return events
 
     @_lf_observe(name="select_and_format_events")
@@ -484,7 +495,13 @@ class NewsAIAgent:
                 return None
 
             logger.info(f"✅ Events selected: {len(selected)} events, caption {len(caption)} chars")
-            return {"selected_events": selected, "caption": caption, "hashtags": hashtags}
+            return {
+                "selected_events": selected,
+                "caption": caption,
+                "hashtags": hashtags,
+                "_prompt": prompt,
+                "_raw_response": raw,
+            }
 
         except Exception as e:
             logger.error(f"❌ Event selection/formatting failed: {e}")
