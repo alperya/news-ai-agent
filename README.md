@@ -1,6 +1,6 @@
-# 🤖 News AI Agent — Dutch News Automation
+# 🤖 News AI Agent — Dutch News & Events Automation
 
-An intelligent AI-powered pipeline that automatically scrapes Dutch news from NOS and RTL Nieuws, processes them with Claude AI, and publishes engaging content to Instagram — both as photo posts and auto-generated Reels videos with TTS narration.
+An intelligent AI-powered pipeline that automatically scrapes Dutch news from NOS and RTL Nieuws, processes them with Claude AI, and publishes engaging content to Instagram — both as photo posts and auto-generated Reels videos with TTS narration. Every Wednesday at 18:00 it also publishes a curated weekly events digest for the Netherlands.
 
 ## 📦 Features
 
@@ -13,7 +13,8 @@ An intelligent AI-powered pipeline that automatically scrapes Dutch news from NO
 - ✅ Tiered news selection (🇳🇱 Holland → 🇪🇺 Europe → 🌍 Global) with viral potential scoring
 - ✅ Source attribution with article links in posts
 - ✅ Duplicate detection (prevents reposting same articles)
-- ✅ AWS Lambda deployment with scheduled posting (3× daily)
+- ✅ **Weekly events post** — every Wednesday 18:00, a PIL-generated infographic of 5–7 curated NL events drawn from 8 sources (Eventbrite, Ticketmaster, amsterdam.nl, rotterdam.nl, denhaag.nl, uitagenda.nl, festileaks.nl, doedagen.nl)
+- ✅ AWS Lambda deployment with scheduled posting (4× weekly cadence)
 - ✅ Infrastructure as Code (Terraform)
 - ✅ AWS Secrets Manager for credential management
 - ✅ Email alerts on errors (OOM, token expiry, publish failures) via AWS SNS
@@ -88,12 +89,13 @@ python3 scripts/update_secrets.py
 ## 📁 Project Structure
 
 ```
-├── lambda_handler.py              # AWS Lambda entry point (news pipeline)
+├── lambda_handler.py              # AWS Lambda entry point (news + events pipeline)
 ├── token_refresher.py             # AWS Lambda — refreshes Instagram token every 30 days
 ├── src/                           # Application source code
 │   ├── main.py                    # Local pipeline runner (CLI)
-│   ├── ai_agent.py                # Claude AI content processing
+│   ├── ai_agent.py                # Claude AI content processing + event curation
 │   ├── news_scraper.py            # RSS scraping (NOS, RTL Nieuws)
+│   ├── event_scraper.py           # 📅 8-source NL event scraper
 │   ├── social_publisher.py        # Instagram publishing (photo + Reels)
 │   ├── notifier.py                # Error alerts via AWS SNS (email)
 │   ├── video/                     # 🎬 Reels video generation package
@@ -103,13 +105,15 @@ python3 scripts/update_secrets.py
 │   │   ├── footage.py             # Pexels stock video/photo fetcher
 │   │   ├── effects.py             # Ken Burns, gradients, subtitle clips
 │   │   ├── audio.py               # Narration + background music mixing
-│   │   └── creator.py             # Main orchestrator
+│   │   ├── creator.py             # Reels orchestrator
+│   │   └── event_card.py          # 📅 PIL 1080×1080 events infographic generator
 │   ├── fonts/                     # Bundled fonts (Montserrat Bold, OFL)
 │   └── music/                     # Background music for Reels
 ├── prompts/                       # AI prompt templates (editable text files)
 │   ├── batch_selection.txt        # News selection & prioritization prompt
 │   ├── single_article.txt         # Single article content generation prompt
-│   └── quality_check.txt          # Quality gate review prompt
+│   ├── quality_check.txt          # Quality gate review prompt
+│   └── event_selection.txt        # 📅 Weekly events selection & caption prompt
 ├── scripts/                       # Shell & utility scripts
 │   ├── build_lambda.sh            # Build Lambda deployment ZIP
 │   ├── deploy.sh                  # Full deployment script
@@ -130,13 +134,25 @@ python3 scripts/update_secrets.py
 
 ## 📅 Posting Schedule
 
-AWS Lambda runs 3× daily via EventBridge (UTC → Amsterdam CET/CEST):
+AWS Lambda runs via EventBridge (UTC → Amsterdam CET/CEST):
 
-| Schedule  | UTC   | Amsterdam | Format         |
-|-----------|-------|-----------|----------------|
-| Morning   | 07:00 | 08:00     | 📷 Photo post  |
-| Afternoon | 11:30 | 12:30     | 🎬 Reels video |
-| Evening   | 16:30 | 17:30     | 📷 Photo post  |
+| Schedule              | UTC         | Amsterdam | Format                   |
+|-----------------------|-------------|-----------|--------------------------|
+| Morning (daily)       | 07:00       | 08:00     | 📷 Photo post (news)     |
+| Afternoon (daily)     | 11:30       | 12:30     | 🎬 Reels video (news)    |
+| Evening (daily)       | 16:30       | 17:30     | 📷 Photo post (news)     |
+| Weekly events (Wed)   | 17:00       | 18:00     | 📅 Events infographic    |
+
+### 📅 Weekly Events Post
+
+Every Wednesday at 18:00 (Amsterdam time) the pipeline runs a separate events mode (`format: event_post`) that:
+1. Scrapes upcoming NL events from **8 sources**: Eventbrite API, Ticketmaster API, amsterdam.nl, rotterdam.nl, denhaag.nl, uitagenda.nl, festileaks.nl, doedagen.nl
+2. Scores each event with Claude Haiku (0–8 rubric: audience fit, completeness, public access, visual appeal)
+3. Selects the best 5–7 events with Claude Opus and generates the caption
+4. Generates a branded 1080×1080 PIL infographic with event listings
+5. Publishes to Instagram as a feed photo post
+
+All posts include an AI-assistance disclaimer at the bottom.
 
 ## 🛠️ Tech Stack
 
@@ -166,6 +182,8 @@ All configuration is managed through environment variables (`.env` locally, AWS 
 | `ELEVENLABS_API_KEY` | ❌ | ElevenLabs TTS API key (falls back to free edge-tts) |
 | `ELEVENLABS_VOICE_ID` | ❌ | ElevenLabs voice ID (default: Daniel) |
 | `PEXELS_API_KEY` | ❌ | Pexels API key for stock footage (falls back to article image) |
+| `EVENTBRITE_API_KEY` | ❌ | Eventbrite private token — enables Eventbrite event scraping |
+| `TICKETMASTER_API_KEY` | ❌ | Ticketmaster Consumer Key — enables Ticketmaster event scraping |
 | `ALERT_EMAIL` | ❌ | Email for Lambda error alerts — OOM, token expiry, publish failures |
 | `REVIEW_MODEL` | ❌ | Quality gate model (default: `claude-haiku-4-5-20251001`) |
 | `LANGCHAIN_API_KEY` | ❌ | LangSmith API key — enables LLM trace dashboard |

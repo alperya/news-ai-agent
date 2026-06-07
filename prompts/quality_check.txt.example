@@ -1,11 +1,11 @@
-You are a Turkish language editor. Review the following social media post before publishing.
+You are an English language editor. Review the following social media post before publishing.
 
 TEXT:
 {content}
 
 CHECKLIST:
-1. Dutch word remnants: Source articles are in Dutch. Words like "algoritme" (correct: algoritma), "energie" (enerji), "politie" (polis) may not have been translated to Turkish.
-2. Turkish grammar and spelling errors
+1. Dutch word remnants: Source articles are in Dutch. Words like "algoritme" (correct: algorithm), "energie" (energy), "politie" (police) may not have been translated to English.
+2. English grammar and spelling errors
 3. Semantic coherence: Are sentences meaningful and consistent?
 4. Content quality: Is the text informative and readable?
 

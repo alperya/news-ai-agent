@@ -412,6 +412,29 @@ resource "aws_cloudwatch_event_target" "evening_target" {
   })
 }
 
+# Weekly events post: Wednesday 18:00 Amsterdam (17:00 UTC / CET)
+resource "aws_cloudwatch_event_rule" "events_schedule" {
+  name                = "${var.project_name}-weekly-events"
+  description         = "Weekly NL events post — Wednesday 18:00 Amsterdam (17:00 UTC)"
+  schedule_expression = "cron(0 17 ? * WED *)"
+
+  tags = {
+    Name        = "${var.project_name}-events-schedule"
+    Environment = "production"
+    ManagedBy   = "terraform"
+  }
+}
+
+resource "aws_cloudwatch_event_target" "events_target" {
+  rule      = aws_cloudwatch_event_rule.events_schedule.name
+  target_id = "events-lambda"
+  arn       = aws_lambda_function.news_agent.arn
+
+  input = jsonencode({
+    format = "event_post"
+  })
+}
+
 # ===== Lambda Permissions for EventBridge =====
 resource "aws_lambda_permission" "allow_morning_eventbridge" {
   statement_id  = "AllowExecutionFromEventBridgeMorning"
@@ -435,6 +458,14 @@ resource "aws_lambda_permission" "allow_evening_eventbridge" {
   function_name = aws_lambda_function.news_agent.function_name
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.evening_schedule.arn
+}
+
+resource "aws_lambda_permission" "allow_events_eventbridge" {
+  statement_id  = "AllowExecutionFromEventBridgeEvents"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.news_agent.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.events_schedule.arn
 }
 
 # ===== Token Refresh Lambda =====

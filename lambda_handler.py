@@ -20,6 +20,8 @@ from news_scraper import DutchNewsScraper
 from ai_agent import NewsAIAgent
 from social_publisher import InstagramPublisher
 from video import create_news_video
+from event_scraper import EventScraper
+from video.event_card import create_event_card
 from notifier import send_alert, alert_on_exception, detect_error_type
 
 # Configure logging for Lambda
@@ -67,6 +69,11 @@ def get_secrets():
     if 'ELEVENLABS_VOICE_ID' in secret:
         os.environ['ELEVENLABS_VOICE_ID'] = secret['ELEVENLABS_VOICE_ID']
 
+    # Event scraper API keys (optional)
+    for key in ('EVENTBRITE_API_KEY', 'TICKETMASTER_API_KEY'):
+        if key in secret:
+            os.environ[key] = secret[key]
+
     # Set AI prompts if available
     if 'AI_PROMPT_BATCH_SELECTION' in secret:
         os.environ['AI_PROMPT_BATCH_SELECTION'] = secret['AI_PROMPT_BATCH_SELECTION']
@@ -74,6 +81,8 @@ def get_secrets():
         os.environ['AI_PROMPT_SINGLE_ARTICLE'] = secret['AI_PROMPT_SINGLE_ARTICLE']
     if 'AI_PROMPT_QUALITY_CHECK' in secret:
         os.environ['AI_PROMPT_QUALITY_CHECK'] = secret['AI_PROMPT_QUALITY_CHECK']
+    if 'AI_PROMPT_EVENT_SELECTION' in secret:
+        os.environ['AI_PROMPT_EVENT_SELECTION'] = secret['AI_PROMPT_EVENT_SELECTION']
 
     # LangSmith observability (optional)
     for key in ('LANGCHAIN_API_KEY', 'LANGCHAIN_PROJECT', 'LANGCHAIN_TRACING_V2'):
@@ -167,10 +176,136 @@ def get_published_urls(bucket_name):
         return published_urls
 
 
+def _run_event_pipeline(timestamp: str, bucket_name: str, ai_agent) -> dict:
+    """Weekly events pipeline — runs on Wednesday 18:00 (format: event_post)."""
+    from datetime import datetime, timedelta, timezone
+
+    logger.info("\n" + "="*60)
+    logger.info("📅 EVENT PIPELINE: Weekly NL Events Post")
+    logger.info("="*60)
+
+    try:
+        # Stage 1 — Scrape
+        logger.info("\n🔍 STAGE 1: Scraping events from 8 sources...")
+        scraper = EventScraper()
+        raw_events = scraper.scrape_all_sources(days_ahead=7)
+
+        if not raw_events:
+            msg = "No events found from any source."
+            logger.warning(f"⚠️  {msg}")
+            save_to_s3(
+                {"status": "no_events", "message": msg, "timestamp": timestamp},
+                f"events/pipeline_{timestamp}.json", bucket_name,
+            )
+            return {"statusCode": 200, "body": json.dumps({"status": "no_events", "timestamp": timestamp})}
+
+        logger.info(f"✅ {len(raw_events)} events after scraping")
+
+        # Stage 2 — AI quality scoring (Haiku)
+        logger.info("\n🤖 STAGE 2: AI quality scoring (Haiku)...")
+        events_dicts = [e.to_dict() for e in raw_events]
+        scored = ai_agent.score_events(events_dicts)
+
+        if len(scored) < 3:
+            msg = f"Only {len(scored)} events passed quality gate (need ≥ 3). Skipping post."
+            logger.warning(f"⚠️  {msg}")
+            save_to_s3(
+                {"status": "quality_gate_failed", "message": msg, "timestamp": timestamp,
+                 "raw_count": len(raw_events), "scored_count": len(scored)},
+                f"events/pipeline_{timestamp}.json", bucket_name,
+            )
+            return {"statusCode": 200, "body": json.dumps({"status": "quality_gate_failed", "timestamp": timestamp})}
+
+        logger.info(f"✅ {len(scored)} events passed quality gate")
+
+        # Stage 3 — AI selection + caption (Opus)
+        logger.info("\n✍️  STAGE 3: AI event selection and caption (Opus)...")
+        now = datetime.now(timezone.utc)
+        week_end = now + timedelta(days=7)
+        date_range = f"{now.strftime('%-d')}–{week_end.strftime('%-d %B %Y')}"
+
+        result = ai_agent.select_and_format_events(scored, date_range=date_range, max_events=7)
+        if not result:
+            msg = "AI event selection returned empty result."
+            logger.error(f"❌ {msg}")
+            save_to_s3(
+                {"status": "ai_failed", "message": msg, "timestamp": timestamp},
+                f"events/pipeline_{timestamp}.json", bucket_name,
+            )
+            return {"statusCode": 500, "body": json.dumps({"status": "ai_failed", "timestamp": timestamp})}
+
+        selected_events = result["selected_events"]
+        caption = result["caption"]
+        logger.info(f"✅ {len(selected_events)} events selected, caption {len(caption)} chars")
+
+        # Stage 4 — Generate infographic
+        logger.info("\n🎨 STAGE 4: Generating event card (PIL infographic)...")
+        card_path = f"/tmp/event_card_{timestamp}.jpg"
+        create_event_card(
+            events=selected_events,
+            date_range=date_range,
+            output_path=card_path,
+        )
+
+        # Stage 5 — Upload card to S3 (public read)
+        logger.info("\n☁️  STAGE 5: Uploading event card to S3...")
+        s3_key = f"events/event_card_{timestamp}.jpg"
+        s3_client = boto3.client("s3")
+        with open(card_path, "rb") as f:
+            s3_client.put_object(
+                Bucket=bucket_name,
+                Key=s3_key,
+                Body=f,
+                ContentType="image/jpeg",
+            )
+        # Pre-signed URL valid for 1 hour — enough for Meta to fetch the image
+        image_url = s3_client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": bucket_name, "Key": s3_key},
+            ExpiresIn=3600,
+        )
+        logger.info(f"✅ Card uploaded: {image_url}")
+
+        # Stage 6 — Publish to Instagram
+        logger.info("\n📱 STAGE 6: Publishing to Instagram...")
+        publisher = InstagramPublisher()
+        publish_result = publisher.publish_post(
+            content=caption,
+            image_url=image_url,
+            dry_run=False,
+        )
+        logger.info(f"✅ Published: {publish_result}")
+
+        # Save results
+        save_to_s3(
+            {"status": "success", "timestamp": timestamp, "events_count": len(selected_events),
+             "image_url": image_url, "events": selected_events},
+            f"events/pipeline_{timestamp}.json", bucket_name,
+        )
+        save_to_s3(selected_events, f"events_{timestamp}.json", bucket_name)
+
+        return {
+            "statusCode": 200,
+            "body": json.dumps({
+                "status": "success",
+                "events_published": len(selected_events),
+                "timestamp": timestamp,
+            }),
+        }
+
+    except Exception as e:
+        logger.error(f"❌ Event pipeline failed: {e}", exc_info=True)
+        save_to_s3(
+            {"status": "error", "error": str(e), "timestamp": timestamp},
+            f"events/pipeline_{timestamp}.json", bucket_name,
+        )
+        return {"statusCode": 500, "body": json.dumps({"status": "error", "error": str(e)})}
+
+
 def lambda_handler(event, context):
     """
     AWS Lambda handler function
-    
+
     Args:
         event: Lambda event (from EventBridge)
         context: Lambda context
@@ -190,7 +325,13 @@ def lambda_handler(event, context):
         # Load secrets from AWS Secrets Manager
         logger.info("\n🔐 Loading secrets from AWS Secrets Manager...")
         get_secrets()
-        
+
+        # Detect run mode early — event_post bypasses the news pipeline entirely
+        is_event_post = isinstance(event, dict) and event.get('format') == 'event_post'
+        if is_event_post:
+            ai_agent = NewsAIAgent()
+            return _run_event_pipeline(timestamp, bucket_name, ai_agent)
+
         # STAGE 1: Scrape news
         logger.info("\n📰 STAGE 1: Scraping news articles...")
         scraper = DutchNewsScraper()

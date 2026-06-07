@@ -351,6 +351,145 @@ class NewsAIAgent:
             logger.warning(f"⚠️  Footage query generation failed, falling back to keyword extraction: {e}")
         return []
 
+    # ── Event methods ──────────────────────────────────────────────────────────
+
+    @_lf_observe(name="score_events")
+    def score_events(self, events: List[Dict]) -> List[Dict]:
+        """Score each event with Claude Haiku (0–8). Returns events with score ≥ 5.
+
+        Scoring rubric per event (total 8 pts):
+          audience_fit   0–3: relevant to English-speaking expats/tourists?
+          completeness   0–2: has title + date + location + price?
+          public_access  0–2: genuinely public event (not private/corporate)?
+          visual_appeal  0–1: photogenic / Instagram-worthy?
+        """
+        if not events:
+            return []
+
+        events_json = json.dumps(
+            [{"index": i, "title": e.get("title"), "description": e.get("description"),
+              "location": e.get("location"), "start_date": e.get("start_date"),
+              "price": e.get("price"), "category": e.get("category"), "source": e.get("source")}
+             for i, e in enumerate(events)],
+            ensure_ascii=False,
+        )
+
+        prompt = (
+            "You are evaluating Netherlands events for an English-language Instagram account "
+            "targeting expats, international students, and tourists.\n\n"
+            "Score each event from 0–8 using this rubric:\n"
+            "  audience_fit  (0–3): How relevant to English-speaking non-Dutch audience?\n"
+            "  completeness  (0–2): Has usable title + date + location? Price is a bonus.\n"
+            "  public_access (0–2): Is it a genuine public event anyone can attend?\n"
+            "  visual_appeal (0–1): Is it visually interesting for Instagram?\n\n"
+            f"Events (JSON):\n{events_json}\n\n"
+            "Return ONLY valid JSON: "
+            '{{"scores": [{{"index": 0, "score": 7}}, ...]}}'
+        )
+
+        try:
+            response = self.client.messages.create(
+                model=self.review_model,
+                max_tokens=1000,
+                temperature=0,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            _lf_ctx.update_current_observation(
+                input=prompt,
+                output=getattr(response.content[0], 'text', ''),
+                usage={"input": response.usage.input_tokens, "output": response.usage.output_tokens},
+                model=self.review_model,
+                metadata={"event_count": len(events)},
+            )
+            raw = getattr(response.content[0], 'text', '')
+            match = re.search(r'\{.*\}', raw, re.DOTALL)
+            result = json.loads(match.group() if match else raw)
+
+            score_map = {s["index"]: s["score"] for s in result.get("scores", [])}
+            passed = [
+                {**events[i], "_score": score_map.get(i, 0)}
+                for i in range(len(events))
+                if score_map.get(i, 0) >= 5
+            ]
+            logger.info(f"🔍 Event scoring: {len(events)} in → {len(passed)} passed (score ≥ 5)")
+            return passed
+
+        except Exception as e:
+            logger.warning(f"⚠️  Event scoring failed, using all events unfiltered: {e}")
+            return events
+
+    @_lf_observe(name="select_and_format_events")
+    def select_and_format_events(
+        self, events: List[Dict], date_range: str, max_events: int = 7
+    ) -> Optional[Dict]:
+        """Select best events and generate Instagram caption + card data.
+
+        Returns dict with keys:
+          selected_events: list of event dicts (title, date_label, location, price, emoji, description)
+          caption:         full formatted Instagram caption string
+          hashtags:        list of hashtag strings
+
+        Returns None on failure.
+        """
+        if not events:
+            return None
+
+        events_text = ""
+        for i, ev in enumerate(events, 1):
+            events_text += (
+                f"\nEVENT {i}:\n"
+                f"  Title: {ev.get('title', '')}\n"
+                f"  Description: {ev.get('description', '')}\n"
+                f"  Start: {ev.get('start_date', '')}\n"
+                f"  Location: {ev.get('location', '')}\n"
+                f"  Venue: {ev.get('venue', '') or 'N/A'}\n"
+                f"  Category: {ev.get('category', '')}\n"
+                f"  Price: {ev.get('price') or 'Unknown'}\n"
+                f"  Source: {ev.get('source', '')}\n"
+                f"  URL: {ev.get('url', '')}\n"
+            )
+
+        prompt_template = self._load_prompt('event_selection.txt', 'AI_PROMPT_EVENT_SELECTION')
+        prompt = prompt_template.format(
+            event_count=len(events),
+            max_events=max_events,
+            date_range=date_range,
+            events_text=events_text,
+        )
+
+        try:
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=3000,
+                temperature=0.2,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            _lf_ctx.update_current_observation(
+                input=prompt,
+                output=getattr(response.content[0], 'text', ''),
+                usage={"input": response.usage.input_tokens, "output": response.usage.output_tokens},
+                model=self.model,
+                metadata={"event_count": len(events), "max_events": max_events, "date_range": date_range},
+            )
+            raw = getattr(response.content[0], 'text', '')
+            match = re.search(r'\{.*\}', raw, re.DOTALL)
+            result = json.loads(match.group() if match else raw)
+
+            selected = result.get("selected_events", [])
+            caption = result.get("caption", "")
+            hashtags = result.get("hashtags", [])
+
+            if not selected or not caption:
+                logger.error("❌ Event selection: empty response from AI")
+                return None
+
+            logger.info(f"✅ Events selected: {len(selected)} events, caption {len(caption)} chars")
+            return {"selected_events": selected, "caption": caption, "hashtags": hashtags}
+
+        except Exception as e:
+            logger.error(f"❌ Event selection/formatting failed: {e}")
+            return None
+
     def _save_error(self, post: SocialMediaPost, reasons: List[str]):
         """Save rejected post details to S3 (Lambda) or local errors/ directory."""
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
