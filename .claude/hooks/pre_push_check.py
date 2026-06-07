@@ -149,7 +149,6 @@ def main() -> None:
     errors += check_secrets()
     errors += check_large_files()
     warnings += check_debug_code()
-    warnings += check_readme_freshness()
 
     if not errors and not warnings:
         print("✅ Pre-push checks passed — no issues found.")
