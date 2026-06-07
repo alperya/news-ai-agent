@@ -183,7 +183,7 @@ def prepare_image_for_portrait(img_path: str, tmp_dir: str) -> str:
         bg_scale = max(target_w / img.width, target_h / img.height)
         bg = img.resize(
             (int(img.width * bg_scale), int(img.height * bg_scale)),
-            Image.LANCZOS,
+            Image.Resampling.LANCZOS,
         )
         left = (bg.width - target_w) // 2
         top = (bg.height - target_h) // 2
@@ -195,7 +195,7 @@ def prepare_image_for_portrait(img_path: str, tmp_dir: str) -> str:
         fg_scale = min(target_w / img.width, target_h / img.height)
         fg = img.resize(
             (int(img.width * fg_scale), int(img.height * fg_scale)),
-            Image.LANCZOS,
+            Image.Resampling.LANCZOS,
         )
         x = (target_w - fg.width) // 2
         y = (target_h - fg.height) // 2
@@ -222,7 +222,7 @@ def make_ken_burns_clip(
         cy = max(0, min(int((img_h - crop_h) * (0.4 + 0.2 * progress)), img_h - crop_h))
         crop = prepared[cy: cy + crop_h, cx: cx + crop_w]
         pil = Image.fromarray(crop).resize(
-            (VIDEO_WIDTH, VIDEO_HEIGHT), Image.LANCZOS,
+            (VIDEO_WIDTH, VIDEO_HEIGHT), Image.Resampling.LANCZOS,
         )
         return np.array(pil)
 
@@ -303,7 +303,7 @@ def make_subtitle_clip(segment: SubtitleSegment) -> list:
     line_metrics: list[tuple[int, int, int]] = []  # (width, height, top_offset)
     for line in lines:
         left, top, right, bottom = font.getbbox(line)
-        line_metrics.append((right - left, bottom - top, top))
+        line_metrics.append((int(right - left), int(bottom - top), int(top)))
 
     max_line_h = max(h for _, h, _ in line_metrics) if line_metrics else SUBTITLE_FONT_SIZE
     row_h = max_line_h + 2 * pad_y
@@ -386,7 +386,7 @@ def make_hook_clip(hook_text: str, duration: float = 3.0) -> list:
     line_heights = []
     for line in lines:
         left, top, right, bottom = font.getbbox(line)
-        line_heights.append((right - left, bottom - top, top))
+        line_heights.append((int(right - left), int(bottom - top), int(top)))
 
     max_lh = max(h for _, h, _ in line_heights) if line_heights else HOOK_FONT_SIZE
     row_h = max_lh + 2 * pad_y
@@ -468,7 +468,7 @@ def make_fallback_background(duration: float) -> CompositeVideoClip:
         cy = max(0, min(int((img_h - crop_h) * (0.4 + 0.2 * progress)), img_h - crop_h))
         crop = prepared[cy: cy + crop_h, cx: cx + crop_w]
         pil = Image.fromarray(crop).resize(
-            (VIDEO_WIDTH, VIDEO_HEIGHT), Image.LANCZOS,
+            (VIDEO_WIDTH, VIDEO_HEIGHT), Image.Resampling.LANCZOS,
         )
         return np.array(pil)
 
@@ -506,7 +506,7 @@ def _fit_to_portrait(clip) -> VideoClip:
     bg_scale = max(VIDEO_WIDTH / pil_bg.width, VIDEO_HEIGHT / pil_bg.height)
     pil_bg = pil_bg.resize(
         (int(pil_bg.width * bg_scale), int(pil_bg.height * bg_scale)),
-        Image.LANCZOS,
+        Image.Resampling.LANCZOS,
     )
     left = (pil_bg.width - VIDEO_WIDTH) // 2
     top = (pil_bg.height - VIDEO_HEIGHT) // 2

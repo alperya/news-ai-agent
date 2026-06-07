@@ -412,6 +412,7 @@ def lambda_handler(event, context):
                     result = {'status': 'queued', 'publisher': reels_fn, 's3_key': s3_video_key}
 
                 else:
+                    assert publisher is not None
                     result = publisher.publish_post(
                         content=post['full_post'],
                         image_url=post.get('image_url'),

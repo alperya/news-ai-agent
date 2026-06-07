@@ -19,14 +19,14 @@ except ImportError:
     _ls_wrap_anthropic = None  # type: ignore[assignment]
 
 try:
-    from langfuse import observe as _lf_observe, get_client as _lf_get_client
+    from langfuse import observe as _lf_observe, get_client as _lf_get_client  # type: ignore[assignment]
     _LANGFUSE_AVAILABLE = True
 
     class _LangfuseCtx:
         """Thin adapter: maps our internal call to Langfuse v4 get_client() API."""
         def update_current_observation(
-            self, *, model: str = None, input=None, output=None,  # type: ignore[assignment]
-            usage: dict = None, metadata: dict = None, **_: object,
+            self, *, model: Optional[str] = None, input=None, output=None,
+            usage: Optional[dict] = None, metadata: Optional[dict] = None, **_: object,
         ) -> None:
             try:
                 _lf_get_client().update_current_generation(
