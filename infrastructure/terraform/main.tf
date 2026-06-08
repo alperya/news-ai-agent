@@ -413,22 +413,45 @@ resource "aws_cloudwatch_event_target" "evening_target" {
 }
 
 # Weekly events post: Wednesday 18:00 Amsterdam (17:00 UTC / CET)
-resource "aws_cloudwatch_event_rule" "events_schedule" {
-  name                = "${var.project_name}-weekly-events"
-  description         = "Weekly NL events post — Wednesday 18:00 Amsterdam (17:00 UTC) [DISABLED]"
-  schedule_expression = "cron(0 17 ? * WED *)"
-  is_enabled          = false   # feature toggle — set true to re-enable
+resource "aws_cloudwatch_event_rule" "events_tuesday_schedule" {
+  name                = "${var.project_name}-events-tuesday"
+  description         = "NL events post — Tuesday 18:00 Amsterdam (16:00 UTC / CEST)"
+  schedule_expression = "cron(0 16 ? * TUE *)"
+  is_enabled          = true
 
   tags = {
-    Name        = "${var.project_name}-events-schedule"
+    Name        = "${var.project_name}-events-tuesday"
     Environment = "production"
     ManagedBy   = "terraform"
   }
 }
 
-resource "aws_cloudwatch_event_target" "events_target" {
-  rule      = aws_cloudwatch_event_rule.events_schedule.name
-  target_id = "events-lambda"
+resource "aws_cloudwatch_event_target" "events_tuesday_target" {
+  rule      = aws_cloudwatch_event_rule.events_tuesday_schedule.name
+  target_id = "events-tuesday-lambda"
+  arn       = aws_lambda_function.news_agent.arn
+
+  input = jsonencode({
+    format = "event_post"
+  })
+}
+
+resource "aws_cloudwatch_event_rule" "events_saturday_schedule" {
+  name                = "${var.project_name}-events-saturday"
+  description         = "NL events post — Saturday 15:00 Amsterdam (13:00 UTC / CEST)"
+  schedule_expression = "cron(0 13 ? * SAT *)"
+  is_enabled          = true
+
+  tags = {
+    Name        = "${var.project_name}-events-saturday"
+    Environment = "production"
+    ManagedBy   = "terraform"
+  }
+}
+
+resource "aws_cloudwatch_event_target" "events_saturday_target" {
+  rule      = aws_cloudwatch_event_rule.events_saturday_schedule.name
+  target_id = "events-saturday-lambda"
   arn       = aws_lambda_function.news_agent.arn
 
   input = jsonencode({
@@ -461,12 +484,20 @@ resource "aws_lambda_permission" "allow_evening_eventbridge" {
   source_arn    = aws_cloudwatch_event_rule.evening_schedule.arn
 }
 
-resource "aws_lambda_permission" "allow_events_eventbridge" {
-  statement_id  = "AllowExecutionFromEventBridgeEvents"
+resource "aws_lambda_permission" "allow_events_tuesday_eventbridge" {
+  statement_id  = "AllowExecutionFromEventBridgeEventsTuesday"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.news_agent.function_name
   principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.events_schedule.arn
+  source_arn    = aws_cloudwatch_event_rule.events_tuesday_schedule.arn
+}
+
+resource "aws_lambda_permission" "allow_events_saturday_eventbridge" {
+  statement_id  = "AllowExecutionFromEventBridgeEventsSaturday"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.news_agent.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.events_saturday_schedule.arn
 }
 
 # ===== Token Refresh Lambda =====
