@@ -1,8 +1,10 @@
 """
 Event Scraper for the Netherlands
-Sources (8):
-  API  — Eventbrite, Ticketmaster
-  RSS  — amsterdam.nl, rotterdam.nl, denhaag.nl, uitagenda.nl, festileaks.nl, doedagen.nl
+Sources (7):
+  API  — Ticketmaster
+  RSS  — amsterdam.nl, uitagenda.nl, denhaag.nl, partyflock.nl, festileaks.nl, doedagen.nl
+
+Note: Eventbrite removed public API access in 2023; replaced by partyflock.nl RSS.
 """
 
 import html
@@ -13,7 +15,6 @@ import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
-from urllib.parse import urlencode
 
 import requests
 
@@ -46,13 +47,15 @@ CATEGORY_EMOJI: Dict[str, str] = {
 }
 
 # RSS feeds that need no API key — (source_name, url, default_location)
+# amsterdam.nl: /agenda/?output=rss (old /agenda/rss/ returns 403)
+# partyflock.nl: replaces Eventbrite (Eventbrite shut down public API access in 2023)
 _RSS_SOURCES = [
-    ("amsterdam.nl",   "https://www.amsterdam.nl/agenda/rss/",              "Amsterdam"),
-    ("iamsterdam.com", "https://www.iamsterdam.com/en/whats-on?output=rss", "Amsterdam"),
-    ("denhaag.nl",     "https://www.denhaag.nl/nl/rss/",                    "The Hague"),
-    ("crea.nl",        "https://www.crea.nl/rss",                           "Amsterdam"),
-    ("festileaks.nl",  "https://festileaks.com/feed/",                      "Netherlands"),
-    ("doedagen.nl",    "https://www.doedagen.nl/feed/",                     "Netherlands"),
+    ("amsterdam.nl",  "https://www.amsterdam.nl/agenda/?output=rss", "Amsterdam"),
+    ("uitagenda.nl",  "https://www.uitagenda.nl/rss",                 "Netherlands"),
+    ("denhaag.nl",    "https://www.denhaag.nl/nl/rss/",               "The Hague"),
+    ("partyflock.nl", "https://partyflock.nl/rss/agenda/land/nl",     "Netherlands"),
+    ("festileaks.nl", "https://festileaks.com/feed/",                 "Netherlands"),
+    ("doedagen.nl",   "https://www.doedagen.nl/feed/",                "Netherlands"),
 ]
 
 
@@ -88,7 +91,6 @@ class EventScraper:
             "User-Agent": "Mozilla/5.0 (compatible; NewsAIAgent/1.0)",
             "Accept": "application/json, application/xml, text/xml, */*",
         })
-        self._eventbrite_key = os.getenv("EVENTBRITE_API_KEY", "")
         self._ticketmaster_key = os.getenv("TICKETMASTER_API_KEY", "")
 
     # ── Public ─────────────────────────────────────────────────────────────────
@@ -101,10 +103,9 @@ class EventScraper:
         all_events: List[EventItem] = []
         self.source_results: List[dict] = []
 
-        # 1 + 2 — API sources
+        # API sources — Ticketmaster only (Eventbrite shut down public API in 2023)
         api_sources = [
-            ("Eventbrite",    lambda: self._fetch_eventbrite(days_ahead)),
-            ("Ticketmaster",  lambda: self._fetch_ticketmaster(days_ahead)),
+            ("Ticketmaster", lambda: self._fetch_ticketmaster(days_ahead)),
         ]
         for name, fetcher in api_sources:
             try:
@@ -136,69 +137,7 @@ class EventScraper:
         )
         return valid
 
-    # ── Source 1: Eventbrite API ───────────────────────────────────────────────
-
-    def _fetch_eventbrite(self, days_ahead: int) -> List[EventItem]:
-        if not self._eventbrite_key:
-            logger.info("EVENTBRITE_API_KEY not set — skipping Eventbrite")
-            return []
-
-        now = datetime.now(timezone.utc)
-        end = now + timedelta(days=days_ahead)
-        params = {
-            "location.address": "Netherlands",
-            "location.within": "200km",
-            "start_date.range_start": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "start_date.range_end": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "expand": "venue,category,ticket_availability",
-            "page_size": 50,
-            "sort_by": "date",
-        }
-        resp = self.session.get(
-            f"https://www.eventbriteapi.com/v3/events/search/?{urlencode(params)}",
-            headers={"Authorization": f"Bearer {self._eventbrite_key}"},
-            timeout=15,
-        )
-        resp.raise_for_status()
-        return [
-            item for e in resp.json().get("events", [])
-            if (item := self._parse_eventbrite(e)) is not None
-        ]
-
-    def _parse_eventbrite(self, e: dict) -> Optional[EventItem]:
-        try:
-            venue = e.get("venue") or {}
-            address = venue.get("address") or {}
-            city = address.get("city") or address.get("localized_area_display") or ""
-            if not self._is_nl_location(city):
-                return None
-
-            start = (e.get("start") or {}).get("utc", "")
-            end = (e.get("end") or {}).get("utc")
-            name = (e.get("name") or {}).get("text", "")
-            desc = ((e.get("description") or {}).get("text") or e.get("summary") or "")[:300]
-            category = _eb_category((e.get("category") or {}).get("short_name", ""))
-
-            ticket = e.get("ticket_availability") or {}
-            if e.get("is_free"):
-                price_str: Optional[str] = "Free"
-            else:
-                lo = (ticket.get("minimum_ticket_price") or {}).get("major_value")
-                hi = (ticket.get("maximum_ticket_price") or {}).get("major_value")
-                price_str = (f"€{lo}" if lo == hi else f"€{lo}–€{hi}") if lo and hi else None
-
-            logo = e.get("logo") or {}
-            return EventItem(
-                title=name, description=desc, url=e.get("url", ""),
-                start_date=start, end_date=end, location=city,
-                venue=venue.get("name"), category=category,
-                price=price_str, image_url=logo.get("url"), source="Eventbrite",
-            )
-        except Exception as ex:
-            logger.debug(f"Eventbrite parse error: {ex}")
-            return None
-
-    # ── Source 2: Ticketmaster API ─────────────────────────────────────────────
+    # ── Source 1: Ticketmaster API ─────────────────────────────────────────────
 
     def _fetch_ticketmaster(self, days_ahead: int) -> List[EventItem]:
         if not self._ticketmaster_key:
@@ -383,15 +322,6 @@ def _parse_rss_date(raw: str) -> str:
         except ValueError:
             pass
     return raw
-
-
-def _eb_category(short_name: str) -> str:
-    return {
-        "Music": "concert", "Festivals": "festival", "Arts": "art",
-        "Film & Media": "film", "Sports & Fitness": "sport",
-        "Food & Drink": "food", "Family & Education": "family",
-        "Performing & Visual Arts": "art",
-    }.get(short_name, "other")
 
 
 def _tm_category(segment: str, genre: str) -> str:
