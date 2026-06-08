@@ -28,7 +28,7 @@ class TwitterPublisher:
         if not all([self.api_key, self.api_secret, self.access_token, self.access_token_secret]):
             raise ValueError("Missing Twitter credentials")
         
-        self.client = tweepy.Client(
+        self.client = tweepy.Client(  # type: ignore[attr-defined]
             consumer_key=self.api_key,
             consumer_secret=self.api_secret,
             access_token=self.access_token,
@@ -42,9 +42,10 @@ class TwitterPublisher:
         
         try:
             response = self.client.create_tweet(text=content)
-            logger.info(f"✅ Posted: {response.data['id']}")
-            return response.data
-        except tweepy.Forbidden as e:
+            data = getattr(response, "data", {}) or {}  # type: ignore[attr-defined]
+            logger.info(f"✅ Posted: {data.get('id')}")
+            return data
+        except (tweepy.Forbidden if tweepy is not None else Exception) as e:  # type: ignore[attr-defined]
             # Check if it's a rate limit error
             error_str = str(e)
             if "You are not permitted to perform this action" in error_str:

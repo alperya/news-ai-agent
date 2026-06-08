@@ -22,7 +22,7 @@ from ai_agent import NewsAIAgent
 from social_publisher import InstagramPublisher
 from video import create_news_video
 from event_scraper import EventScraper
-from video.event_card import create_event_card, create_event_slide
+from video.event_card import generate_carousel_slides
 from notifier import send_alert, alert_on_exception, detect_error_type, send_event_summary
 
 # Configure logging for Lambda
@@ -306,8 +306,10 @@ def _run_event_pipeline(timestamp: str, bucket_name: str, ai_agent) -> dict:
 
         logger.info(f"✅ {len(selected_events)} events selected, caption {len(caption)} chars")
 
-        # ── Stage 4: Generate overview card + individual event slides ────────
-        logger.info("\n🎨 STAGE 4: Generating event cards...")
+        # ── Stage 4: Generate carousel slides ────────────────────────────────
+        # Slide 1: cover (full NL photo + event count + branding)
+        # Slides 2+: event lists (4 events per slide)
+        logger.info("\n🎨 STAGE 4: Generating carousel slides...")
         s3_client = boto3.client("s3")
 
         def _upload_image(local_path: str, s3_key: str) -> str:
@@ -317,53 +319,28 @@ def _run_event_pipeline(timestamp: str, bucket_name: str, ai_agent) -> dict:
                 "get_object", Params={"Bucket": bucket_name, "Key": s3_key}, ExpiresIn=3600,
             )
 
-        # Slide 1: overview card
-        card_path = f"/tmp/event_card_{timestamp}.jpg"
-        create_event_card(events=selected_events, date_range=date_range, output_path=card_path)
-        overview_url = _upload_image(card_path, f"events/event_card_{timestamp}.jpg")
-        logger.info("✅ Overview card uploaded")
+        local_slides = generate_carousel_slides(
+            events=selected_events,
+            date_range=date_range,
+            tmp_prefix=f"/tmp/event_{timestamp}",
+        )
+        logger.info(f"✅ {len(local_slides)} slides generated (1 cover + {len(local_slides)-1} list)")
 
-        # Slides 2+: individual event slides for events that have an image
-        # Match selected_events back to raw scored events to get image_url
-        scored_by_title = {e.get("title", "").lower(): e for e in scored}
-        slide_urls = [overview_url]  # slide 1
+        slide_urls = []
+        for i, path in enumerate(local_slides):
+            s3_key = f"events/slide_{timestamp}_{i}.jpg"
+            url = _upload_image(path, s3_key)
+            slide_urls.append(url)
+        logger.info(f"✅ All slides uploaded to S3")
 
-        for idx, ev in enumerate(selected_events):
-            ev_title = ev.get("title", "").lower()
-            raw_ev = scored_by_title.get(ev_title, ev)
-            image_url_src = raw_ev.get("image_url")
-
-            slide_path = f"/tmp/event_slide_{timestamp}_{idx}.jpg"
-            result_path = create_event_slide(
-                event=ev,
-                output_path=slide_path,
-                event_image_url=image_url_src,
-            )
-            if result_path:
-                slide_url = _upload_image(slide_path, f"events/event_slide_{timestamp}_{idx}.jpg")
-                slide_urls.append(slide_url)
-                logger.info(f"   ✅ Slide {idx+2} ready (image_url={'yes' if image_url_src else 'pexels'})")
-            else:
-                logger.info(f"   ⚠️  Slide {idx+2} skipped (no image available)")
-
-        logger.info(f"✅ {len(slide_urls)} total slides ready")
-
-        # ── Stage 5: Publish to Instagram ─────────────────────────────────────
-        logger.info(f"\n📱 STAGE 5: Publishing to Instagram ({'CAROUSEL' if len(slide_urls) > 1 else 'PHOTO'})...")
+        # ── Stage 5: Publish as carousel (always) ─────────────────────────────
+        logger.info(f"\n📱 STAGE 5: Publishing CAROUSEL ({len(slide_urls)} slides)...")
         publisher = InstagramPublisher()
-
-        if len(slide_urls) >= 2:
-            # Cap at 10 slides (Instagram limit)
-            publish_result = publisher.publish_carousel(
-                image_urls=slide_urls[:10], caption=caption, dry_run=False,
-            )
-        else:
-            publish_result = publisher.publish_post(
-                content=caption, image_url=slide_urls[0], dry_run=False,
-            )
-
+        publish_result = publisher.publish_carousel(
+            image_urls=slide_urls[:10], caption=caption, dry_run=False,
+        )
+        logger.info(f"✅ Carousel published: {publish_result}")
         summary["publish_result"] = str(publish_result)
-        logger.info(f"✅ Published: {publish_result}")
 
         # Final S3 records
         save_to_s3(selected_events, f"events_{timestamp}.json", bucket_name)

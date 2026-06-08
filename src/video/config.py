@@ -90,6 +90,7 @@ _SRC_DIR = _VIDEO_PKG_DIR.parent           # src/
 MUSIC_FILE = _SRC_DIR / "music" / "news_music.mp3"
 CALM_MUSIC_FILE = _SRC_DIR / "music" / "calm_music.mp3"
 ALTERNATIVE_MUSIC_FILE = _SRC_DIR / "music" / "alternative_music.mp3"
+EVENTS_MUSIC_FILE = _SRC_DIR / "music" / "events_music.mp3"
 
 # ── Stock footage (Pexels — free API) ─────────────────────────────────────────
 
