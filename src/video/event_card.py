@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 import numpy as np
 import requests
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageFont
 
 from .config import (
     FONT_PATH,           # Poppins-Bold
@@ -45,9 +45,11 @@ PILL_DATE  = (0, 0, 0, 140)   # date range badge top-right
 FOOTER_BAR = (0, 0, 0, 130)   # @handle footer bar
 
 # ── Geometry ───────────────────────────────────────────────────────────────────
-CARD_SIZE        = 1080
+CARD_W           = 1080   # Instagram Reels width
+CARD_H           = 1920   # Instagram Reels height (9:16)
+CARD_SIZE        = CARD_W  # legacy alias used in helper functions
 PAD_H            = 52
-FOOTER_H         = 52
+FOOTER_H         = 70
 EVENTS_PER_SLIDE = 4
 
 _BG_QUERIES = [
@@ -63,6 +65,26 @@ _BG_QUERIES = [
 ACCOUNT_HANDLE = "@dutch_news_english"
 
 
+def _portrait_bg() -> "Image.Image":
+    """Fetch and return a colorful NL portrait photo at CARD_W × CARD_H (1080×1920).
+
+    Falls back to a gradient if Pexels is unavailable.
+    """
+    photo = _fetch_pexels_photo(random.choice(_BG_QUERIES), orientation="portrait")
+    if photo:
+        scale = max(CARD_W / photo.width, CARD_H / photo.height)
+        nw = int(photo.width * scale)
+        nh = int(photo.height * scale)
+        photo = photo.resize((nw, nh), Image.Resampling.LANCZOS)
+        left = (nw - CARD_W) // 2
+        top  = (nh - CARD_H) // 2
+        photo = photo.crop((left, top, left + CARD_W, top + CARD_H))
+        # Very light dim so overlay text remains readable
+        dim = Image.new("RGBA", (CARD_W, CARD_H), (0, 0, 0, 40))
+        return Image.alpha_composite(photo.convert("RGBA"), dim)
+    return _gradient_fallback(CARD_W, CARD_H).convert("RGBA")
+
+
 # ── Public API ──────────────────────────────────────────────────────────────────
 
 def create_cover_slide(
@@ -70,31 +92,14 @@ def create_cover_slide(
     date_range: str,
     output_path: str,
 ) -> str:
-    """Slide 1 — full NL photo, centered text block with transparent pills, branding."""
-    photo = _fetch_pexels_photo(random.choice(_BG_QUERIES), "square")
-    if photo:
-        bg = _crop_square(photo, CARD_SIZE)
-    else:
-        bg = _gradient_fallback(CARD_SIZE, CARD_SIZE)
+    """Slide 1 — native 1080×1920 portrait NL photo, centered text block, branding."""
+    img = _portrait_bg()
 
-    img = bg.convert("RGBA")
-
-    # Very subtle vignette — only edges darkened, max alpha 45
-    vignette = Image.new("RGBA", (CARD_SIZE, CARD_SIZE), (0, 0, 0, 0))
-    vd = ImageDraw.Draw(vignette)
-    for i in range(40):
-        alpha = int(45 * ((40 - i) / 40) ** 2)
-        off = i * 6
-        vd.rectangle([(off, off), (CARD_SIZE - off, CARD_SIZE - off)],
-                     outline=(0, 0, 0, alpha), width=6)
-    img = Image.alpha_composite(img, vignette)
-
-    # Build text lines
-    f_label   = _font(FONT_SEMIBOLD_PATH, 38)
-    f_country = _font(FONT_PATH, 76)
-    f_count   = _font(FONT_PATH, 96)
-    f_date    = _font(FONT_SEMIBOLD_PATH, 34)
-    f_handle  = _font(FONT_REGULAR_PATH, 27)
+    f_label   = _font(FONT_SEMIBOLD_PATH, 46)
+    f_country = _font(FONT_PATH, 90)
+    f_count   = _font(FONT_PATH, 112)
+    f_date    = _font(FONT_SEMIBOLD_PATH, 42)
+    f_handle  = _font(FONT_REGULAR_PATH, 32)
 
     label_text   = "THIS WEEK IN"
     country_text = "THE NETHERLANDS"
@@ -107,26 +112,22 @@ def create_cover_slide(
         (date_range,   f_date,    CREAM),
     ]
 
-    gap = 18
+    gap        = 22
     pill_pad_x = 28
-    pill_pad_y = 10
+    pill_pad_y = 12
 
-    # Measure total block height (text heights + gaps)
     line_heights = [_lh(f, t) for (t, f, _) in lines]
     total_h = sum(line_heights) + gap * (len(lines) - 1)
+    start_y = (CARD_H - total_h) // 2  # true vertical centre of portrait frame
 
-    # True vertical center
-    start_y = (CARD_SIZE - total_h) // 2
-
-    # Draw pills + text on RGBA overlay
-    overlay = Image.new("RGBA", (CARD_SIZE, CARD_SIZE), (0, 0, 0, 0))
+    overlay = Image.new("RGBA", (CARD_W, CARD_H), (0, 0, 0, 0))
     od = ImageDraw.Draw(overlay)
 
     y = start_y
     for text, font, color in lines:
         tw = _tw(font, text)
         th = _lh(font, text)
-        cx = (CARD_SIZE - tw) // 2
+        cx = (CARD_W - tw) // 2
         od.rounded_rectangle(
             [(cx - pill_pad_x, y - pill_pad_y),
              (cx + tw + pill_pad_x, y + th + pill_pad_y)],
@@ -136,16 +137,14 @@ def create_cover_slide(
         od.text((cx, y), text, font=font, fill=color)
         y += th + gap
 
-    # Footer bar + handle
-    footer_top = CARD_SIZE - FOOTER_H
-    od.rectangle([(0, footer_top), (CARD_SIZE, CARD_SIZE)], fill=FOOTER_BAR)
+    footer_top = CARD_H - FOOTER_H
+    od.rectangle([(0, footer_top), (CARD_W, CARD_H)], fill=FOOTER_BAR)
     fw = _tw(f_handle, ACCOUNT_HANDLE)
     fh = _lh(f_handle, ACCOUNT_HANDLE)
-    od.text(((CARD_SIZE - fw) // 2, footer_top + (FOOTER_H - fh) // 2),
+    od.text(((CARD_W - fw) // 2, footer_top + (FOOTER_H - fh) // 2),
             ACCOUNT_HANDLE, font=f_handle, fill=HANDLE_COLOR)
 
-    # Orange top accent strip (thin)
-    od.rectangle([(0, 0), (CARD_SIZE, 8)], fill=BRAND_ORANGE)
+    od.rectangle([(0, 0), (CARD_W, 8)], fill=BRAND_ORANGE)
 
     img = Image.alpha_composite(img, overlay).convert("RGB")
     img.save(output_path, "JPEG", quality=94, optimize=True)
@@ -158,36 +157,25 @@ def create_event_list_slide(
     output_path: str,
     slide_number: int = 2,
 ) -> str:
-    """Slide 2+ — full NL photo visible, per-event transparent pills, handle footer."""
+    """Slide 2+ — native 1080×1920 portrait NL photo, event pills, handle footer."""
     events = events[:EVENTS_PER_SLIDE]
 
-    photo = _fetch_pexels_photo(random.choice(_BG_QUERIES), "square")
-    if photo:
-        bg = _crop_square(photo, CARD_SIZE)
-    else:
-        bg = _gradient_fallback(CARD_SIZE, CARD_SIZE)
+    img = _portrait_bg()  # RGBA 1080×1920
 
-    img = bg.convert("RGBA")
-
-    # Subtle uniform darkening so text is readable on any bright photo
-    dim = Image.new("RGBA", (CARD_SIZE, CARD_SIZE), (0, 0, 0, 55))
-    img = Image.alpha_composite(img, dim)
-
-    overlay = Image.new("RGBA", (CARD_SIZE, CARD_SIZE), (0, 0, 0, 0))
+    overlay = Image.new("RGBA", (CARD_W, CARD_H), (0, 0, 0, 0))
     od = ImageDraw.Draw(overlay)
 
-    f_date_badge = _font(FONT_SEMIBOLD_PATH, 26)
-    f_title      = _font(FONT_PATH, 34)
-    f_meta       = _font(FONT_SEMIBOLD_PATH, 24)
-    f_handle     = _font(FONT_REGULAR_PATH, 24)
+    f_date_badge = _font(FONT_SEMIBOLD_PATH, 30)
+    f_title      = _font(FONT_PATH, 50)
+    f_meta       = _font(FONT_SEMIBOLD_PATH, 34)
+    f_handle     = _font(FONT_REGULAR_PATH, 30)
 
     # Date range badge — top right corner
-    badge_text = date_range
-    bw = _tw(f_date_badge, badge_text)
-    bh = _lh(f_date_badge, badge_text)
-    badge_pad = 12
-    badge_right = CARD_SIZE - PAD_H
-    badge_top = 28
+    bw = _tw(f_date_badge, date_range)
+    bh = _lh(f_date_badge, date_range)
+    badge_pad   = 14
+    badge_right = CARD_W - PAD_H
+    badge_top   = 36
     od.rounded_rectangle(
         [(badge_right - bw - badge_pad * 2, badge_top),
          (badge_right, badge_top + bh + badge_pad)],
@@ -195,49 +183,67 @@ def create_event_list_slide(
         fill=PILL_DATE,
     )
     od.text((badge_right - bw - badge_pad, badge_top + badge_pad // 2),
-            badge_text, font=f_date_badge, fill=CREAM)
-
-    # Divide usable vertical space into equal slots
-    content_top = 90
-    content_bot = CARD_SIZE - FOOTER_H - 10
-    usable_h = content_bot - content_top
-    slot_h = usable_h // max(len(events), 1)
+            date_range, font=f_date_badge, fill=CREAM)
 
     pill_margin_x = PAD_H - 12
-    pill_margin_y = 10
+    pill_v_pad    = 16
+    pill_gap      = 28   # space between consecutive pills
 
-    for idx, ev in enumerate(events):
+    dot_x  = pill_margin_x + 20
+    tx     = dot_x + 18
+    max_tw = CARD_W - tx - pill_margin_x
+
+    # ── Pass 1: measure each pill's height ──────────────────────────────────
+    pill_data = []  # [(title_lines, block_h, title_w, meta_w, venue, location, date_lbl)]
+    for ev in events:
         title    = ev.get("title", "")
         venue    = ev.get("venue") or ""
         location = ev.get("location", "")
         date_lbl = ev.get("date_label", "")
-        price    = ev.get("price") or ""
 
-        slot_top = content_top + idx * slot_h
-        slot_bot = slot_top + slot_h
-
-        max_tw = CARD_SIZE - pill_margin_x * 2 - 36
         title_lines = _wrap(title, f_title, max_tw)
         t_block = sum(_lh(f_title, l) + 3 for l in title_lines)
-        meta_h = _lh(f_meta, "A") + 4
+        meta_h  = _lh(f_meta, "A") + 4
         block_h = t_block + meta_h + 10
-        text_y = slot_top + (slot_h - block_h) // 2
 
-        # Pill behind entire event block
+        title_w = max(_tw(f_title, l) for l in title_lines) if title_lines else 0
+        if venue:
+            meta_w = 14 + _tw(f_meta, venue)
+            if location or date_lbl:
+                ld = f"{location}  ·  {date_lbl}" if location and date_lbl else location or date_lbl
+                meta_w += _tw(f_meta, "  ·  ") + _tw(f_meta, ld)
+        elif location or date_lbl:
+            ld = f"{location}  ·  {date_lbl}" if location and date_lbl else location or date_lbl
+            meta_w = _tw(f_meta, ld)
+        else:
+            meta_w = 0
+
+        pill_data.append((title_lines, block_h, title_w, meta_w, venue, location, date_lbl))
+
+    pill_heights = [block_h + 2 * pill_v_pad for (_, block_h, *_) in pill_data]
+    total_group_h = sum(pill_heights) + pill_gap * (len(pill_data) - 1)
+
+    # Centre the whole group vertically, below the date badge
+    badge_bottom = badge_top + bh + badge_pad + 20
+    group_start  = badge_bottom + (CARD_H - FOOTER_H - badge_bottom - total_group_h) // 2
+
+    # ── Pass 2: draw ─────────────────────────────────────────────────────────
+    y = group_start
+    for (title_lines, block_h, title_w, meta_w, venue, location, date_lbl), pill_h in zip(pill_data, pill_heights):
+        pill_right = min(tx + max(title_w, meta_w) + 24, CARD_W - pill_margin_x)
+        pill_top   = y
+        pill_bot   = y + pill_h
+        text_y     = y + pill_v_pad
+
         od.rounded_rectangle(
-            [(pill_margin_x, slot_top + pill_margin_y),
-             (CARD_SIZE - pill_margin_x, slot_bot - pill_margin_y)],
+            [(pill_margin_x, pill_top), (pill_right, pill_bot)],
             radius=14,
             fill=PILL_EVENT,
         )
 
-        # Orange accent dot
-        dot_x = pill_margin_x + 20
         dot_y = text_y + _lh(f_title, "A") // 2 - 5
         od.ellipse([(dot_x, dot_y), (dot_x + 10, dot_y + 10)], fill=BRAND_ORANGE)
 
-        # Title lines
-        tx = dot_x + 18
         for line in title_lines:
             od.text((tx, text_y), line, font=f_title, fill=TEXT_TITLE)
             text_y += _lh(f_title, line) + 3
@@ -260,11 +266,13 @@ def create_event_list_slide(
             ld = f"{location}  ·  {date_lbl}" if location and date_lbl else location or date_lbl
             od.text((cur_x, text_y), ld, font=f_meta, fill=TEXT_META)
 
+        y += pill_h + pill_gap
+
     # Footer bar + handle
-    od.rectangle([(0, CARD_SIZE - FOOTER_H), (CARD_SIZE, CARD_SIZE)], fill=FOOTER_BAR)
+    od.rectangle([(0, CARD_H - FOOTER_H), (CARD_W, CARD_H)], fill=FOOTER_BAR)
     fw = _tw(f_handle, ACCOUNT_HANDLE)
     fh = _lh(f_handle, ACCOUNT_HANDLE)
-    od.text(((CARD_SIZE - fw) // 2, CARD_SIZE - FOOTER_H + (FOOTER_H - fh) // 2),
+    od.text(((CARD_W - fw) // 2, CARD_H - FOOTER_H + (FOOTER_H - fh) // 2),
             ACCOUNT_HANDLE, font=f_handle, fill=HANDLE_COLOR)
 
     img = Image.alpha_composite(img, overlay).convert("RGB")
@@ -327,28 +335,13 @@ def generate_reels_video(
     # Use moviepy's bundled ffmpeg binary — works in Lambda without system ffmpeg
     FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 
-    REEL_W, REEL_H = 1080, 1920
-
     if not slide_paths:
         raise ValueError("No slide paths provided to generate_reels_video")
 
-    # Build portrait frames (blur bg + centred square slide)
-    frame_paths: List[str] = []
-    for sp in slide_paths:
-        slide = Image.open(sp).convert("RGB")
-        bg = _crop_to_size(slide, REEL_W, REEL_H)
-        bg = bg.filter(ImageFilter.GaussianBlur(radius=22))
-        dark = Image.new("RGBA", (REEL_W, REEL_H), (0, 0, 0, 80))
-        bg = Image.alpha_composite(bg.convert("RGBA"), dark).convert("RGB")
-        top = (REEL_H - REEL_W) // 2
-        bg.paste(slide, (0, top))
-        frame_path = sp + "_reel_frame.jpg"
-        bg.save(frame_path, "JPEG", quality=92)
-        frame_paths.append(frame_path)
-
+    # Slides are already native 1080×1920 — use them directly, no composition step
     # Build ffmpeg concat list — loop slides to fill target_duration
     # Use absolute paths so ffmpeg resolves them correctly regardless of cwd
-    abs_frames = [os.path.abspath(p) for p in frame_paths]
+    abs_frames = [os.path.abspath(p) for p in slide_paths]
     total_clips = math.ceil(target_duration / slide_duration)
     concat_lines: List[str] = []
     for i in range(total_clips):
@@ -401,7 +394,7 @@ def generate_reels_video(
         shutil.move(silent_path, output_path)
         return output_path
 
-    for p in [concat_file, silent_path, *frame_paths]:
+    for p in [concat_file, silent_path]:
         try:
             os.remove(p)
         except OSError:
@@ -471,20 +464,6 @@ def _fetch_pexels_photo(query: str, orientation: str = "square") -> Optional[Ima
         return None
 
 
-def _crop_square(img: Image.Image, size: int) -> Image.Image:
-    w, h = img.size
-    s = min(w, h)
-    img = img.crop(((w - s) // 2, (h - s) // 2, (w + s) // 2, (h + s) // 2))
-    return img.resize((size, size), Image.Resampling.LANCZOS)
-
-
-def _crop_to_size(img: Image.Image, w: int, h: int) -> Image.Image:
-    scale = max(w / img.width, h / img.height)
-    nw, nh = int(img.width * scale), int(img.height * scale)
-    img = img.resize((nw, nh), Image.Resampling.LANCZOS)
-    left = (nw - w) // 2
-    top  = (nh - h) // 2
-    return img.crop((left, top, left + w, top + h))
 
 
 def _gradient_fallback(w: int, h: int) -> Image.Image:
