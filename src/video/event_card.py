@@ -10,9 +10,12 @@ Design principle: photo is the hero. Text sits on minimal transparent pills.
 
 from __future__ import annotations
 
+import logging
 import random
 from io import BytesIO
 from typing import List, Optional
+
+logger = logging.getLogger(__name__)
 
 import numpy as np
 import requests
@@ -319,6 +322,10 @@ def generate_reels_video(
     import os
     import subprocess
     from pathlib import Path
+    import imageio_ffmpeg
+
+    # Use moviepy's bundled ffmpeg binary — works in Lambda without system ffmpeg
+    FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 
     REEL_W, REEL_H = 1080, 1920
 
@@ -360,7 +367,7 @@ def generate_reels_video(
     # Step 1: build silent video from concat
     silent_path = output_path + ".silent.mp4"
     cmd_video = [
-        "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_file,
+        FFMPEG, "-y", "-f", "concat", "-safe", "0", "-i", concat_file,
         "-c:v", "libx264", "-preset", "ultrafast", "-b:v", "4000k",
         "-pix_fmt", "yuv420p", "-movflags", "+faststart",
         silent_path,
@@ -369,19 +376,14 @@ def generate_reels_video(
     if r.returncode != 0:
         raise RuntimeError(f"ffmpeg video pass failed:\n{r.stderr[-1000:]}")
 
-    # Step 2: get actual video duration so audio matches exactly
-    probe = subprocess.run(
-        ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
-         "-of", "default=noprint_wrappers=1:nokey=1", silent_path],
-        capture_output=True, text=True,
-    )
-    actual_dur = float(probe.stdout.strip()) if probe.stdout.strip() else target_duration
+    # Step 2: computed duration (avoids ffprobe dependency)
+    actual_dur = total_clips * slide_duration
     fade_start = max(0.0, actual_dur - 3.0)
 
     # Step 3: mux audio trimmed to exactly actual_dur
     if Path(music).exists():
         cmd_mux = [
-            "ffmpeg", "-y",
+            FFMPEG, "-y",
             "-i", silent_path,
             "-i", music,
             "-c:v", "copy",
@@ -399,18 +401,14 @@ def generate_reels_video(
         shutil.move(silent_path, output_path)
         return output_path
 
-    try:
-        os.remove(concat_file)
-    except OSError:
-        pass
+    for p in [concat_file, silent_path, *frame_paths]:
+        try:
+            os.remove(p)
+        except OSError:
+            pass
 
     return output_path
 
-
-# ── Backward-compat shims ──────────────────────────────────────────────────────
-
-def create_event_card(events: List[dict], date_range: str, output_path: str) -> str:
-    return create_event_list_slide(events[:EVENTS_PER_SLIDE], date_range, output_path)
 
 
 
@@ -430,21 +428,26 @@ def _is_colorful(img: Image.Image, min_avg_saturation: float = 12.0) -> bool:
 
 
 def _fetch_pexels_photo(query: str, orientation: str = "square") -> Optional[Image.Image]:
-    if not PEXELS_API_KEY:
+    import os
+    # Read at call time so Lambda secrets loaded after import are picked up
+    api_key = os.environ.get("PEXELS_API_KEY") or PEXELS_API_KEY
+    if not api_key:
+        logger.warning("PEXELS_API_KEY not set — using gradient fallback")
         return None
     try:
         r = requests.get(
             "https://api.pexels.com/v1/search",
-            headers={"Authorization": PEXELS_API_KEY},
+            headers={"Authorization": api_key},
             params={"query": query, "per_page": 15, "orientation": orientation},
             timeout=10,
         )
         if r.status_code != 200:
+            logger.warning(f"Pexels API returned {r.status_code} for query '{query}'")
             return None
         photos = r.json().get("photos", [])
         if not photos:
+            logger.warning(f"Pexels returned no photos for query '{query}'")
             return None
-        # Shuffle candidates and pick the first colourful one
         candidates = photos[:10]
         random.shuffle(candidates)
         for photo in candidates:
@@ -457,11 +460,14 @@ def _fetch_pexels_photo(query: str, orientation: str = "square") -> Optional[Ima
                 ir.raise_for_status()
                 img = Image.open(BytesIO(ir.content)).convert("RGB")
                 if _is_colorful(img):
+                    logger.info(f"Pexels photo fetched OK: {url[:60]}")
                     return img
             except Exception:
                 continue
+        logger.warning(f"Pexels: all candidates rejected (B&W or download failed) for '{query}'")
         return None
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Pexels fetch error: {e}")
         return None
 
 
@@ -490,14 +496,14 @@ def _gradient_fallback(w: int, h: int) -> Image.Image:
     return Image.fromarray(bg)
 
 
-def _font(path: str, size: int) -> ImageFont.FreeTypeFont:
+def _font(path: str, size: int) -> "ImageFont.FreeTypeFont | ImageFont.ImageFont":
     try:
         return ImageFont.truetype(path, size)
     except Exception:
         return ImageFont.load_default(size=size)
 
 
-def _lh(font: ImageFont.FreeTypeFont, text: str) -> int:
+def _lh(font: "ImageFont.FreeTypeFont | ImageFont.ImageFont", text: str) -> int:
     try:
         _, _, _, h = font.getbbox(text or "A")
         return int(h)
@@ -505,7 +511,7 @@ def _lh(font: ImageFont.FreeTypeFont, text: str) -> int:
         return font.size  # type: ignore[attr-defined]
 
 
-def _tw(font: ImageFont.FreeTypeFont, text: str) -> int:
+def _tw(font: "ImageFont.FreeTypeFont | ImageFont.ImageFont", text: str) -> int:
     try:
         left, _, right, _ = font.getbbox(text or "")
         return int(right - left)
@@ -513,7 +519,7 @@ def _tw(font: ImageFont.FreeTypeFont, text: str) -> int:
         return len(text) * (font.size // 2)  # type: ignore[attr-defined]
 
 
-def _wrap(text: str, font: ImageFont.FreeTypeFont, max_width: int, max_lines: int = 2) -> List[str]:
+def _wrap(text: str, font: "ImageFont.FreeTypeFont | ImageFont.ImageFont", max_width: int, max_lines: int = 2) -> List[str]:
     words = text.split()
     lines: List[str] = []
     current: List[str] = []

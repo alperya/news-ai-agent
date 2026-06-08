@@ -50,12 +50,9 @@ CATEGORY_EMOJI: Dict[str, str] = {
 # amsterdam.nl: /agenda/?output=rss (old /agenda/rss/ returns 403)
 # partyflock.nl: replaces Eventbrite (Eventbrite shut down public API access in 2023)
 _RSS_SOURCES = [
-    ("amsterdam.nl",  "https://www.amsterdam.nl/agenda/?output=rss", "Amsterdam"),
-    ("uitagenda.nl",  "https://www.uitagenda.nl/rss",                 "Netherlands"),
-    ("denhaag.nl",    "https://www.denhaag.nl/nl/rss/",               "The Hague"),
-    ("partyflock.nl", "https://partyflock.nl/rss/agenda/land/nl",     "Netherlands"),
-    ("festileaks.nl", "https://festileaks.com/feed/",                 "Netherlands"),
-    ("doedagen.nl",   "https://www.doedagen.nl/feed/",                "Netherlands"),
+    ("denhaag.nl",   "https://www.denhaag.nl/nl/rss/",  "The Hague"),
+    ("festileaks.nl", "https://festileaks.com/feed/",   "Netherlands"),
+    ("doedagen.nl",   "https://www.doedagen.nl/feed/",  "Netherlands"),
 ]
 
 

@@ -177,7 +177,7 @@ def get_published_urls(bucket_name):
         return published_urls
 
 
-def _run_event_pipeline(timestamp: str, bucket_name: str, ai_agent) -> dict:
+def _run_event_pipeline(timestamp: str, bucket_name: str, ai_agent, dry_run: bool = False) -> dict:
     """Weekly events pipeline — runs on Wednesday 18:00 (format: event_post).
 
     Collects a full run summary, writes detailed logs to S3, and emails
@@ -322,8 +322,8 @@ def _run_event_pipeline(timestamp: str, bucket_name: str, ai_agent) -> dict:
         generate_reels_video(local_slides, reel_path)
         logger.info(f"✅ Reels video generated: {reel_path}")
 
-        # Upload video to S3 and get a pre-signed URL (valid 1 h — enough for Meta processing)
-        reel_s3_key = f"events/reel_{timestamp}.mp4"
+        # Upload video to S3 — dry_run uses a separate prefix so it's easy to find
+        reel_s3_key = f"events/{'test' if dry_run else 'reel'}_{timestamp}.mp4"
         with open(reel_path, "rb") as f:
             s3_client.put_object(
                 Bucket=bucket_name, Key=reel_s3_key, Body=f, ContentType="video/mp4",
@@ -333,13 +333,14 @@ def _run_event_pipeline(timestamp: str, bucket_name: str, ai_agent) -> dict:
             Params={"Bucket": bucket_name, "Key": reel_s3_key},
             ExpiresIn=3600,
         )
-        logger.info(f"✅ Reels video uploaded to S3")
+        logger.info(f"✅ Reels video uploaded to S3: s3://{bucket_name}/{reel_s3_key}")
+        logger.info(f"🔗 Pre-signed URL (1h): {video_url[:120]}…")
 
         # ── Stage 5: Publish as Reels ─────────────────────────────────────────
         logger.info(f"\n📱 STAGE 5: Publishing REELS...")
         publisher = InstagramPublisher()
         publish_result = publisher.publish_reels(
-            content=caption, video_url=video_url, dry_run=False,
+            content=caption, video_url=video_url, dry_run=dry_run,
         )
         logger.info(f"✅ Reels published: {publish_result}")
         summary["publish_result"] = str(publish_result)
@@ -382,7 +383,8 @@ def lambda_handler(event, context):
         is_event_post = isinstance(event, dict) and event.get('format') == 'event_post'
         if is_event_post:
             ai_agent = NewsAIAgent()
-            return _run_event_pipeline(timestamp, bucket_name, ai_agent)
+            dry_run = bool(event.get('dry_run', False))
+            return _run_event_pipeline(timestamp, bucket_name, ai_agent, dry_run=dry_run)
 
         # STAGE 1: Scrape news
         logger.info("\n📰 STAGE 1: Scraping news articles...")
