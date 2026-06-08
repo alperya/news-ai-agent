@@ -48,10 +48,11 @@ SUBTITLE_SAFE_MARGIN = 40        # px margin from video edge for subtitle boxes
 SUBTITLE_FONT_SIZE = 62
 HOOK_FONT_SIZE = 68
 
-# Bundled Montserrat Bold (OFL license) — fallback to system fonts
-_BUNDLED_FONT = Path(__file__).parent.parent / "fonts" / "Montserrat-Bold.ttf"
-_LAMBDA_FONT = Path(__file__).parent.parent / "Montserrat-Bold.ttf"  # flat Lambda layout
-_SYSTEM_FONTS = [
+# Bundled fonts (OFL license)
+_FONTS_DIR = Path(__file__).parent.parent / "fonts"
+_LAMBDA_DIR = Path(__file__).parent.parent  # flat Lambda layout
+
+_SYSTEM_FALLBACKS = [
     "/System/Library/Fonts/Helvetica.ttc",
     "/Library/Fonts/Arial.ttf",
     "/System/Library/Fonts/Supplemental/Arial.ttf",
@@ -60,14 +61,27 @@ _SYSTEM_FONTS = [
 ]
 
 
-def _find_font() -> str:
-    for f in [_BUNDLED_FONT, _LAMBDA_FONT] + [Path(p) for p in _SYSTEM_FONTS]:
+def _find_font_file(name: str) -> str:
+    candidates = [
+        _FONTS_DIR / name,
+        _LAMBDA_DIR / name,
+    ] + [Path(p) for p in _SYSTEM_FALLBACKS]
+    for f in candidates:
         if f.exists():
             return str(f)
     return "Helvetica"
 
 
-FONT_PATH = _find_font()
+# Poppins (primary — used for event cards & influencer-style posts)
+FONT_PATH          = _find_font_file("Poppins-Bold.ttf")
+FONT_SEMIBOLD_PATH = _find_font_file("Poppins-SemiBold.ttf")
+FONT_REGULAR_PATH  = _find_font_file("Poppins-Regular.ttf")
+
+# Montserrat (used for Reels subtitles / hook overlays)
+FONT_MONTSERRAT_PATH = _find_font_file("Montserrat-Bold.ttf")
+
+# NotoEmoji — emoji fallback for PIL rendering on Lambda (no system emoji font)
+FONT_EMOJI_PATH = _find_font_file("NotoEmoji-Regular.ttf")
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 

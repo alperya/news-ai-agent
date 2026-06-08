@@ -23,7 +23,7 @@ from moviepy import (
 )
 
 from .config import (
-    FONT_PATH,
+    FONT_MONTSERRAT_PATH as FONT_PATH,
     FPS,
     HOOK_FONT_SIZE,
     KB_ZOOM_RANGE,

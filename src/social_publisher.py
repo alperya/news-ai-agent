@@ -198,6 +198,95 @@ class InstagramPublisher:
             logger.error(f"❌ Error posting to Instagram: {str(e)}")
             raise
 
+    def publish_carousel(self, image_urls: list, caption: str, dry_run: bool = False) -> dict:
+        """Publish a carousel post (2–10 images) to Instagram.
+
+        Args:
+            image_urls: List of public image URLs (first = overview card, rest = event slides).
+            caption:    Caption text for the carousel post.
+            dry_run:    If True, skip API calls.
+
+        Returns:
+            dict with media id and URL.
+        """
+        if dry_run:
+            logger.info(f"[DRY RUN] Would post carousel ({len(image_urls)} slides) to Instagram")
+            return {"id": "dry_run", "slides": len(image_urls)}
+
+        if not (2 <= len(image_urls) <= 10):
+            raise ValueError(f"Carousel requires 2–10 images, got {len(image_urls)}")
+
+        try:
+            self._ensure_valid_token()
+
+            # Step 1: Create a carousel item container for each image
+            child_ids: list = []
+            for i, url in enumerate(image_urls):
+                logger.info(f"   📷 Creating carousel item {i+1}/{len(image_urls)}...")
+                resp = requests.post(
+                    f"{self.graph_api_url}/{self.instagram_account_id}/media",
+                    params={
+                        "image_url": url,
+                        "is_carousel_item": "true",
+                        "access_token": self.access_token,
+                    },
+                )
+                resp.raise_for_status()
+                child_id = resp.json().get("id")
+                if not child_id:
+                    raise ValueError(f"No id returned for carousel item {i+1}")
+
+                # Wait for child item to be ready before moving on
+                if not self._check_container_status(child_id, max_attempts=20, delay=2):
+                    raise ValueError(f"Carousel item {i+1} not ready after max attempts")
+                child_ids.append(child_id)
+                logger.info(f"   ✅ Carousel item {i+1} ready: {child_id}")
+
+            # Step 2: Create the parent carousel container
+            logger.info(f"📦 Creating carousel container ({len(child_ids)} children)...")
+            resp = requests.post(
+                f"{self.graph_api_url}/{self.instagram_account_id}/media",
+                params={
+                    "media_type": "CAROUSEL",
+                    "caption": caption,
+                    "children": ",".join(child_ids),
+                    "access_token": self.access_token,
+                },
+            )
+            resp.raise_for_status()
+            creation_id = resp.json().get("id")
+            if not creation_id:
+                raise ValueError("No creation_id returned for carousel container")
+
+            logger.info(f"✅ Carousel container created: {creation_id}")
+
+            # Step 3: Wait for carousel container to be ready
+            if not self._check_container_status(creation_id, max_attempts=30, delay=2):
+                raise ValueError("Carousel container not ready after max attempts")
+
+            # Step 4: Publish
+            self._ensure_valid_token()
+            logger.info("📤 Publishing carousel...")
+            resp = requests.post(
+                f"{self.graph_api_url}/{self.instagram_account_id}/media_publish",
+                params={"creation_id": creation_id, "access_token": self.access_token},
+            )
+            resp.raise_for_status()
+            media_id = resp.json().get("id")
+            logger.info(f"✅ Carousel posted to Instagram: {media_id} ({len(image_urls)} slides)")
+            return {"id": media_id, "creation_id": creation_id, "slides": len(image_urls),
+                    "url": f"https://www.instagram.com/p/{media_id}/"}
+
+        except requests.exceptions.HTTPError as e:
+            error_msg = f"Instagram Carousel API error: {str(e)}"
+            if hasattr(e.response, "text"):
+                error_msg += f" — {e.response.text}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        except Exception as e:
+            logger.error(f"❌ Error publishing carousel: {str(e)}")
+            raise
+
     def publish_reels(self, content: str, video_url: str, dry_run: bool = False):
         """Publish a Reels video to Instagram.
 
