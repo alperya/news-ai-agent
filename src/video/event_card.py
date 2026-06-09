@@ -47,7 +47,6 @@ FOOTER_BAR = (0, 0, 0, 130)   # @handle footer bar
 # ── Geometry ───────────────────────────────────────────────────────────────────
 CARD_W           = 1080   # Instagram Reels width
 CARD_H           = 1920   # Instagram Reels height (9:16)
-CARD_SIZE        = CARD_W  # legacy alias used in helper functions
 PAD_H            = 52
 FOOTER_H         = 70
 EVENTS_PER_SLIDE = 4

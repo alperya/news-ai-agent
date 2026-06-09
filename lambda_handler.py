@@ -7,7 +7,7 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 import boto3
 from botocore.exceptions import ClientError
@@ -177,14 +177,33 @@ def get_published_urls(bucket_name):
         return published_urls
 
 
+def _finish_event_pipeline(
+    status: str,
+    summary: dict,
+    log_key: str,
+    bucket_name: str,
+    timestamp: str,
+    http_code: int = 200,
+    error: str = "",
+) -> dict:
+    """Finalise an event pipeline run: persist summary, send email, return HTTP response."""
+    summary["status"] = status
+    if error:
+        summary["error"] = error
+    save_to_s3(dict(summary), log_key, bucket_name)
+    send_event_summary(summary)
+    return {
+        "statusCode": http_code,
+        "body": json.dumps({"status": status, "timestamp": timestamp, "error": error}),
+    }
+
+
 def _run_event_pipeline(timestamp: str, bucket_name: str, ai_agent, dry_run: bool = False) -> dict:
     """Weekly events pipeline — runs on Wednesday 18:00 (format: event_post).
 
     Collects a full run summary, writes detailed logs to S3, and emails
     a digest to the alert address regardless of success or failure.
     """
-    from datetime import datetime, timedelta, timezone
-
     logger.info("\n" + "="*60)
     logger.info("📅 EVENT PIPELINE: Weekly NL Events Post")
     logger.info("="*60)
@@ -212,21 +231,10 @@ def _run_event_pipeline(timestamp: str, bucket_name: str, ai_agent, dry_run: boo
         "s3_log_key": log_key,
     }
 
-    def _checkpoint(extra: Optional[dict] = None):
-        """Save current summary snapshot to S3."""
-        data = {**summary, **(extra or {})}
-        save_to_s3(data, log_key, bucket_name)
-
-    def _finish(status: str, http_code: int = 200, error: str = ""):
-        summary["status"] = status
-        if error:
-            summary["error"] = error
-        _checkpoint()
-        send_event_summary(summary)
-        return {
-            "statusCode": http_code,
-            "body": json.dumps({"status": status, "timestamp": timestamp, "error": error}),
-        }
+    def _finish(status: str, http_code: int = 200, error: str = "") -> dict:
+        return _finish_event_pipeline(
+            status, summary, log_key, bucket_name, timestamp, http_code, error
+        )
 
     try:
         # ── Stage 1: Scrape ──────────────────────────────────────────────────
@@ -245,7 +253,7 @@ def _run_event_pipeline(timestamp: str, bucket_name: str, ai_agent, dry_run: boo
             [e.to_dict() for e in raw_events],
             f"events/raw_events_{timestamp}.json", bucket_name,
         )
-        _checkpoint()
+        save_to_s3(dict(summary), log_key, bucket_name)
 
         if not raw_events:
             logger.warning("⚠️  No valid events found from any source.")
@@ -270,7 +278,7 @@ def _run_event_pipeline(timestamp: str, bucket_name: str, ai_agent, dry_run: boo
              "response": summary["score_response"]},
             f"events/scoring_{timestamp}.json", bucket_name,
         )
-        _checkpoint()
+        save_to_s3(dict(summary), log_key, bucket_name)
 
         if len(scored) < 3:
             msg = f"Only {len(scored)} events passed quality gate (need ≥ 3)."
@@ -302,7 +310,7 @@ def _run_event_pipeline(timestamp: str, bucket_name: str, ai_agent, dry_run: boo
              "response": summary["selection_response"]},
             f"events/selection_{timestamp}.json", bucket_name,
         )
-        _checkpoint()
+        save_to_s3(dict(summary), log_key, bucket_name)
 
         logger.info(f"✅ {len(selected_events)} events selected, caption {len(caption)} chars")
 
@@ -541,8 +549,6 @@ def lambda_handler(event, context):
                     'body': json.dumps({'status': 'timeout_risk', 'error': msg, 'timestamp': timestamp}),
                 }
 
-        publisher = None if is_reels else InstagramPublisher()
-
         published_count = 0
         for idx, post in enumerate(posts_data, 1):
             try:
@@ -607,7 +613,7 @@ def lambda_handler(event, context):
                     result = {'status': 'queued', 'publisher': reels_fn, 's3_key': s3_video_key}
 
                 else:
-                    assert publisher is not None
+                    publisher = InstagramPublisher()
                     result = publisher.publish_post(
                         content=post['full_post'],
                         image_url=post.get('image_url'),

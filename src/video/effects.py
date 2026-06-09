@@ -481,53 +481,6 @@ def make_fallback_background(duration: float) -> CompositeVideoClip:
 
 # ── Internal ──────────────────────────────────────────────────────────────────
 
-def _fit_to_portrait(clip) -> VideoClip:
-    """Fit clip into 1080×1920 portrait frame.
-
-    Portrait-ish clips → simple fill-and-centre-crop (minimal loss).
-    Landscape / square  → blurred static background + centred fitted clip
-    so the full content remains visible.
-    """
-    # If clip is already close to portrait ratio, simple fill is fine
-    if clip.h / clip.w >= (VIDEO_HEIGHT / VIDEO_WIDTH) * 0.85:
-        scale = max(VIDEO_WIDTH / clip.w, VIDEO_HEIGHT / clip.h)
-        new_w = int(clip.w * scale)
-        new_h = int(clip.h * scale)
-        resized = clip.resized((new_w, new_h))
-        x1 = (new_w - VIDEO_WIDTH) // 2
-        y1 = (new_h - VIDEO_HEIGHT) // 2
-        return resized.cropped(
-            x1=x1, y1=y1, x2=x1 + VIDEO_WIDTH, y2=y1 + VIDEO_HEIGHT,
-        )
-
-    # Landscape / square → blurred first-frame background + centred clip
-    frame0 = clip.get_frame(0)
-    pil_bg = Image.fromarray(frame0)
-    bg_scale = max(VIDEO_WIDTH / pil_bg.width, VIDEO_HEIGHT / pil_bg.height)
-    pil_bg = pil_bg.resize(
-        (int(pil_bg.width * bg_scale), int(pil_bg.height * bg_scale)),
-        Image.Resampling.LANCZOS,
-    )
-    left = (pil_bg.width - VIDEO_WIDTH) // 2
-    top = (pil_bg.height - VIDEO_HEIGHT) // 2
-    pil_bg = pil_bg.crop((left, top, left + VIDEO_WIDTH, top + VIDEO_HEIGHT))
-    pil_bg = pil_bg.filter(ImageFilter.GaussianBlur(radius=25))
-    pil_bg = ImageEnhance.Brightness(pil_bg).enhance(0.25)
-
-    bg_clip = ImageClip(np.array(pil_bg)).with_duration(clip.duration)
-
-    fg_scale = min(VIDEO_WIDTH / clip.w, VIDEO_HEIGHT / clip.h)
-    fg_w = int(clip.w * fg_scale)
-    fg_h = int(clip.h * fg_scale)
-    fg = clip.resized((fg_w, fg_h))
-    fg = fg.with_position(
-        ((VIDEO_WIDTH - fg_w) // 2, (VIDEO_HEIGHT - fg_h) // 2),
-    )
-
-    return CompositeVideoClip(
-        [bg_clip, fg], size=(VIDEO_WIDTH, VIDEO_HEIGHT),
-    )
-
 
 def _hex_to_rgb(hex_color: str) -> tuple:
     """Convert ``'#FF5B14'`` → ``(255, 91, 20)``."""
