@@ -366,13 +366,15 @@ resource "aws_cloudwatch_log_group" "reels_publish_logs" {
   }
 }
 
-# ===== EventBridge Rules (Amsterdam Time: UTC+1) =====
-# Morning post: 08:00 Amsterdam = 07:00 UTC
+# ===== EventBridge Rules (Amsterdam Time CEST = UTC+2, CET = UTC+1) =====
+# Note: cron expressions are UTC. In winter (CET) these fire 1 hour later AMS time.
+#
+# Reel 1: 11:00 Amsterdam CEST = 09:00 UTC  (data-backed: highest reach amplification)
 resource "aws_cloudwatch_event_rule" "morning_schedule" {
   name                = "${var.project_name}-morning"
-  description         = "Trigger Lambda at 08:00 Amsterdam time (07:00 UTC)"
-  schedule_expression = "cron(0 7 * * ? *)"
-  
+  description         = "Reel 1 — 11:00 Amsterdam (09:00 UTC / CEST)"
+  schedule_expression = "cron(0 9 * * ? *)"
+
   tags = {
     Name        = "${var.project_name}-morning-schedule"
     Environment = "production"
@@ -384,19 +386,20 @@ resource "aws_cloudwatch_event_target" "morning_target" {
   rule      = aws_cloudwatch_event_rule.morning_schedule.name
   target_id = "morning-lambda"
   arn       = aws_lambda_function.news_agent.arn
-  
+
   input = jsonencode({
     schedule = "morning"
-    time     = "08:00"
+    time     = "11:00"
+    format   = "reels"
   })
 }
 
-# Afternoon post: 12:30 Amsterdam = 11:30 UTC
+# Reel 2: 19:00 Amsterdam CEST = 17:00 UTC  (after-work prime browsing window)
 resource "aws_cloudwatch_event_rule" "afternoon_schedule" {
   name                = "${var.project_name}-afternoon"
-  description         = "Trigger Lambda at 12:30 Amsterdam time (11:30 UTC)"
-  schedule_expression = "cron(30 11 * * ? *)"
-  
+  description         = "Reel 2 — 19:00 Amsterdam (17:00 UTC / CEST)"
+  schedule_expression = "cron(0 17 * * ? *)"
+
   tags = {
     Name        = "${var.project_name}-afternoon-schedule"
     Environment = "production"
@@ -408,20 +411,21 @@ resource "aws_cloudwatch_event_target" "afternoon_target" {
   rule      = aws_cloudwatch_event_rule.afternoon_schedule.name
   target_id = "afternoon-lambda"
   arn       = aws_lambda_function.news_agent.arn
-  
+
   input = jsonencode({
-    schedule = "afternoon"
-    time     = "12:30"
+    schedule = "evening"
+    time     = "19:00"
     format   = "reels"
   })
 }
 
-# Evening post: 17:30 Amsterdam = 16:30 UTC
+# Evening photo slot removed — replaced by 2-Reels strategy above
 resource "aws_cloudwatch_event_rule" "evening_schedule" {
   name                = "${var.project_name}-evening"
-  description         = "Trigger Lambda at 17:30 Amsterdam time (16:30 UTC)"
+  description         = "Disabled — previously 17:30 photo post, replaced by 2-Reels schedule"
   schedule_expression = "cron(30 16 * * ? *)"
-  
+  state               = "DISABLED"
+
   tags = {
     Name        = "${var.project_name}-evening-schedule"
     Environment = "production"
@@ -433,7 +437,7 @@ resource "aws_cloudwatch_event_target" "evening_target" {
   rule      = aws_cloudwatch_event_rule.evening_schedule.name
   target_id = "evening-lambda"
   arn       = aws_lambda_function.news_agent.arn
-  
+
   input = jsonencode({
     schedule = "evening"
     time     = "17:30"
