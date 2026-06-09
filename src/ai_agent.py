@@ -255,6 +255,13 @@ class NewsAIAgent:
 
         if errors:
             logger.error(f"❌ Quality gate REJECTED (structural): {errors}")
+            logger.info(json.dumps({
+                "event": "quality_gate_rejected",
+                "reason": "structural",
+                "errors": errors,
+                "source": post.source,
+                "url": post.original_url,
+            }))
             self._save_error(post, errors)
             return None
 
@@ -285,6 +292,12 @@ class NewsAIAgent:
             if not result.get('pass', True):
                 reason = result.get('reason', 'AI language review failed')
                 logger.error(f"❌ Quality gate REJECTED (language): {reason}")
+                logger.info(json.dumps({
+                    "event": "quality_gate_rejected",
+                    "reason": "language",
+                    "detail": reason,
+                    "source": post.source,
+                }))
                 self._save_error(post, [reason])
                 return None
 

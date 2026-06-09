@@ -60,7 +60,7 @@ resource "aws_s3_bucket_versioning" "results" {
   }
 }
 
-resource "aws_s3_bucket_lifecycle_configuration" "errors_cleanup" {
+resource "aws_s3_bucket_lifecycle_configuration" "results_lifecycle" {
   bucket = aws_s3_bucket.results.id
 
   rule {
@@ -77,6 +77,34 @@ resource "aws_s3_bucket_lifecycle_configuration" "errors_cleanup" {
 
     noncurrent_version_expiration {
       noncurrent_days = 30
+    }
+  }
+
+  rule {
+    id     = "archive-analytics-after-90-days"
+    status = "Enabled"
+
+    filter {
+      prefix = "analytics/"
+    }
+
+    transition {
+      days          = 90
+      storage_class = "GLACIER"
+    }
+  }
+
+  rule {
+    id     = "archive-account-metrics-after-365-days"
+    status = "Enabled"
+
+    filter {
+      prefix = "metrics/account/"
+    }
+
+    transition {
+      days          = 365
+      storage_class = "GLACIER"
     }
   }
 }
@@ -417,7 +445,7 @@ resource "aws_cloudwatch_event_rule" "events_tuesday_schedule" {
   name                = "${var.project_name}-events-tuesday"
   description         = "NL events post — Tuesday 18:00 Amsterdam (16:00 UTC / CEST)"
   schedule_expression = "cron(0 16 ? * TUE *)"
-  is_enabled          = true
+  state               = "ENABLED"
 
   tags = {
     Name        = "${var.project_name}-events-tuesday"
@@ -440,7 +468,7 @@ resource "aws_cloudwatch_event_rule" "events_saturday_schedule" {
   name                = "${var.project_name}-events-saturday"
   description         = "NL events post — Saturday 15:00 Amsterdam (13:00 UTC / CEST)"
   schedule_expression = "cron(0 13 ? * SAT *)"
-  is_enabled          = true
+  state               = "ENABLED"
 
   tags = {
     Name        = "${var.project_name}-events-saturday"

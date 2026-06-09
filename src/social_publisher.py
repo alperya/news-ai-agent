@@ -1,4 +1,5 @@
 """Social Media Publisher"""
+import json
 import os
 import logging
 import requests
@@ -182,7 +183,12 @@ class InstagramPublisher:
             
             media_id = publish_response.json().get('id')
             logger.info(f"✅ Posted to Instagram: {media_id}")
-            
+            logger.info(json.dumps({
+                "event": "post_published",
+                "post_id": media_id,
+                "post_type": "photo",
+            }))
+
             return {
                 'id': media_id,
                 'creation_id': creation_id,
@@ -351,6 +357,11 @@ class InstagramPublisher:
 
             media_id = publish_response.json().get('id')
             logger.info(f"✅ Reels published: {media_id}")
+            logger.info(json.dumps({
+                "event": "post_published",
+                "post_id": media_id,
+                "post_type": "reel",
+            }))
 
             return {
                 'id': media_id,

@@ -8,7 +8,6 @@ import logging
 import os
 import sys
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 import boto3
 from botocore.exceptions import ClientError
 
@@ -28,6 +27,46 @@ from notifier import send_alert, alert_on_exception, detect_error_type, send_eve
 # Configure logging for Lambda
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
+
+
+def handler_metrics_collector(event, context):
+    """Daily metrics collection — EventBridge 02:00 Amsterdam (00:00 UTC)."""
+    logger.info("="*60)
+    logger.info("📊 Metrics Collector — Starting")
+    logger.info("="*60)
+    try:
+        get_secrets()
+        from metrics_collector import MetricsCollector
+        dry_run = isinstance(event, dict) and bool(event.get("dry_run", False))
+        result = MetricsCollector().collect(dry_run=dry_run)
+        logger.info(f"✅ Metrics collected: {result}")
+        return {"statusCode": 200, "body": json.dumps(result)}
+    except PermissionError as e:
+        logger.error(f"❌ Instagram permission error: {e}")
+        send_alert("Metrics collector: missing instagram_manage_insights permission", str(e), "GENERAL")
+        return {"statusCode": 403, "body": json.dumps({"error": str(e)})}
+    except Exception as e:
+        logger.error(f"❌ Metrics collector failed: {e}", exc_info=True)
+        send_alert("Metrics collector failed", str(e), "GENERAL")
+        return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
+
+
+def handler_analytics_engine(event, context):
+    """Weekly analytics run — EventBridge Sunday 22:00 Amsterdam (20:00 UTC)."""
+    logger.info("="*60)
+    logger.info("🧠 Analytics Engine — Starting")
+    logger.info("="*60)
+    try:
+        get_secrets()
+        from analytics_engine import AnalyticsEngine
+        dry_run = isinstance(event, dict) and bool(event.get("dry_run", False))
+        result = AnalyticsEngine().run(dry_run=dry_run)
+        logger.info(f"✅ Analytics complete: {result.get('status')}")
+        return {"statusCode": 200, "body": json.dumps(result, default=str)}
+    except Exception as e:
+        logger.error(f"❌ Analytics engine failed: {e}", exc_info=True)
+        send_alert("Analytics engine failed", str(e), "GENERAL")
+        return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
 
 
 def get_secrets():
