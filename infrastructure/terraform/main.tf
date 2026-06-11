@@ -3,6 +3,7 @@ terraform {
   required_providers {
     aws = { source = "hashicorp/aws", version = "~> 5.0" }
   }
+  backend "s3" {}
 }
 
 provider "aws" {
@@ -289,17 +290,27 @@ resource "aws_cloudwatch_metric_alarm" "lambda_duration" {
   }
 }
 
+# ===== Lambda Deployment Package =====
+# Uploads the locally-built ZIP to S3 so all Lambda functions can reference it.
+# Terraform detects changes via etag (MD5) and re-uploads only when the ZIP changes.
+resource "aws_s3_object" "lambda_zip" {
+  bucket = aws_s3_bucket.results.id
+  key    = "deployments/lambda_deployment.zip"
+  source = "../../lambda_deployment.zip"
+  etag   = filemd5("../../lambda_deployment.zip")
+}
+
 # ===== Lambda Function =====
 resource "aws_lambda_function" "news_agent" {
   s3_bucket        = aws_s3_bucket.results.id
-  s3_key           = "deployments/lambda_deployment.zip"
+  s3_key           = aws_s3_object.lambda_zip.key
   function_name    = var.project_name
   role            = aws_iam_role.lambda_role.arn
   handler         = "lambda_handler.lambda_handler"
   runtime         = "python3.12"
   timeout         = var.lambda_timeout
   memory_size     = var.lambda_memory
-  
+
   source_code_hash = filebase64sha256("../../lambda_deployment.zip")
 
   environment {
@@ -319,14 +330,15 @@ resource "aws_lambda_function" "news_agent" {
 
   depends_on = [
     aws_iam_role_policy.lambda_policy,
-    aws_cloudwatch_log_group.lambda_logs
+    aws_cloudwatch_log_group.lambda_logs,
+    aws_s3_object.lambda_zip,
   ]
 }
 
 # ===== Lambda Function — Reels Publisher (async, invoked by news-agent) =====
 resource "aws_lambda_function" "reels_publish" {
   s3_bucket        = aws_s3_bucket.results.id
-  s3_key           = "deployments/lambda_deployment.zip"
+  s3_key           = aws_s3_object.lambda_zip.key
   function_name    = "${var.project_name}-reels-publish"
   role             = aws_iam_role.lambda_role.arn
   handler          = "reels_worker.lambda_handler"
@@ -352,6 +364,7 @@ resource "aws_lambda_function" "reels_publish" {
 
   depends_on = [
     aws_iam_role_policy.lambda_policy,
+    aws_s3_object.lambda_zip,
   ]
 }
 
@@ -538,7 +551,7 @@ resource "aws_lambda_permission" "allow_events_saturday_eventbridge" {
 
 resource "aws_lambda_function" "token_refresh" {
   s3_bucket        = aws_s3_bucket.results.id
-  s3_key           = "deployments/lambda_deployment.zip"
+  s3_key           = aws_s3_object.lambda_zip.key
   function_name    = "${var.project_name}-token-refresh"
   role             = aws_iam_role.lambda_role.arn
   handler          = "token_refresher.lambda_handler"
@@ -561,7 +574,10 @@ resource "aws_lambda_function" "token_refresh" {
     ManagedBy   = "terraform"
   }
 
-  depends_on = [aws_iam_role_policy.lambda_policy]
+  depends_on = [
+    aws_iam_role_policy.lambda_policy,
+    aws_s3_object.lambda_zip,
+  ]
 }
 
 resource "aws_cloudwatch_log_group" "token_refresh_logs" {

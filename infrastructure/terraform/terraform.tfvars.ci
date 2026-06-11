@@ -1,0 +1,5 @@
+aws_region     = "eu-central-1"
+project_name   = "news-ai-agent"
+lambda_timeout = 900
+lambda_memory  = 3008
+alert_email    = "alperyasemin@gmail.com"

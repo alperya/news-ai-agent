@@ -232,7 +232,7 @@ resource "aws_cloudwatch_dashboard" "analytics" {
 # ──────────────────────────────────────────────────────────
 resource "aws_lambda_function" "metrics_collector" {
   s3_bucket        = aws_s3_bucket.results.id
-  s3_key           = "deployments/lambda_deployment.zip"
+  s3_key           = aws_s3_object.lambda_zip.key
   function_name    = "${var.project_name}-metrics-collector"
   role             = aws_iam_role.lambda_role.arn
   handler          = "lambda_handler.handler_metrics_collector"
@@ -259,7 +259,8 @@ resource "aws_lambda_function" "metrics_collector" {
 
   depends_on = [
     aws_iam_role_policy.analytics_policy,
-    aws_dynamodb_table.post_metrics
+    aws_dynamodb_table.post_metrics,
+    aws_s3_object.lambda_zip,
   ]
 }
 
@@ -303,7 +304,7 @@ resource "aws_lambda_permission" "allow_metrics_collector_eventbridge" {
 # ──────────────────────────────────────────────────────────
 resource "aws_lambda_function" "analytics_engine" {
   s3_bucket        = aws_s3_bucket.results.id
-  s3_key           = "deployments/lambda_deployment.zip"
+  s3_key           = aws_s3_object.lambda_zip.key
   function_name    = "${var.project_name}-analytics-engine"
   role             = aws_iam_role.lambda_role.arn
   handler          = "lambda_handler.handler_analytics_engine"
@@ -332,7 +333,8 @@ resource "aws_lambda_function" "analytics_engine" {
   depends_on = [
     aws_iam_role_policy.analytics_policy,
     aws_dynamodb_table.post_metrics,
-    aws_dynamodb_table.prompt_versions
+    aws_dynamodb_table.prompt_versions,
+    aws_s3_object.lambda_zip,
   ]
 }
 
