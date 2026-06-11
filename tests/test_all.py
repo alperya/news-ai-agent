@@ -239,23 +239,26 @@ def test_quality_gate_rejects_missing_hashtags():
 
 def test_quality_gate_ai_corrects_content():
     """quality_check should fix content when AI review finds Dutch spelling leaks."""
-    with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
-        with patch("anthropic.Anthropic") as mock_cls:
+    env = {"ANTHROPIC_API_KEY": "test-key", "AI_PROMPT_QUALITY_CHECK": "check: {content}"}
+    with patch.dict(os.environ, env):
+        with patch("anthropic.Anthropic"):
             agent = NewsAIAgent(api_key="test-key")
-            mock_response = MagicMock()
-            mock_response.content = [MagicMock(
-                text='{"pass": true, "corrected_content": "Hollanda algoritma skandalı", "issues": ["algoritme → algoritma"]}'
-            )]
-            mock_cls.return_value.messages.create.return_value = mock_response
-            agent.client = mock_cls.return_value
 
-    post = SocialMediaPost(
-        original_title="Test", original_url="https://nos.nl/1",
-        source="nos", content="Hollanda algoritme skandalı büyüyor, yetkililerin açıklaması bekleniyor.",
-        hashtags=["#Hollanda"], emoji="📰", platform="instagram",
-    )
-    with patch.object(agent, '_save_correction'):
-        result = agent.quality_check(post)
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(
+            text='{"pass": true, "corrected_content": "Hollanda algoritma skandalı", "issues": ["algoritme → algoritma"]}'
+        )]
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = mock_response
+        agent.client = mock_client
+
+        post = SocialMediaPost(
+            original_title="Test", original_url="https://nos.nl/1",
+            source="nos", content="Hollanda algoritme skandalı büyüyor, yetkililerin açıklaması bekleniyor.",
+            hashtags=["#Hollanda"], emoji="📰", platform="instagram",
+        )
+        with patch.object(agent, '_save_correction'):
+            result = agent.quality_check(post)
     assert result is not None
     assert result.content == "Hollanda algoritma skandalı"
     assert result._corrected is True
@@ -265,23 +268,26 @@ def test_quality_gate_ai_corrects_content():
 
 def test_quality_gate_ai_rejects_bad_content():
     """quality_check should return None when AI marks content as unpublishable."""
-    with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
-        with patch("anthropic.Anthropic") as mock_cls:
+    env = {"ANTHROPIC_API_KEY": "test-key", "AI_PROMPT_QUALITY_CHECK": "check: {content}"}
+    with patch.dict(os.environ, env):
+        with patch("anthropic.Anthropic"):
             agent = NewsAIAgent(api_key="test-key")
-            mock_response = MagicMock()
-            mock_response.content = [MagicMock(
-                text='{"pass": false, "reason": "Metin tamamen anlamsız"}'
-            )]
-            mock_cls.return_value.messages.create.return_value = mock_response
-            agent.client = mock_cls.return_value
 
-    post = SocialMediaPost(
-        original_title="Test", original_url="https://nos.nl/1",
-        source="nos", content="Anlamsiz metin garbled çeviri sonucu olusan.",
-        hashtags=["#Test"], emoji="📰", platform="instagram",
-    )
-    with patch.object(agent, '_save_error'):
-        result = agent.quality_check(post)
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(
+            text='{"pass": false, "reason": "Metin tamamen anlamsız"}'
+        )]
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = mock_response
+        agent.client = mock_client
+
+        post = SocialMediaPost(
+            original_title="Test", original_url="https://nos.nl/1",
+            source="nos", content="Anlamsiz metin garbled çeviri sonucu olusan.",
+            hashtags=["#Test"], emoji="📰", platform="instagram",
+        )
+        with patch.object(agent, '_save_error'):
+            result = agent.quality_check(post)
     assert result is None
 
 
@@ -289,21 +295,24 @@ def test_quality_gate_ai_rejects_bad_content():
 
 def test_quality_gate_passes_clean_text():
     """quality_check should return the post as-is when everything is fine."""
-    with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
-        with patch("anthropic.Anthropic") as mock_cls:
+    env = {"ANTHROPIC_API_KEY": "test-key", "AI_PROMPT_QUALITY_CHECK": "check: {content}"}
+    with patch.dict(os.environ, env):
+        with patch("anthropic.Anthropic"):
             agent = NewsAIAgent(api_key="test-key")
-            mock_response = MagicMock()
-            mock_response.content = [MagicMock(text='{"pass": true}')]
-            mock_cls.return_value.messages.create.return_value = mock_response
-            agent.client = mock_cls.return_value
 
-    original = "Hollanda'da yeni bisiklet altyapı planı açıklandı."
-    post = SocialMediaPost(
-        original_title="Test", original_url="https://nos.nl/1",
-        source="nos", content=original,
-        hashtags=["#Hollanda"], emoji="🚲", platform="instagram",
-    )
-    result = agent.quality_check(post)
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text='{"pass": true}')]
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = mock_response
+        agent.client = mock_client
+
+        original = "Hollanda'da yeni bisiklet altyapı planı açıklandı."
+        post = SocialMediaPost(
+            original_title="Test", original_url="https://nos.nl/1",
+            source="nos", content=original,
+            hashtags=["#Hollanda"], emoji="🚲", platform="instagram",
+        )
+        result = agent.quality_check(post)
     assert result is not None
     assert result.content == original
 
