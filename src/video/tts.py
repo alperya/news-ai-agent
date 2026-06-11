@@ -196,11 +196,13 @@ def parse_srt(srt_text: str) -> List[SubtitleSegment]:
 
 
 def group_subtitle_segments(
-    segments: List[SubtitleSegment], max_words: int = 8,
+    segments: List[SubtitleSegment], max_words: int = 8, max_chars: int = 50,
 ) -> List[SubtitleSegment]:
     """Group word-level segments into subtitle chunks.
 
-    Each chunk contains at most *max_words* words (default 8 = 2 lines × 4).
+    Each chunk contains at most *max_words* words AND at most *max_chars*
+    characters (including spaces). The character cap prevents long Dutch
+    compound words from producing groups that overflow beyond 2 visual lines.
     """
     if not segments:
         return segments
@@ -212,11 +214,12 @@ def group_subtitle_segments(
 
     for seg in segments:
         seg_words = seg.text.split()
+        combined = " ".join(cur_words + seg_words)
         if cur_start is None:
             cur_words = seg_words
             cur_start = seg.start
             cur_end = seg.end
-        elif len(cur_words) + len(seg_words) <= max_words:
+        elif len(cur_words) + len(seg_words) <= max_words and len(combined) <= max_chars:
             cur_words.extend(seg_words)
             cur_end = seg.end
         else:

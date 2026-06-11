@@ -266,17 +266,19 @@ def make_subtitle_clip(segment: SubtitleSegment) -> list:
 
     Each line of text gets its own rounded-rectangle background
     sized exactly to that line's width — no wasted orange area.
-    Returns a single-element list ``[masked_clip]``.
+
+    When word-wrapping produces more than 2 lines (e.g. a long Dutch
+    compound word fills line 1 entirely, pushing later words into line 3),
+    the segment's duration is split proportionally by word count across
+    2-line chunks so that no words are silently dropped.
     """
     from PIL import ImageDraw, ImageFont
 
-    # Load font first — needed for pixel-width measurement
     try:
         font = ImageFont.truetype(FONT_PATH, SUBTITLE_FONT_SIZE)
     except Exception:
         font = ImageFont.load_default(size=SUBTITLE_FONT_SIZE)
 
-    # Wrap lines by measured pixel width (not fixed word count)
     pad_x, pad_y = 28, 12
     max_text_width = VIDEO_WIDTH - 2 * SUBTITLE_SAFE_MARGIN - 2 * pad_x
 
@@ -293,14 +295,40 @@ def make_subtitle_clip(segment: SubtitleSegment) -> list:
             current_line.append(word)
     if current_line:
         lines.append(" ".join(current_line))
-    lines = lines[:2]  # max 2 visible lines
+
+    y_pos = int(VIDEO_HEIGHT * 0.80)
+    dur = segment.end - segment.start
+    total_words = len(words) or 1
+
+    line_chunks = [lines[i:i + 2] for i in range(0, len(lines), 2)]
+    chunk_word_counts = [sum(len(l.split()) for l in chunk) for chunk in line_chunks]
+
+    clips: list = []
+    current_start = segment.start
+    for chunk, wc in zip(line_chunks, chunk_word_counts):
+        fraction = wc / total_words
+        chunk_end = current_start + dur * fraction
+        clips.extend(_render_subtitle_chunk(chunk, font, current_start, chunk_end, y_pos))
+        current_start = chunk_end
+
+    return clips
+
+
+def _render_subtitle_chunk(
+    lines: list,
+    font,
+    start: float,
+    end: float,
+    y_pos: int,
+) -> list:
+    """Render 1–2 wrapped text lines as one orange-background subtitle clip."""
+    from PIL import ImageDraw
 
     pad_x, pad_y = 28, 12
     line_gap = 8
     corner_radius = 12
 
-    # Measure each line
-    line_metrics: list[tuple[int, int, int]] = []  # (width, height, top_offset)
+    line_metrics: list[tuple[int, int, int]] = []
     for line in lines:
         left, top, right, bottom = font.getbbox(line)
         line_metrics.append((int(right - left), int(bottom - top), int(top)))
@@ -309,7 +337,6 @@ def make_subtitle_clip(segment: SubtitleSegment) -> list:
     row_h = max_line_h + 2 * pad_y
     total_h = len(lines) * row_h + max(0, len(lines) - 1) * line_gap
 
-    # Create transparent RGBA canvas (full video width for centring)
     canvas = Image.new("RGBA", (VIDEO_WIDTH, total_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(canvas)
 
@@ -320,7 +347,6 @@ def make_subtitle_clip(segment: SubtitleSegment) -> list:
     for line, (lw, lh, top_off) in zip(lines, line_metrics):
         box_w = lw + 2 * pad_x
         box_x = (VIDEO_WIDTH - box_w) // 2
-
         draw.rounded_rectangle(
             [(box_x, y), (box_x + box_w, y + row_h)],
             radius=corner_radius,
@@ -329,22 +355,17 @@ def make_subtitle_clip(segment: SubtitleSegment) -> list:
         text_x = box_x + pad_x
         text_y = y + (row_h - lh) // 2 - top_off
         draw.text((text_x, text_y), line, font=font, fill=text_rgba)
-
         y += row_h + line_gap
 
-    # Split RGBA → RGB + alpha mask for moviepy
     r, g, b, a = canvas.split()
     rgb_img = np.array(Image.merge("RGB", (r, g, b)))
     alpha_img = np.array(a).astype(np.float64) / 255.0
 
-    dur = segment.end - segment.start
-    y_pos = int(VIDEO_HEIGHT * 0.80)
-
+    dur = max(end - start, 0.05)
     clip = ImageClip(rgb_img).with_duration(dur)
     mask = ImageClip(alpha_img, is_mask=True).with_duration(dur)
     clip = clip.with_mask(mask)
-    clip = clip.with_position((0, y_pos)).with_start(segment.start)
-
+    clip = clip.with_position((0, y_pos)).with_start(start)
     return [clip]
 
 
