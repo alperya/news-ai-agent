@@ -176,7 +176,7 @@ def _pexels_video_search(
         return []
 
 
-def download_image(url: str, tmp_dir: str) -> Optional[str]:
+def download_image(url: Optional[str], tmp_dir: str) -> Optional[str]:
     """Download news article image.  Returns local path or None."""
     if not url:
         return None
