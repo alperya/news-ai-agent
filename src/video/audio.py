@@ -18,7 +18,7 @@ from moviepy import (
 )
 from moviepy.audio.fx import AudioFadeOut
 
-from .config import BG_MUSIC_VOLUME, ALTERNATIVE_MUSIC_FILE, CALM_MUSIC_FILE, MUSIC_FILE
+from .config import BG_MUSIC_VOLUME, ALTERNATIVE_MUSIC_FILE, CALM_MUSIC_FILE, MUSIC_FILE, SAD_MUSIC_FILE
 
 logger = logging.getLogger(__name__)
 
@@ -76,11 +76,14 @@ def mix_audio(
 def find_music_file(mood: str = "neutral") -> Optional[Path]:
     """Locate the background music file based on news mood.
 
-    *mood* = 'positive' → upbeat news_music.mp3
+    *mood* = 'positive' → news_music.mp3
+    *mood* = 'sad'      → sad_music.mp3 (death/injury news)
     *mood* = anything else → calm_music.mp3 (60%) or alternative_music.mp3 (40%)
     """
     if mood == "positive":
         primary, fallback_name = MUSIC_FILE, "news_music.mp3"
+    elif mood == "sad":
+        primary, fallback_name = SAD_MUSIC_FILE, "sad_music.mp3"
     else:
         if random.random() < 0.6:
             primary, fallback_name = CALM_MUSIC_FILE, "calm_music.mp3"

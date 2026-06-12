@@ -45,15 +45,38 @@ _POSITIVE_KEYWORDS = {
     "groei", "stijging", "deal", "doorbraak", "innovatie",
 }
 
+# Keywords that signal death or serious injury — triggers sad_music
+_SAD_KEYWORDS = {
+    # Dutch — death
+    "dood", "doden", "dode", "dodelijk", "dodelijke", "omgekomen", "omgekome",
+    "overlijden", "overleden", "gestorven", "sterfgeval", "sterfte",
+    "slachtoffer", "slachtoffers",
+    # Dutch — injury
+    "gewond", "gewonden", "gewonde", "zwaargewond", "verwond", "verwonden", "letsel",
+    # Dutch — violent events
+    "aanslag", "schietpartij", "steekpartij", "moord", "doodslag",
+    "explosie", "bombardement", "ramp", "tragedie", "catastrofe",
+    # English (NOS/RTL sometimes use English terms)
+    "dead", "death", "killed", "fatal", "fatality", "fatalities",
+    "casualty", "casualties", "victim", "victims",
+    "injury", "injured", "wounded", "shooting", "stabbing", "murder",
+    "tragedy", "disaster",
+}
+
 
 def _detect_mood(title: str, content: str, emoji: str) -> str:
-    """Classify news sentiment as 'positive' or 'neutral'."""
+    """Classify news sentiment as 'positive', 'sad', or 'neutral'."""
+    text = f"{title} {content}".lower()
+
+    # Sad takes priority — death/injury overrides any positive framing
+    if any(kw in text for kw in _SAD_KEYWORDS):
+        return "sad"
+
     # Check emoji
     if any(ch in _POSITIVE_EMOJIS for ch in emoji):
         return "positive"
 
     # Check keywords in title + content
-    text = f"{title} {content}".lower()
     if sum(1 for kw in _POSITIVE_KEYWORDS if kw in text) >= 2:
         return "positive"
 
