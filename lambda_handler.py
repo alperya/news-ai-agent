@@ -216,6 +216,27 @@ def get_published_urls(bucket_name):
         return published_urls
 
 
+def _invoke_youtube_async(lambda_client, s3_video_key, post_content, hook, hashtags, bucket_name, timestamp, context=''):
+    """Fire-and-forget YouTube Shorts publish. Failure never blocks Instagram."""
+    youtube_fn = os.environ.get('YOUTUBE_PUBLISH_FUNCTION_NAME', 'news-ai-agent-youtube-publish')
+    try:
+        lambda_client.invoke(
+            FunctionName=youtube_fn,
+            InvocationType='Event',
+            Payload=json.dumps({
+                's3_video_key': s3_video_key,
+                'post_content': post_content,
+                'hook': hook,
+                'hashtags': hashtags,
+                'bucket_name': bucket_name,
+                'timestamp': timestamp,
+            }).encode(),
+        )
+        logger.info(f"✅ YouTube {context}publish delegated to {youtube_fn} (async)")
+    except Exception as yt_err:
+        logger.warning(f"⚠️ YouTube {context}invoke failed (non-critical): {yt_err}")
+
+
 def _finish_event_pipeline(
     status: str,
     summary: dict,
@@ -649,7 +670,17 @@ def lambda_handler(event, context):
                         }).encode(),
                     )
                     logger.info(f"✅ Reels publish delegated to {reels_fn} (async)")
-                    result = {'status': 'queued', 'publisher': reels_fn, 's3_key': s3_video_key}
+
+                    # Publish the same video to YouTube Shorts (async, independent of Instagram).
+                    _invoke_youtube_async(
+                        lambda_client, s3_video_key,
+                        post_content=post.get('full_post', ''),
+                        hook=post.get('hook', ''),
+                        hashtags=post.get('hashtags', []),
+                        bucket_name=bucket_name,
+                        timestamp=timestamp,
+                    )
+                    result = {'status': 'queued', 'publishers': [reels_fn, 'youtube'], 's3_key': s3_video_key}
 
                 else:
                     publisher = InstagramPublisher()

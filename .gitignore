@@ -94,3 +94,4 @@ local_only/
 # AI Prompt templates (contain custom instructions)
 prompts/*.txt
 !prompts/*.txt.example
+scripts/client_secret.json

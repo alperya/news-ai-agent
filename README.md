@@ -1,6 +1,6 @@
 # 🤖 News AI Agent — Dutch News & Events Automation
 
-An intelligent AI-powered pipeline that automatically scrapes Dutch news from NOS and RTL Nieuws, processes them with Claude AI, and publishes engaging content to Instagram — both as photo posts and auto-generated Reels videos with TTS narration. Every Wednesday at 18:00 it also publishes a curated weekly events digest for the Netherlands.
+An intelligent AI-powered pipeline that automatically scrapes Dutch news from NOS and RTL Nieuws, processes them with Claude AI, and publishes engaging content to **Instagram** and **YouTube Shorts** — both as photo posts and auto-generated Reels videos with TTS narration. Every week it also publishes a curated events digest for the Netherlands to Instagram.
 
 ## 📦 Features
 
@@ -9,6 +9,7 @@ An intelligent AI-powered pipeline that automatically scrapes Dutch news from NO
 - ✅ Quality gate: structural validation + AI language review (Claude Haiku 4.5) before publishing
 - ✅ Instagram Graph API integration with automatic token refresh
 - ✅ **Instagram Reels** — auto-generated news videos with TTS narration, stock footage & subtitles
+- ✅ **YouTube Shorts** — same Reels video simultaneously published as a YouTube Short (news only; separate async Lambda)
 - ✅ **Reels hook** — AI-generated 8–12 word attention hook, displayed as a large overlay for the first 3 seconds
 - ✅ Tiered news selection (🇳🇱 Holland → 🇪🇺 Europe → 🌍 Global) with viral potential scoring
 - ✅ Source attribution with article links in posts
@@ -97,6 +98,8 @@ python3 scripts/update_secrets.py
 │   ├── news_scraper.py            # RSS scraping (NOS, RTL Nieuws)
 │   ├── event_scraper.py           # 📅 8-source NL event scraper
 │   ├── social_publisher.py        # Instagram publishing (photo + Reels)
+│   ├── youtube_publisher.py       # YouTube Data API v3 — upload as Short
+│   ├── youtube_worker.py          # Async Lambda handler for YouTube Shorts
 │   ├── notifier.py                # Error alerts via AWS SNS (email)
 │   ├── video/                     # 🎬 Reels video generation package
 │   │   ├── __init__.py            # Public API exports
@@ -134,18 +137,19 @@ python3 scripts/update_secrets.py
 
 ## 📅 Posting Schedule
 
-AWS Lambda runs via EventBridge (UTC → Amsterdam CET/CEST):
+AWS Lambda runs via EventBridge (UTC → Amsterdam CEST = UTC+2):
 
-| Schedule              | UTC         | Amsterdam | Format                   |
-|-----------------------|-------------|-----------|--------------------------|
-| Morning (daily)       | 07:00       | 08:00     | 📷 Photo post (news)     |
-| Afternoon (daily)     | 11:30       | 12:30     | 🎬 Reels video (news)    |
-| Evening (daily)       | 16:30       | 17:30     | 📷 Photo post (news)     |
-| Weekly events (Wed)   | 17:00       | 18:00     | 📅 Events infographic    |
+| Schedule                | UTC   | Amsterdam | Instagram              | YouTube Shorts         |
+|-------------------------|-------|-----------|------------------------|------------------------|
+| Morning (daily)         | 09:00 | 11:00     | 🎬 Reels (news)        | ▶️ Short (same video)  |
+| Afternoon (daily)       | 17:00 | 19:00     | 🎬 Reels (news)        | ▶️ Short (same video)  |
+| Events (Tue + Sat)      | 16:00 / 13:00 | 18:00 / 15:00 | 📅 Events Reels | ✗ (Instagram only) |
+
+> Note: cron times assume CEST (UTC+2). In winter (CET, UTC+1) posts run 1 hour later Amsterdam time.
 
 ### 📅 Weekly Events Post
 
-Every Wednesday at 18:00 (Amsterdam time) the pipeline runs a separate events mode (`format: event_post`) that:
+Twice weekly (Tuesday 18:00 + Saturday 15:00 Amsterdam time) the pipeline runs a separate events mode (`format: event_post`) that:
 1. Scrapes upcoming NL events from **8 sources**: Eventbrite API, Ticketmaster API, amsterdam.nl, rotterdam.nl, denhaag.nl, uitagenda.nl, festileaks.nl, doedagen.nl
 2. Scores each event with Claude Haiku (0–8 rubric: audience fit, completeness, public access, visual appeal)
 3. Selects the best 5–12 events with Claude Opus and generates the caption
@@ -166,7 +170,8 @@ All posts include an AI-assistance disclaimer at the bottom.
 | **Cloud** | AWS Lambda, S3, EventBridge, Secrets Manager |
 | **IaC** | Terraform |
 | **Language** | Python 3.12 |
-| **API** | Instagram Graph API v24.0 |
+| **Instagram API** | Instagram Graph API v24.0 |
+| **YouTube API** | YouTube Data API v3 (OAuth 2.0, resumable upload) |
 
 ## ⚙️ Configuration
 
@@ -184,6 +189,9 @@ All configuration is managed through environment variables (`.env` locally, AWS 
 | `PEXELS_API_KEY` | ❌ | Pexels API key for stock footage (falls back to article image) |
 | `EVENTBRITE_API_KEY` | ❌ | Eventbrite private token — enables Eventbrite event scraping |
 | `TICKETMASTER_API_KEY` | ❌ | Ticketmaster Consumer Key — enables Ticketmaster event scraping |
+| `YOUTUBE_CLIENT_ID` | ❌ | Google OAuth 2.0 client ID — enables YouTube Shorts publishing |
+| `YOUTUBE_CLIENT_SECRET` | ❌ | Google OAuth 2.0 client secret |
+| `YOUTUBE_REFRESH_TOKEN` | ❌ | OAuth refresh token for the YouTube channel (long-lived) |
 | `ALERT_EMAIL` | ❌ | Email for Lambda error alerts — OOM, token expiry, publish failures |
 | `REVIEW_MODEL` | ❌ | Quality gate model (default: `claude-haiku-4-5-20251001`) |
 | `LANGCHAIN_API_KEY` | ❌ | LangSmith API key — enables LLM trace dashboard |
@@ -220,8 +228,9 @@ make test
 # or
 pytest tests/ -v
 
-# 166 tests covering scraper, AI agent, quality gate, video pipeline,
-# social publisher, event scraper, event card, notifier, token refresher, lambda handler
+# 174 tests covering scraper, AI agent, quality gate, video pipeline,
+# social publisher, YouTube publisher/worker, event scraper, event card,
+# notifier, token refresher, lambda handler (incl. YouTube isolation test)
 ```
 
 ## 📝 License

@@ -1,6 +1,6 @@
 # News AI Agent — Project Context
 
-Dutch-language Instagram automation: scrapes NOS/RTL news + 8 NL event sources, generates AI content with Claude, publishes photo posts and Reels to Instagram 3x/day + twice weekly for events.
+Dutch-language social media automation: scrapes NOS/RTL news + 8 NL event sources, generates AI content with Claude, publishes photo posts and Reels to **Instagram** and the same Reels as **YouTube Shorts** — 2× daily for news, twice weekly for events (events: Instagram only).
 
 ---
 
@@ -8,8 +8,9 @@ Dutch-language Instagram automation: scrapes NOS/RTL news + 8 NL event sources, 
 
 | Handler | File | Schedule | Purpose |
 |---|---|---|---|
-| `lambda_handler` | `lambda_handler.py` | EventBridge 3x/day | Main pipeline: scrape → AI → publish photo or Reels |
+| `lambda_handler` | `lambda_handler.py` | EventBridge 2×/day + events | Main pipeline: scrape → AI → publish photo or Reels |
 | `reels_worker` | `src/reels_worker.py` | Invoked async by main handler | Publishes Reels to Instagram (polls container status) |
+| `youtube_worker` | `src/youtube_worker.py` | Invoked async by main handler | Uploads same Reels video as YouTube Short |
 | `token_refresher` | `token_refresher.py` | EventBridge every 30 days | Refreshes Instagram 60-day token before expiry |
 | `handler_metrics_collector` | `lambda_handler.py` | EventBridge daily 02:00 AMS | Fetches Instagram Insights, writes to DynamoDB |
 | `handler_analytics_engine` | `lambda_handler.py` | EventBridge Sunday 22:00 AMS | Claude analytics + prompt auto-update + SNS email |
@@ -22,6 +23,9 @@ Dutch-language Instagram automation: scrapes NOS/RTL news + 8 NL event sources, 
 
 **Reels publishes via separate Lambda (`reels_worker`)**
 Meta's video processing takes up to 10 minutes. Main Lambda has 15-min hard limit. To avoid timeout, main handler generates video, uploads to S3, then invokes `reels_worker` asynchronously (fire-and-forget). `reels_worker` polls the Instagram container status up to 80×8 seconds.
+
+**YouTube Shorts via separate Lambda (`youtube_worker`)**
+The same MP4 already in S3 is also published to YouTube Shorts. Main handler invokes `youtube_worker` asynchronously immediately after invoking `reels_worker` — both are fire-and-forget. YouTube failure never blocks Instagram: the invoke is wrapped in its own try/except. Events content is intentionally excluded (static slideshow format performs poorly on YouTube Shorts; misaligns with the news-channel identity needed for monetization).
 
 **Two Claude models**
 - `claude-opus-4-6` / `claude-opus-4-7` → content generation (single_article, batch_selection, event_selection, footage queries). Quality matters here.
@@ -46,6 +50,8 @@ On every run, main handler reads all `posts_*.json` files from S3 to build a set
 | `src/news_scraper.py` | RSS scraping — NOS + RTL Nieuws → `NewsArticle` objects |
 | `src/ai_agent.py` | Claude API calls — content gen, quality gate, event scoring/selection, footage queries |
 | `src/social_publisher.py` | Instagram Graph API v24.0 — photo posts + Reels container upload/publish |
+| `src/youtube_publisher.py` | YouTube Data API v3 — OAuth 2.0 refresh token flow, resumable upload as Short |
+| `src/youtube_worker.py` | Async YouTube Shorts Lambda handler (mirrored pattern from `reels_worker`) |
 | `src/event_scraper.py` | 8-source NL event scraping (Ticketmaster, RSS, HTML) → `EventItem` objects |
 | `src/notifier.py` | AWS SNS email alerts — `send_alert()`, `send_event_summary()` |
 | `src/reels_worker.py` | Async Instagram Reels publishing + container status polling |
@@ -85,6 +91,8 @@ Collects per-post Instagram engagement metrics, normalizes them against follower
 
 All credentials are in AWS Secrets Manager secret `news-ai-agent/credentials`. See `.env.example` for the full key list. Required: `ANTHROPIC_API_KEY`, `INSTAGRAM_ACCESS_TOKEN`, `INSTAGRAM_ACCOUNT_ID`, `META_APP_ID`, `META_APP_SECRET`. Optional: `ELEVENLABS_API_KEY/VOICE_ID`, `PEXELS_API_KEY`, `TICKETMASTER_API_KEY`, `ALERT_EMAIL`, LangSmith + Langfuse keys.
 
+**YouTube credentials** (required for YouTube Shorts publishing): `YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET`, `YOUTUBE_REFRESH_TOKEN`. These are OAuth 2.0 credentials linked to the `alper.jasmine@gmail.com` channel. If absent from Secrets Manager, `youtube_worker` exits cleanly with `status: skipped` — no alert sent. To refresh an expired token, create a new OAuth Desktop app credential from Google Cloud Console and re-run the auth flow manually.
+
 For local development, copy `.env.example` to `.env` and run `src/main.py`.
 
 ---
@@ -97,3 +105,6 @@ For local development, copy `.env.example` to `.env` and run `src/main.py`.
 - **Pexels lazy-loading**: `footage.py` uses pagination with lazy fetching; don't call `len()` on the generator directly.
 - **Instagram Insights requires separate permission**: `instagram_manage_insights` must be added to the Meta App for `handler_metrics_collector` to work.
 - **S3 bucket name**: hardcoded fallback in `lambda_handler.py` as `news-ai-agent-results-645949963620`. Override via `RESULTS_BUCKET` env var.
+- **Lambda ZIP size limit**: unzipped package must stay under 250 MB. Current size ~231 MB. `build_lambda.sh` aborts if >240 MB (safety gate). Key exclusions: `googleapiclient/discovery_cache/documents/` (all except `youtube.v3.json`) and `zstandard/`. If a new heavy dependency is added and the limit is hit, migrate to Lambda Container Image (ECR, no size limit).
+- **YouTube OAuth token**: refresh tokens are long-lived but can be invalidated by Google (user revokes access, 6+ months inactivity). If `youtube_worker` starts failing with auth errors, generate a new refresh token via Google OAuth Desktop flow and update `YOUTUBE_REFRESH_TOKEN` in Secrets Manager.
+- **YouTube vs events**: events Reels (slide-based PIL video) is published to Instagram only. YouTube receives news Reels only. See architectural decision above for rationale.

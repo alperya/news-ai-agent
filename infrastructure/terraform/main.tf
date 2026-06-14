@@ -216,7 +216,10 @@ resource "aws_iam_role_policy" "lambda_policy" {
         Action = [
           "lambda:InvokeFunction"
         ]
-        Resource = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-reels-publish"
+        Resource = [
+          "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-reels-publish",
+          "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-youtube-publish",
+        ]
       }
     ]
   })
@@ -315,10 +318,11 @@ resource "aws_lambda_function" "news_agent" {
 
   environment {
     variables = {
-      RESULTS_BUCKET              = aws_s3_bucket.results.id
-      SECRET_NAME                 = aws_secretsmanager_secret.credentials.name
-      SNS_ALERT_TOPIC_ARN         = var.alert_email != "" ? aws_sns_topic.alerts[0].arn : ""
-      REELS_PUBLISH_FUNCTION_NAME = "${var.project_name}-reels-publish"
+      RESULTS_BUCKET                = aws_s3_bucket.results.id
+      SECRET_NAME                   = aws_secretsmanager_secret.credentials.name
+      SNS_ALERT_TOPIC_ARN           = var.alert_email != "" ? aws_sns_topic.alerts[0].arn : ""
+      REELS_PUBLISH_FUNCTION_NAME   = "${var.project_name}-reels-publish"
+      YOUTUBE_PUBLISH_FUNCTION_NAME = "${var.project_name}-youtube-publish"
     }
   }
 
@@ -374,6 +378,50 @@ resource "aws_cloudwatch_log_group" "reels_publish_logs" {
 
   tags = {
     Name        = "${var.project_name}-reels-publish-logs"
+    Environment = "production"
+    ManagedBy   = "terraform"
+  }
+}
+
+# ===== Lambda Function — YouTube Shorts Publisher (async, invoked by news-agent) =====
+resource "aws_lambda_function" "youtube_publish" {
+  s3_bucket        = aws_s3_bucket.results.id
+  s3_key           = aws_s3_object.lambda_zip.key
+  function_name    = "${var.project_name}-youtube-publish"
+  role             = aws_iam_role.lambda_role.arn
+  handler          = "youtube_worker.lambda_handler"
+  runtime          = "python3.12"
+  timeout          = 300  # 5 minutes: video download (~10s) + YouTube upload (~2 min)
+  memory_size      = 256  # no video rendering — minimal RAM needed
+
+  source_code_hash = filebase64sha256("../../lambda_deployment.zip")
+
+  environment {
+    variables = {
+      RESULTS_BUCKET      = aws_s3_bucket.results.id
+      SECRET_NAME         = aws_secretsmanager_secret.credentials.name
+      SNS_ALERT_TOPIC_ARN = var.alert_email != "" ? aws_sns_topic.alerts[0].arn : ""
+    }
+  }
+
+  tags = {
+    Name        = "${var.project_name}-youtube-publish"
+    Environment = "production"
+    ManagedBy   = "terraform"
+  }
+
+  depends_on = [
+    aws_iam_role_policy.lambda_policy,
+    aws_s3_object.lambda_zip,
+  ]
+}
+
+resource "aws_cloudwatch_log_group" "youtube_publish_logs" {
+  name              = "/aws/lambda/${var.project_name}-youtube-publish"
+  retention_in_days = 7
+
+  tags = {
+    Name        = "${var.project_name}-youtube-publish-logs"
     Environment = "production"
     ManagedBy   = "terraform"
   }
