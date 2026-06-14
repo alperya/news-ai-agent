@@ -8,6 +8,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 os.environ.setdefault("AI_PROMPT_QUALITY_CHECK", "Check: {content}")
+# event_selection.txt is gitignored; supply a minimal template so CI doesn't need the file
+os.environ.setdefault(
+    "AI_PROMPT_EVENT_SELECTION",
+    "Select {min_events}–{max_events} events from {event_count} for {date_range}.\n{events_text}",
+)
 
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
