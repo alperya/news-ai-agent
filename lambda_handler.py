@@ -332,7 +332,7 @@ def _run_event_pipeline(timestamp: str, bucket_name: str, ai_agent, dry_run: boo
         week_end = now + timedelta(days=7)
         date_range = f"{now.strftime('%-d')}–{week_end.strftime('%-d %B %Y')}"
 
-        result = ai_agent.select_and_format_events(scored, date_range=date_range, max_events=7)
+        result = ai_agent.select_and_format_events(scored, date_range=date_range, min_events=5, max_events=12)
         if not result:
             return _finish("ai_failed", http_code=500, error="AI selection returned empty result.")
 

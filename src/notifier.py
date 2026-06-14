@@ -186,7 +186,7 @@ def send_event_summary(summary: dict) -> bool:
         score_response = summary.get("score_response", "")
         if score_response:
             lines += ["", f"  Haiku raw response ({len(score_response)} chars):"]
-            lines += [f"    {line}" for line in score_response[:500].splitlines()]
+            lines += [f"    {line}" for line in score_response.splitlines()]
         lines.append("")
 
     # ── Selection + caption ──

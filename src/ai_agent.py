@@ -444,7 +444,7 @@ class NewsAIAgent:
 
     @_lf_observe(name="select_and_format_events")
     def select_and_format_events(
-        self, events: List[Dict], date_range: str, max_events: int = 7
+        self, events: List[Dict], date_range: str, min_events: int = 5, max_events: int = 12
     ) -> Optional[Dict]:
         """Select best events and generate Instagram caption + card data.
 
@@ -476,6 +476,7 @@ class NewsAIAgent:
         prompt_template = self._load_prompt('event_selection.txt', 'AI_PROMPT_EVENT_SELECTION')
         prompt = prompt_template.format(
             event_count=len(events),
+            min_events=min_events,
             max_events=max_events,
             date_range=date_range,
             events_text=events_text,
