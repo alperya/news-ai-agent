@@ -13,7 +13,7 @@ An intelligent AI-powered pipeline that automatically scrapes Dutch news from NO
 - ✅ Tiered news selection (🇳🇱 Holland → 🇪🇺 Europe → 🌍 Global) with viral potential scoring
 - ✅ Source attribution with article links in posts
 - ✅ Duplicate detection (prevents reposting same articles)
-- ✅ **Weekly events post** — every Wednesday 18:00, a PIL-generated infographic of 5–7 curated NL events drawn from 8 sources (Eventbrite, Ticketmaster, amsterdam.nl, rotterdam.nl, denhaag.nl, uitagenda.nl, festileaks.nl, doedagen.nl)
+- ✅ **Weekly events post** — every Wednesday 18:00, a PIL-generated infographic of 5–12 curated NL events drawn from 8 sources (Eventbrite, Ticketmaster, amsterdam.nl, rotterdam.nl, denhaag.nl, uitagenda.nl, festileaks.nl, doedagen.nl)
 - ✅ AWS Lambda deployment with scheduled posting (4× weekly cadence)
 - ✅ Infrastructure as Code (Terraform)
 - ✅ AWS Secrets Manager for credential management
@@ -127,7 +127,7 @@ python3 scripts/update_secrets.py
 │   └── lambda.txt                 # Lambda runtime dependencies
 ├── infrastructure/
 │   └── terraform/                 # AWS infrastructure (Lambda, S3, EventBridge)
-├── tests/                         # Test suite (35 tests)
+├── tests/                         # Test suite (166 tests)
 ├── output/                        # Generated articles & posts (gitignored)
 └── errors/                        # Rejected/corrected posts log (gitignored)
 ```
@@ -148,7 +148,7 @@ AWS Lambda runs via EventBridge (UTC → Amsterdam CET/CEST):
 Every Wednesday at 18:00 (Amsterdam time) the pipeline runs a separate events mode (`format: event_post`) that:
 1. Scrapes upcoming NL events from **8 sources**: Eventbrite API, Ticketmaster API, amsterdam.nl, rotterdam.nl, denhaag.nl, uitagenda.nl, festileaks.nl, doedagen.nl
 2. Scores each event with Claude Haiku (0–8 rubric: audience fit, completeness, public access, visual appeal)
-3. Selects the best 5–7 events with Claude Opus and generates the caption
+3. Selects the best 5–12 events with Claude Opus and generates the caption
 4. Generates a branded 1080×1080 PIL infographic with event listings
 5. Publishes to Instagram as a feed photo post
 
@@ -220,7 +220,8 @@ make test
 # or
 pytest tests/ -v
 
-# 35 tests covering scraper, AI agent, quality gate, video pipeline, social publisher
+# 166 tests covering scraper, AI agent, quality gate, video pipeline,
+# social publisher, event scraper, event card, notifier, token refresher, lambda handler
 ```
 
 ## 📝 License
