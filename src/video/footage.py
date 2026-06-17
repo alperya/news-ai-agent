@@ -131,15 +131,6 @@ def _fetch_clips_for_query(
         seen_ids = {v.get("id") for v in videos}
         videos.extend(v for v in extra if v.get("id") not in seen_ids)
 
-    # Broader fallback — first keyword only
-    if len(videos) < count:
-        broad = query.split()[0] if query.split() else "news"
-        if broad != query:
-            logger.info(f"🔍 Broadening search to: '{broad}'")
-            extra = _pexels_video_search(api_key, broad, per_page=PEXELS_PER_PAGE)
-            seen_ids = {v.get("id") for v in videos}
-            videos.extend(v for v in extra if v.get("id") not in seen_ids)
-
     if not videos:
         return []
 

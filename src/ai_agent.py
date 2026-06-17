@@ -329,20 +329,27 @@ class NewsAIAgent:
             "You are selecting stock footage for a Dutch news Instagram Reel.\n\n"
             f"Dutch article headline: {title}\n"
             f"Article context: {description}\n\n"
-            "Generate exactly 3 Pexels search queries in English, ordered from most "
+            "Generate exactly 5 Pexels search queries in English, ordered from most "
             "specific to most generic.\n\n"
             "Rules:\n"
-            "- Include 'netherlands' or a specific Dutch city/place when the article "
-            "is about the Netherlands or a Dutch institution\n"
+            "- If the article mentions a specific Dutch city or region (e.g. Nijmegen, "
+            "Rotterdam, Groningen), the FIRST TWO queries MUST include that city name\n"
+            "- Otherwise include 'netherlands' when the article is about the Netherlands "
+            "or a Dutch institution\n"
             "- Use concrete visual nouns (what would appear on screen)\n"
             "- English only — no Dutch words\n"
-            "- 2–4 words per query\n\n"
-            'Return ONLY valid JSON: {"queries": ["...", "...", "..."]}'
+            "- 2–4 words per query\n"
+            "- If the subject is niche (a specific building, archaeological find, "
+            "historical artifact, or unusual event), include at least 2 queries for "
+            "visually adjacent concepts that evoke the same theme — e.g. for a Roman "
+            "bathhouse discovery: 'archaeological excavation netherlands', "
+            "'ancient ruins europe', 'museum historical artifacts'\n\n"
+            'Return ONLY valid JSON: {"queries": ["...", "...", "...", "...", "..."]}'
         )
         try:
             response = self.client.messages.create(
                 model=self.footage_model,
-                max_tokens=120,
+                max_tokens=200,
                 temperature=0,
                 messages=[{"role": "user", "content": prompt}],
             )
@@ -359,7 +366,7 @@ class NewsAIAgent:
             queries = [q for q in data.get('queries', []) if isinstance(q, str) and q.strip()]
             if queries:
                 logger.info(f"🎬 Footage queries: {queries}")
-                return queries[:3]
+                return queries[:5]
         except Exception as e:
             logger.warning(f"⚠️  Footage query generation failed, falling back to keyword extraction: {e}")
         return []
