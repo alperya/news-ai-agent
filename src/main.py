@@ -22,7 +22,7 @@ class NewsAIPipeline:
         # Default config; can be overridden via CLI
         self.config = config or {
             'output_dir': 'output',
-            'max_articles_per_source': 2,
+            'max_articles_per_source': 3,
             'max_posts': 1,  # Post only one article per run
             'dry_run': True,
             'platform': 'instagram',  # 'twitter' or 'instagram'

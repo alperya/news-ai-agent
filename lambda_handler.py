@@ -457,7 +457,7 @@ def lambda_handler(event, context):
         # STAGE 1: Scrape news
         logger.info("\n📰 STAGE 1: Scraping news articles...")
         scraper = DutchNewsScraper()
-        articles = scraper.scrape_all_sources(max_articles_per_source=2)
+        articles = scraper.scrape_all_sources(max_articles_per_source=3)
         articles_data = [article.to_dict() for article in articles]
         
         if not articles_data:

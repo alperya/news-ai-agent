@@ -44,7 +44,17 @@ class DutchNewsScraper:
         },
         'rtl': {
             'general': 'https://www.rtl.nl/rss.xml'
-        }
+        },
+        'nu': {
+            'algemeen': 'https://www.nu.nl/rss/Algemeen',
+            'binnenland': 'https://www.nu.nl/rss/Binnenland',
+        },
+        'dutchnews': {
+            'expat': 'https://www.dutchnews.nl/feed/',
+        },
+        'volkskrant': {
+            'kwaliteit': 'https://www.volkskrant.nl/rss.xml',
+        },
     }
     
     def __init__(self):
