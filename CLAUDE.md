@@ -29,7 +29,7 @@ The same MP4 already in S3 is also published to YouTube Shorts. Main handler inv
 
 **Two Claude models**
 - `claude-opus-4-6` / `claude-opus-4-7` → content generation (single_article, batch_selection, event_selection, footage queries). Quality matters here.
-- `claude-haiku-4-5` → quality gate reviews and event scoring. Speed + cost matter; results are structural/language checks only.
+- `claude-haiku-4-5` → quality gate reviews, event scoring, and footage thumbnail validation (vision). Speed + cost matter; results are structural/language checks only.
 
 **Prompts stored in Secrets Manager**
 All four prompts (`AI_PROMPT_BATCH_SELECTION`, `AI_PROMPT_SINGLE_ARTICLE`, `AI_PROMPT_QUALITY_CHECK`, `AI_PROMPT_EVENT_SELECTION`) are stored in Secrets Manager alongside API keys. `get_secrets()` in `lambda_handler.py` loads them as env vars at startup. `ai_agent.py` reads from env, falls back to `prompts/` directory files. This allows hot-updating prompts without redeploying Lambda.
@@ -38,7 +38,7 @@ All four prompts (`AI_PROMPT_BATCH_SELECTION`, `AI_PROMPT_SINGLE_ARTICLE`, `AI_P
 Instagram access tokens have a 60-day TTL. A dedicated Lambda runs every 30 days to exchange the token via Meta Graph API and write the new token back to Secrets Manager.
 
 **Duplicate detection**
-On every run, main handler reads all `posts_*.json` files from S3 to build a set of published URLs and filters them out before AI processing. No database needed — S3 scan is acceptable at this volume.
+On every run, main handler reads all `posts_*.json` files from S3 to build a set of published URLs and filters them out before AI processing. No database needed — S3 scan is acceptable at this volume. Additionally, `original_title` values from posts published in the last 3 days are passed to `batch_selection` as context so the AI skips articles covering already-published topics even when they come from different sources (cross-source semantic dedup).
 
 ---
 
@@ -106,5 +106,5 @@ For local development, copy `.env.example` to `.env` and run `src/main.py`.
 - **Instagram Insights requires separate permission**: `instagram_manage_insights` must be added to the Meta App for `handler_metrics_collector` to work.
 - **S3 bucket name**: hardcoded fallback in `lambda_handler.py` as `news-ai-agent-results-645949963620`. Override via `RESULTS_BUCKET` env var.
 - **Lambda ZIP size limit**: unzipped package must stay under 250 MB. Current size ~231 MB. `build_lambda.sh` aborts if >240 MB (safety gate). Key exclusions: `googleapiclient/discovery_cache/documents/` (all except `youtube.v3.json`) and `zstandard/`. If a new heavy dependency is added and the limit is hit, migrate to Lambda Container Image (ECR, no size limit).
-- **YouTube OAuth token**: refresh tokens are long-lived but can be invalidated by Google (user revokes access, 6+ months inactivity). If `youtube_worker` starts failing with auth errors, generate a new refresh token via Google OAuth Desktop flow and update `YOUTUBE_REFRESH_TOKEN` in Secrets Manager.
+- **YouTube OAuth token**: invalidated if user revokes access or GCP OAuth app is in Testing mode (tokens expire in 7 days — must be Production). Fix: re-run OAuth Desktop flow locally, update `YOUTUBE_REFRESH_TOKEN` in Secrets Manager.
 - **YouTube vs events**: events Reels (slide-based PIL video) is published to Instagram only. YouTube receives news Reels only. See architectural decision above for rationale.

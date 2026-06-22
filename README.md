@@ -13,7 +13,7 @@ An intelligent AI-powered pipeline that automatically scrapes Dutch news from NO
 - ✅ **Reels hook** — AI-generated 8–12 word attention hook, displayed as a large overlay for the first 3 seconds
 - ✅ Tiered news selection (🇳🇱 Holland → 🇪🇺 Europe → 🌍 Global) with viral potential scoring
 - ✅ Source attribution with article links in posts
-- ✅ Duplicate detection (prevents reposting same articles)
+- ✅ Duplicate detection — URL-based (all-time) + cross-source semantic deduplication via 3-day title window passed to AI selection
 - ✅ **Weekly events post** — every Wednesday 18:00, a PIL-generated infographic of 5–12 curated NL events drawn from 8 sources (Eventbrite, Ticketmaster, amsterdam.nl, rotterdam.nl, denhaag.nl, uitagenda.nl, festileaks.nl, doedagen.nl)
 - ✅ AWS Lambda deployment with scheduled posting (4× weekly cadence)
 - ✅ Infrastructure as Code (Terraform)
@@ -28,7 +28,7 @@ The afternoon posting slot automatically generates an Instagram Reels video:
 
 1. **Hook overlay** — AI-generated attention sentence displayed in large white text for the first 3 seconds
 2. **TTS Narration** — ElevenLabs Multilingual v2 (natural voice) with edge-tts fallback (free); 75–95 word target (~30–40 s)
-3. **Stock Footage** — Pexels API auto-selects relevant HD clips based on AI-generated queries
+3. **Stock Footage** — Pexels API auto-selects relevant HD clips based on AI-generated queries; Haiku vision validates thumbnails against the headline before download to filter out misleading visuals
 4. **Subtitles** — Word-timed orange subtitle overlay (62px Montserrat Bold, lower-third TikTok placement)
 5. **Background Music** — Mood-based: upbeat (`news_music.mp3`) for positive news, calm/alternative (60/40) for neutral
 6. **4-tier Visual Fallback** — Pexels video → article image → Pexels photo → animated gradient
