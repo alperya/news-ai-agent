@@ -93,6 +93,8 @@ def create_news_video(
     image_url: Optional[str] = None,
     footage_queries: Optional[List[str]] = None,
     hook: str = "",
+    avoid_terms: Optional[List[str]] = None,
+    ai_agent=None,
 ) -> str:
     """Create a Reels-format news video.
 
@@ -142,6 +144,8 @@ def create_news_video(
         background = _build_background(
             title, content, image_url, tmp_dir, total_duration,
             footage_queries=footage_queries,
+            avoid_terms=avoid_terms,
+            ai_agent=ai_agent,
         )
 
         # ── 3. Compose layers ────────────────────────────────────────
@@ -229,6 +233,8 @@ def _build_background(
     tmp_dir: str,
     duration: float,
     footage_queries: Optional[List[str]] = None,
+    avoid_terms: Optional[List[str]] = None,
+    ai_agent=None,
 ) -> CompositeVideoClip:
     """Build visuals with 4-tier fallback:
     1. Pexels stock video clips → multi-scene composition
@@ -237,7 +243,13 @@ def _build_background(
     4. Animated gradient       → Ken Burns motion
     """
     # Priority 1 — Stock footage from Pexels
-    clip_paths = fetch_stock_clips(title, content, tmp_dir, footage_queries=footage_queries)
+    clip_paths = fetch_stock_clips(
+        title, content, tmp_dir,
+        footage_queries=footage_queries,
+        avoid_terms=avoid_terms,
+        headline=title,
+        ai_agent=ai_agent,
+    )
     if clip_paths:
         logger.info(f"   🎬 Using {len(clip_paths)} stock video clips")
         return compose_stock_scenes(clip_paths, duration)

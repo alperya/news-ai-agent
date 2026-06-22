@@ -86,7 +86,7 @@ def test_youtube_invoke_failure_does_not_affect_published_count(
     mock_ai = MagicMock()
     mock_ai.process_batch.return_value = [mock_post]
     mock_ai.quality_check.return_value = mock_post
-    mock_ai.generate_footage_queries.return_value = ['netherlands news']
+    mock_ai.generate_footage_queries.return_value = (['netherlands news'], [])
     mock_ai_agent_cls.return_value = mock_ai
 
     # create_news_video writes a tiny placeholder file

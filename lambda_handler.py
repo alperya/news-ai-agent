@@ -637,7 +637,7 @@ def lambda_handler(event, context):
 
                     # Generate contextually accurate Pexels search queries
                     logger.info("🎬 Generating footage search queries...")
-                    footage_queries = ai_agent.generate_footage_queries(
+                    footage_queries, avoid_terms = ai_agent.generate_footage_queries(
                         title=post.get('original_title', ''),
                         description=post.get('content', ''),
                     )
@@ -654,6 +654,8 @@ def lambda_handler(event, context):
                         image_url=post.get('image_url'),
                         footage_queries=footage_queries,
                         hook=post.get('hook', ''),
+                        avoid_terms=avoid_terms,
+                        ai_agent=ai_agent,
                     )
 
                     s3_video_key = f'reels/reels_{timestamp}.mp4'

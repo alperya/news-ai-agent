@@ -86,12 +86,19 @@ def fetch_stock_clips(
     tmp_dir: str,
     count: int = STOCK_CLIP_COUNT,
     footage_queries: Optional[List[str]] = None,
+    avoid_terms: Optional[List[str]] = None,
+    headline: str = "",
+    ai_agent=None,
 ) -> List[str]:
     """Fetch stock video clips from Pexels matching the news topic.
 
     When *footage_queries* are provided (AI-generated, most-specific first)
     each query is tried in order until enough clips are found. Falls back to
     keyword-extracted query if all AI queries return too few results.
+
+    *avoid_terms* and *ai_agent* enable thumbnail validation: before
+    downloading, Haiku vision checks each thumbnail against the headline and
+    skips misleading clips (wrong weather, wrong landmark, etc.).
 
     Returns list of local file paths (up to *count*).
     """
@@ -105,7 +112,12 @@ def fetch_stock_clips(
     queries = list(footage_queries) + [fallback_query] if footage_queries else [fallback_query]
 
     for query in queries:
-        paths = _fetch_clips_for_query(api_key, query, tmp_dir, count)
+        paths = _fetch_clips_for_query(
+            api_key, query, tmp_dir, count,
+            headline=headline or title,
+            avoid_terms=avoid_terms,
+            ai_agent=ai_agent,
+        )
         if paths:
             return paths
 
@@ -118,6 +130,9 @@ def _fetch_clips_for_query(
     query: str,
     tmp_dir: str,
     count: int,
+    headline: str = "",
+    avoid_terms: Optional[List[str]] = None,
+    ai_agent=None,
 ) -> List[str]:
     """Try a single query and return downloaded clip paths (empty list if insufficient)."""
     logger.info(f"🔍 Searching Pexels videos for: '{query}'")
@@ -133,6 +148,21 @@ def _fetch_clips_for_query(
 
     if not videos:
         return []
+
+    # Thumbnail validation: filter out misleading clips before downloading
+    if ai_agent and headline and videos:
+        thumbnail_urls = [v["image"] for v in videos if v.get("image")]
+        if thumbnail_urls:
+            validation = ai_agent.validate_footage_thumbnails(headline, avoid_terms or [], thumbnail_urls)
+            # zip against original videos list (thumbnails may be fewer if some had no image)
+            videos_with_thumbs = [v for v in videos if v.get("image")]
+            videos_without_thumbs = [v for v in videos if not v.get("image")]
+            passed = [v for v, ok in zip(videos_with_thumbs, validation) if ok]
+            # safety net: if everything got rejected, fall back to top 2 unvalidated
+            if len(passed) < 2:
+                logger.warning("⚠️  Thumbnail validation rejected all clips — using top 2 unvalidated")
+                passed = videos[:2]
+            videos = passed + videos_without_thumbs
 
     paths: List[str] = []
     for idx, video in enumerate(videos):

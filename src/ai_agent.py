@@ -318,12 +318,13 @@ class NewsAIAgent:
         return post
 
     @_lf_observe(name="generate_footage_queries")
-    def generate_footage_queries(self, title: str, description: str) -> List[str]:
-        """Generate Pexels-optimised search queries for stock footage selection.
+    def generate_footage_queries(self, title: str, description: str) -> tuple:
+        """Generate Pexels-optimised search queries + visual exclusion terms.
 
-        Returns up to 3 English queries ordered from most specific to most
-        generic. Falls back to an empty list so footage.py uses its own
-        extract_search_query as a safety net.
+        Returns (queries, avoid_terms):
+            queries     — up to 5 English queries, most-specific first
+            avoid_terms — 3–5 visual concepts that must NOT appear in footage
+        Both fall back to empty lists on failure.
         """
         prompt = (
             "You are selecting stock footage for a Dutch news Instagram Reel.\n\n"
@@ -344,12 +345,15 @@ class NewsAIAgent:
             "visually adjacent concepts that evoke the same theme — e.g. for a Roman "
             "bathhouse discovery: 'archaeological excavation netherlands', "
             "'ancient ruins europe', 'museum historical artifacts'\n\n"
-            'Return ONLY valid JSON: {"queries": ["...", "...", "...", "...", "..."]}'
+            'Also return "avoid": 3–5 English visual concepts that must NOT appear in '
+            "the footage (wrong weather type, wrong season, wrong country landmark, "
+            "unrelated celebrations, misleading context).\n\n"
+            'Return ONLY valid JSON: {"queries": ["...", "...", "...", "...", "..."], "avoid": ["...", "...", "..."]}'
         )
         try:
             response = self.client.messages.create(
                 model=self.footage_model,
-                max_tokens=200,
+                max_tokens=300,
                 temperature=0,
                 messages=[{"role": "user", "content": prompt}],
             )
@@ -364,12 +368,69 @@ class NewsAIAgent:
             match = re.search(r'\{.*\}', text, re.DOTALL)
             data = json.loads(match.group() if match else text)
             queries = [q for q in data.get('queries', []) if isinstance(q, str) and q.strip()]
+            avoid = [a for a in data.get('avoid', []) if isinstance(a, str) and a.strip()]
             if queries:
                 logger.info(f"🎬 Footage queries: {queries}")
-                return queries[:5]
+                logger.info(f"🚫 Footage avoid terms: {avoid}")
+                return queries[:5], avoid[:5]
         except Exception as e:
             logger.warning(f"⚠️  Footage query generation failed, falling back to keyword extraction: {e}")
-        return []
+        return [], []
+
+    def validate_footage_thumbnails(
+        self,
+        headline: str,
+        avoid_terms: List[str],
+        thumbnail_urls: List[str],
+    ) -> List[bool]:
+        """Check each thumbnail against the news headline using Haiku vision.
+
+        Returns a bool per URL: True = relevant, False = misleading/skip.
+        Batches up to 15 thumbnails in a single API call to minimise latency.
+        Falls back to all-True on any error so footage selection is never blocked.
+        """
+        if not thumbnail_urls:
+            return []
+
+        batch = thumbnail_urls[:15]
+        avoid_str = ", ".join(avoid_terms) if avoid_terms else "none"
+        n = len(batch)
+
+        content: List[dict] = [
+            {
+                "type": "text",
+                "text": (
+                    f'News headline: "{headline}"\n'
+                    f"Do NOT use footage showing: {avoid_str}\n\n"
+                    f"For each of the {n} images below, reply with exactly one line:\n"
+                    '"<number>: PASS" or "<number>: FAIL — <one-word reason>"\n'
+                    "FAIL if the image shows: wrong weather (e.g. snow for rain story), "
+                    "wrong season, wrong country or landmark, unrelated celebration or "
+                    "event, or anything that contradicts the news story.\n"
+                    "PASS if the image is plausibly related or generic enough to work."
+                ),
+            }
+        ]
+        for url in batch:
+            content.append({"type": "image", "source": {"type": "url", "url": url}})
+
+        try:
+            response = self.client.messages.create(
+                model=self.review_model,
+                max_tokens=300,
+                temperature=0,
+                messages=[{"role": "user", "content": content}],
+            )
+            text = getattr(response.content[0], 'text', '')
+            results: List[bool] = []
+            for i in range(1, n + 1):
+                match = re.search(rf'\b{i}\s*:\s*(PASS|FAIL)', text, re.IGNORECASE)
+                results.append(match.group(1).upper() == 'PASS' if match else True)
+            logger.info(f"🖼️  Thumbnail validation: {sum(results)}/{n} passed")
+            return results
+        except Exception as e:
+            logger.warning(f"⚠️  Thumbnail validation failed, using all clips: {e}")
+            return [True] * n
 
     # ── Event methods ──────────────────────────────────────────────────────────
 
