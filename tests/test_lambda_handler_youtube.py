@@ -79,7 +79,7 @@ def test_youtube_invoke_failure_does_not_affect_published_count(
 
     # Scraper returns one article
     mock_scraper_cls.return_value.scrape_all_sources.return_value = [_make_mock_article()]
-    mock_get_published_urls.return_value = set()
+    mock_get_published_urls.return_value = (set(), [])
 
     # AI returns one post, quality gate passes it through
     mock_post = _make_mock_post()

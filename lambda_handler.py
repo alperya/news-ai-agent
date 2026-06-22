@@ -162,58 +162,72 @@ def save_to_s3(data, filename, bucket_name):
 
 def get_published_urls(bucket_name):
     """
-    Get set of previously published article URLs from S3
-    
-    Args:
-        bucket_name: S3 bucket name
-        
+    Get set of previously published article URLs from S3, plus titles from the last 3 days.
+
     Returns:
-        set of URLs that have been published
+        tuple[set, list[str]]: (published_urls, recent_titles)
+            published_urls — all-time URL set for exact-duplicate filtering
+            recent_titles  — original_title values from the past 72 h for semantic dedup
     """
     published_urls = set()
+    recent_titles = []
     s3_client = boto3.client('s3')
-    
+    cutoff = datetime.now(timezone.utc) - timedelta(days=3)
+
     try:
         # Get all posts_*.json files from S3
         list_response = s3_client.list_objects_v2(
             Bucket=bucket_name,
             Prefix='posts_'
         )
-        
+
         if 'Contents' not in list_response:
             logger.info("📋 No previous posts found in S3")
-            return published_urls
-        
+            return published_urls, recent_titles
+
         logger.info(f"🔍 Checking {len(list_response['Contents'])} posts files for duplicates...")
-        
+
         for obj in list_response['Contents']:
             key = obj['Key']
             if not key.startswith('posts_') or not key.endswith('.json'):
                 continue
-                
+
+            # Parse timestamp from filename "posts_YYYYMMDD_HHMMSS.json" to detect recency
+            is_recent = False
+            try:
+                ts_str = key[len('posts_'):-len('.json')]  # e.g. "20260619_143200"
+                file_dt = datetime.strptime(ts_str, '%Y%m%d_%H%M%S').replace(tzinfo=timezone.utc)
+                is_recent = file_dt >= cutoff
+            except ValueError:
+                pass
+
             try:
                 # Download and parse each posts file
                 obj_response = s3_client.get_object(Bucket=bucket_name, Key=key)
                 posts_data = json.loads(obj_response['Body'].read().decode('utf-8'))
-                
-                # Extract URLs from posts
+
+                # Extract URLs (all-time) and titles (recent only)
                 if isinstance(posts_data, list):
                     for post in posts_data:
                         if isinstance(post, dict):
                             url = post.get('original_url') or post.get('url')
                             if url:
                                 published_urls.add(url)
-                                
+                            if is_recent:
+                                title = post.get('original_title')
+                                if title:
+                                    recent_titles.append(title)
+
             except Exception as e:
                 logger.debug(f"Error reading {key}: {str(e)}")
                 continue
-        
-        logger.info(f"📋 Found {len(published_urls)} previously published articles")
-        return published_urls
-        
+
+        logger.info(f"📋 Found {len(published_urls)} previously published articles ({len(recent_titles)} in last 3 days)")
+        return published_urls, recent_titles
+
     except Exception as e:
         logger.error(f"❌ Error getting published URLs: {str(e)}")
-        return published_urls
+        return published_urls, recent_titles
 
 
 def _invoke_youtube_async(lambda_client, s3_video_key, post_content, hook, hashtags, bucket_name, timestamp, context=''):
@@ -485,13 +499,13 @@ def lambda_handler(event, context):
         
         # Filter out already published articles
         logger.info("\n🔍 DUPLICATE CHECK: Checking for previously published articles...")
-        published_urls = get_published_urls(bucket_name)
+        published_urls, recent_titles = get_published_urls(bucket_name)
         original_count = len(articles_data)
-        
+
         if published_urls:
             articles_data = [a for a in articles_data if a.get('url') not in published_urls]
             filtered_count = len(articles_data)
-            
+
             if filtered_count < original_count:
                 logger.info(f"📋 Filtered out {original_count - filtered_count} duplicate article(s)")
                 logger.info(f"📰 Remaining NEW articles: {filtered_count}")
@@ -522,7 +536,8 @@ def lambda_handler(event, context):
         posts = ai_agent.process_batch(
             articles=articles_data,
             max_posts=1,
-            platform='instagram'
+            platform='instagram',
+            recently_published=recent_titles,
         )
         
         if not posts:

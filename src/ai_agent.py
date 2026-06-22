@@ -590,21 +590,21 @@ class NewsAIAgent:
             json.dump(data, f, ensure_ascii=False, indent=2)
         logger.info(f"📝 Saved locally: {local_path}")
     
-    def process_batch(self, articles: List[Dict], max_posts: int = 10, platform: str = "twitter") -> List[SocialMediaPost]:
+    def process_batch(self, articles: List[Dict], max_posts: int = 10, platform: str = "twitter", recently_published: Optional[List[str]] = None) -> List[SocialMediaPost]:
         """Process multiple articles - selects which articles to post in a single API call"""
         if not articles:
             logger.warning("No articles to process")
             return []
-        
+
         try:
             logger.info(f"Selecting and processing articles from {len(articles)} total articles (max {max_posts} posts)")
-            
+
             # Single API call to select articles and create posts
-            posts = self._select_and_process_articles(articles, max_posts, platform)
-            
+            posts = self._select_and_process_articles(articles, max_posts, platform, recently_published)
+
             logger.info(f"Successfully selected and processed {len(posts)} posts")
             return posts
-            
+
         except Exception as e:
             logger.error(f"Error in batch processing: {str(e)}")
             # Fallback: process first article only
@@ -616,11 +616,11 @@ class NewsAIAgent:
                 except Exception:
                     pass
             return []
-    
+
     @_lf_observe(name="select_and_process_articles")
-    def _select_and_process_articles(self, articles: List[Dict], max_posts: int, platform: str) -> List[SocialMediaPost]:
+    def _select_and_process_articles(self, articles: List[Dict], max_posts: int, platform: str, recently_published: Optional[List[str]] = None) -> List[SocialMediaPost]:
         """Select which articles to post and create posts for them in a single API call"""
-        prompt = self._create_batch_selection_prompt(articles, max_posts, platform)
+        prompt = self._create_batch_selection_prompt(articles, max_posts, platform, recently_published)
 
         try:
             response = self.client.messages.create(
@@ -648,7 +648,7 @@ class NewsAIAgent:
             logger.error(f"Error in article selection: {str(e)}")
             raise
     
-    def _create_batch_selection_prompt(self, articles: List[Dict], max_posts: int, platform: str) -> str:
+    def _create_batch_selection_prompt(self, articles: List[Dict], max_posts: int, platform: str, recently_published: Optional[List[str]] = None) -> str:
         """Create prompt for selecting articles and creating posts"""
         if platform == "twitter":
             max_length = 280
@@ -668,10 +668,21 @@ ARTICLE {i}:
 - URL: {article['url']}
 """
 
+        if recently_published:
+            titles_list = "\n".join(f"- {t}" for t in recently_published)
+            recent_publications = (
+                "RECENT PUBLICATIONS (last 3 days) — do NOT select an article that covers the "
+                "same story or event as any of these, even if it comes from a different source:\n"
+                f"{titles_list}\n\n"
+            )
+        else:
+            recent_publications = ""
+
         prompt_template = self._load_prompt('batch_selection.txt', 'AI_PROMPT_BATCH_SELECTION')
         hashtag_instruction = 'Include 5-10 relevant hashtags (in English)' if platform == 'instagram' else 'Include 3-5 relevant hashtags (in English)'
 
         return prompt_template.format(
+            recent_publications=recent_publications,
             article_count=len(articles),
             max_posts=max_posts,
             platform=platform,
