@@ -354,7 +354,6 @@ class NewsAIAgent:
             response = self.client.messages.create(
                 model=self.footage_model,
                 max_tokens=300,
-                temperature=0,
                 messages=[{"role": "user", "content": prompt}],
             )
             _lf_ctx.update_current_observation(
