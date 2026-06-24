@@ -10,15 +10,15 @@ Rotation is stateless (no DB) — state lives in S3:
                               Seeded from DEFAULT_FACTS on first run.
   • ``facts/_rotation.json``— {"used": {id: "YYYY-MM-DD"}, "cycle_alerted": bool}
 
-Each day the least-recently-used fact is picked (never-used first), so a fact
-only repeats after roughly the whole pool has been shown (~pool-size days).
+Each day the next unused fact is picked in curated pool order (strongest facts
+first); once every fact has aired, the least-recently-used one repeats, so a
+fact only comes back after roughly the whole pool has been shown (~pool-size days).
 When the pool is nearly cycled, a one-time SNS reminder is emailed so new
 facts can be appended to ``pool.json``.
 """
 
 import json
 import logging
-import random
 from datetime import date
 
 import boto3
@@ -59,7 +59,7 @@ DEFAULT_FACTS = [
     {"id": "museums-density", "text": "The Netherlands has one of the highest densities of museums per square kilometre in the world.", "footage_queries": ["amsterdam museum building", "art museum interior", "rijksmuseum"]},
     {"id": "low-countries-name", "text": "'Nederland' literally means 'low country', and about a quarter of it sits below sea level.", "footage_queries": ["netherlands flat landscape", "polder horizon", "dutch countryside"]},
     {"id": "oldest-anthem", "text": "The Dutch anthem, the Wilhelmus, is widely considered the oldest national anthem in the world.", "footage_queries": ["netherlands flag waving", "dutch historic town", "amsterdam old square"]},
-    {"id": "maeslantkering", "text": "Rotterdam's Maeslantkering storm barrier is one of the largest moving structures on Earth.", "footage_queries": ["storm surge barrier", "rotterdam flood defense", "huge steel structure water"]},
+    {"id": "maeslantkering", "text": "Near Rotterdam, the Maeslantkering is one of the largest moving structures on Earth: two giant arms that swing shut automatically to hold back North Sea storm surges.", "footage_queries": ["storm surge barrier", "rotterdam flood defense", "huge steel structure water"]},
     {"id": "cheese-exporter", "text": "Gouda and Edam are named after market towns, and the Netherlands is the world's top cheese exporter.", "footage_queries": ["dutch cheese market", "gouda cheese wheels", "cheese shop netherlands"]},
     {"id": "almere-new-city", "text": "Almere, home to over 200,000 people, didn't exist 50 years ago and is built on reclaimed seabed.", "footage_queries": ["almere modern city", "new dutch architecture", "planned city aerial"]},
     {"id": "coffee-drinkers", "text": "The Dutch are among the world's heaviest coffee drinkers per person.", "footage_queries": ["coffee cup cafe", "amsterdam coffee shop", "pouring coffee"]},
@@ -76,18 +76,18 @@ DEFAULT_FACTS = [
     {"id": "windmill-purpose", "text": "Historic Dutch windmills did much more than grind grain. Many pumped water to keep the land dry.", "footage_queries": ["windmill turning blades", "dutch windmill water", "historic windmill field"]},
     {"id": "amsterdam-narrow-houses", "text": "Amsterdam's canal houses are famously narrow because owners were once taxed on facade width.", "footage_queries": ["amsterdam canal houses", "narrow dutch house", "historic facades canal"]},
     {"id": "liberation-tulips", "text": "Canada gets thousands of tulips from the Netherlands every year as thanks for WWII liberation.", "footage_queries": ["tulips bouquet", "tulip field spring", "colorful tulips garden"]},
-    {"id": "dutch-doors", "text": "The 'Dutch door', split so the top opens separately, originated in the Netherlands.", "footage_queries": ["old farmhouse door", "dutch countryside house", "wooden door cottage"]},
+    {"id": "dutch-doors", "text": "The 'Dutch door' is split across the middle so the top half can open for light and air while the bottom stays shut to keep children or animals inside.", "footage_queries": ["old farmhouse door", "dutch countryside house", "wooden door cottage"]},
     {"id": "bicycle-parking-utrecht", "text": "Utrecht built the world's largest bicycle parking garage, holding over 12,000 bikes.", "footage_queries": ["bicycle parking garage", "utrecht station bikes", "rows of bicycles"]},
     {"id": "below-sea-pumps", "text": "Without constant pumping, much of the western Netherlands would flood within days.", "footage_queries": ["water pumping station", "dutch polder canal", "drainage netherlands"]},
     {"id": "windmill-day", "text": "The Netherlands celebrates a National Mill Day when hundreds of historic mills open to visitors.", "footage_queries": ["dutch windmill sunny", "windmills row landscape", "historic mill netherlands"]},
     {"id": "first-multinational", "text": "The Dutch East India Company was arguably the world's first multinational corporation.", "footage_queries": ["amsterdam historic harbor", "old sailing ship", "vintage map sea"]},
     {"id": "speed-skating", "text": "The Dutch dominate Olympic speed skating, winning a remarkable share of all its medals.", "footage_queries": ["speed skating ice", "ice skating netherlands", "frozen canal skating"]},
-    {"id": "elfstedentocht", "text": "The legendary Elfstedentocht is a 200 kilometre skating tour, held only when the canals freeze hard enough.", "footage_queries": ["frozen canal skaters", "ice skating tour", "winter netherlands canal"]},
-    {"id": "polder-model", "text": "Dutch consensus-based decision-making is so famous it's literally called the 'polder model'.", "footage_queries": ["dutch meeting office", "netherlands business people", "discussion table"]},
+    {"id": "elfstedentocht", "text": "The Elfstedentocht is a 200 kilometre ice skating race past eleven Frisian towns, held only in the rare winters when every canal on the route freezes solid enough.", "footage_queries": ["frozen canal skaters", "ice skating tour", "winter netherlands canal"]},
+    {"id": "polder-model", "text": "The Dutch love settling disagreements through patient compromise, a habit named the 'polder model' after the centuries of teamwork once needed to drain and protect their low-lying land.", "footage_queries": ["dutch meeting office", "netherlands business people", "discussion table"]},
     {"id": "north-sea-jazz", "text": "Rotterdam hosts North Sea Jazz, one of the largest indoor music festivals in the world.", "footage_queries": ["jazz concert stage", "music festival crowd", "saxophone performance"]},
     {"id": "dutch-light-painters", "text": "The unique 'Dutch light' over the flat landscape inspired masters like Vermeer and Rembrandt.", "footage_queries": ["dutch sky clouds", "flat landscape sunset", "netherlands golden light"]},
     {"id": "keukenhof", "text": "Keukenhof plants around 7 million flower bulbs by hand each year for its spring display.", "footage_queries": ["keukenhof gardens tulips", "flower garden netherlands", "tulip park spring"]},
-    {"id": "windmill-language", "text": "Dutch windmills can 'talk'. Millers set the sails in positions that signal celebration or mourning.", "footage_queries": ["windmill sails close", "dutch windmill detail", "windmill blue sky"]},
+    {"id": "happiest-country", "text": "The Netherlands is regularly ranked among the five happiest countries in the world, year after year.", "footage_queries": ["happy people netherlands", "friends laughing outdoors", "amsterdam people smiling"]},
     {"id": "amsterdam-bikes-in-canals", "text": "Thousands of bicycles are fished out of Amsterdam's canals every single year.", "footage_queries": ["amsterdam canal bikes", "bicycle by canal", "canal boat amsterdam"]},
     {"id": "dutch-treat", "text": "'Going Dutch', or splitting the bill, is named after the Netherlands' practical reputation.", "footage_queries": ["restaurant table bill", "cafe friends netherlands", "paying restaurant"]},
     {"id": "highest-broadband", "text": "The Netherlands has some of the highest broadband internet coverage in the world.", "footage_queries": ["modern office netherlands", "fiber cables tech", "person laptop cafe"]},
@@ -113,9 +113,9 @@ DEFAULT_FACTS = [
     {"id": "tulip-from-turkey", "text": "Tulips aren't originally Dutch. They came from the Ottoman Empire before booming in the Netherlands.", "footage_queries": ["tulip close up", "tulip field colorful", "spring flowers"]},
     {"id": "haring-herring", "text": "Eating raw 'Hollandse Nieuwe' herring, tilted into your mouth, is a Dutch summer tradition.", "footage_queries": ["dutch herring stall", "raw herring snack", "fish market netherlands"]},
     {"id": "amsterdam-houseboats", "text": "Thousands of people in Amsterdam live full-time on houseboats moored along the canals.", "footage_queries": ["amsterdam houseboat canal", "boat homes water", "canal living amsterdam"]},
-    {"id": "windmill-sails-signal", "text": "A windmill's sail angle once carried news across the flat land, from births to deaths to danger.", "footage_queries": ["windmill sails sky", "dutch windmill close", "windmill silhouette"]},
+    {"id": "windmill-sails-signal", "text": "Long before telephones, a miller could rest the windmill's sails at set angles to send a message across the flat land, announcing a birth, a death or danger nearby.", "footage_queries": ["windmill sails sky", "dutch windmill close", "windmill silhouette"]},
     {"id": "philips-eindhoven", "text": "Electronics giant Philips was founded in Eindhoven in 1891 and shaped the modern light bulb.", "footage_queries": ["eindhoven city tech", "light bulbs", "modern electronics lab"]},
-    {"id": "polder-windmills-drain", "text": "Chains of windmills once lifted water step by step to drain entire lakes into farmland.", "footage_queries": ["windmills canal row", "polder drainage", "dutch water mill"]},
+    {"id": "polder-windmills-drain", "text": "A single windmill can only lift water about a metre, so the Dutch chained them together, each one pumping the water a step higher, until whole lakes drained into dry farmland.", "footage_queries": ["windmills canal row", "polder drainage", "dutch water mill"]},
     {"id": "kings-day-flea-market", "text": "On King's Day anyone can sell second hand goods on the street tax free, a nationwide flea market.", "footage_queries": ["street market netherlands", "flea market crowd", "kings day amsterdam"]},
     {"id": "dutch-design", "text": "'Dutch Design' is a global byword for clever, minimalist and playful product design.", "footage_queries": ["modern design studio", "minimalist furniture", "design exhibition"]},
     {"id": "windmills-unesco", "text": "Dutch windmills are so iconic that several mill complexes hold UNESCO World Heritage status.", "footage_queries": ["windmill heritage site", "dutch windmills landscape", "windmill reflection water"]},
@@ -194,13 +194,12 @@ def get_fact_for_today(bucket: str) -> dict:
 
     unused = [f for f in pool if f["id"] not in used]
     if unused:
-        fact = random.choice(unused)
+        # Curated pool order → the strongest facts open the calendar.
+        fact = unused[0]
     else:
-        # All used → least-recently-used. Pick among the oldest-dated facts
-        # (random tie-break so same-day repeats don't always land on one fact).
+        # All used → least-recently-used (oldest date, pool order as tie-break).
         oldest_date = min(used.values())
-        oldest = [f for f in pool if used.get(f["id"]) == oldest_date]
-        fact = random.choice(oldest)
+        fact = next(f for f in pool if used.get(f["id"]) == oldest_date)
 
     used[fact["id"]] = date.today().isoformat()
     remaining_unused = sum(1 for f in pool if f["id"] not in used)
