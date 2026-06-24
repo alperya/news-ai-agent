@@ -15,11 +15,12 @@ Usage::
     )
 """
 
-from .creator import create_news_video
+from .creator import create_news_video, create_fact_video
 from .tts import SubtitleSegment, clean_for_narration, group_subtitle_segments
 
 __all__ = [
     "create_news_video",
+    "create_fact_video",
     "SubtitleSegment",
     "clean_for_narration",
     "group_subtitle_segments",

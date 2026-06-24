@@ -92,6 +92,39 @@ CALM_MUSIC_FILE = _SRC_DIR / "music" / "calm_music.mp3"
 ALTERNATIVE_MUSIC_FILE = _SRC_DIR / "music" / "alternative_music.mp3"
 EVENTS_MUSIC_FILE = _SRC_DIR / "music" / "events_music.mp3"
 SAD_MUSIC_FILE = _SRC_DIR / "music" / "sad_music.mp3"
+# Daily "Did you know?" Dutch-fact story — upbeat lifestyle background track
+FACT_STORY_MUSIC = _SRC_DIR / "music" / "story_dutch_lifestyle_30sec.mp3"
+
+
+def _find_logo() -> Path:
+    """Locate the brand watermark, tolerating local vs flat-Lambda layouts."""
+    name = "dutch_news_watermark_150x150.png"
+    for c in (_SRC_DIR / "logo" / name, _SRC_DIR / name, _VIDEO_PKG_DIR / name):
+        if c.exists():
+            return c
+    return _SRC_DIR / "logo" / name
+
+
+# Brand watermark used as the sign-off on fact stories
+LOGO_WATERMARK = _find_logo()
+
+
+def reading_seconds(
+    text: str,
+    wps: float = 2.5,
+    min_s: float = 5.0,
+    max_s: float = 15.0,
+    buffer: float = 1.0,
+) -> float:
+    """Estimate how long a viewer needs to read *text* on screen.
+
+    Used to size the daily fact story so it's exactly long enough to read
+    (short → higher story completion rate). ``wps`` = words read per second
+    (2.5 ≈ deliberate on-screen reading, slower than silent prose).
+    """
+    words = len(text.split())
+    seconds = words / wps + buffer
+    return max(min_s, min(max_s, seconds))
 
 # ── Stock footage (Pexels — free API) ─────────────────────────────────────────
 

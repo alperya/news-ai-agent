@@ -457,6 +457,161 @@ def make_hook_clip(hook_text: str, duration: float = 3.0) -> list:
     return [scrim_clip, text_clip]
 
 
+def _styled_logo(logo_path, diameter: int = 190, opacity: float = 0.88) -> "Image.Image":
+    """Turn a square logo into a circular brand medallion with a soft shadow.
+
+    The source watermark has a solid cream background, which reads as a pasted
+    square over footage. Masking it to a circle, adding a subtle drop shadow,
+    and easing the opacity makes it sit on the video like an intentional
+    watermark rather than a sticker.
+    """
+    from PIL import ImageDraw
+
+    logo = Image.open(logo_path).convert("RGBA").resize(
+        (diameter, diameter), Image.Resampling.LANCZOS,
+    )
+    # Circular mask → drop the square corners (scaled by opacity for a watermark feel)
+    mask = Image.new("L", (diameter, diameter), 0)
+    ImageDraw.Draw(mask).ellipse((0, 0, diameter - 1, diameter - 1), fill=int(255 * opacity))
+    logo.putalpha(mask)
+
+    pad = int(diameter * 0.22)
+    size = diameter + 2 * pad
+    out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+
+    # Soft drop shadow, nudged slightly down
+    shadow = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    drop = int(pad * 0.35)
+    ImageDraw.Draw(shadow).ellipse(
+        (pad, pad + drop, pad + diameter, pad + diameter + drop), fill=(0, 0, 0, 110),
+    )
+    shadow = shadow.filter(ImageFilter.GaussianBlur(pad * 0.45))
+
+    out = Image.alpha_composite(out, shadow)
+    out.alpha_composite(logo, (pad, pad))
+    return out
+
+
+def make_fact_overlay(
+    fact_text: str,
+    duration: float,
+    header: str = "DID YOU KNOW?",
+    logo_path=None,
+    handle: str = "@dutch_news_english",
+) -> list:
+    """Full-duration overlay for the daily Dutch-fact story.
+
+    Layout (centered vertical block over a soft dark scrim):
+      • small orange header  ("DID YOU KNOW?")
+      • large white fact body, word-wrapped, the hero
+      • brand logo watermark near the bottom (falls back to the @handle text)
+
+    Returns ``[scrim_clip, text_clip]`` covering the whole frame.
+    """
+    from PIL import ImageDraw, ImageFont
+
+    header_size = 52
+    body_size = 72
+    handle_size = 44
+
+    def _font(size: int):
+        try:
+            return ImageFont.truetype(FONT_PATH, size)
+        except Exception:
+            return ImageFont.load_default(size=size)
+
+    header_font = _font(header_size)
+    body_font = _font(body_size)
+    handle_font = _font(handle_size)
+
+    pad_x = 80
+    max_text_width = VIDEO_WIDTH - 2 * pad_x
+
+    # Word-wrap the fact body
+    words = fact_text.split()
+    lines: list[str] = []
+    current: list[str] = []
+    for word in words:
+        test = " ".join(current + [word])
+        left, _, right, _ = body_font.getbbox(test)
+        if (right - left) > max_text_width and current:
+            lines.append(" ".join(current))
+            current = [word]
+        else:
+            current.append(word)
+    if current:
+        lines.append(" ".join(current))
+
+    line_gap = 18
+    body_line_h = body_size + line_gap
+    body_block_h = len(lines) * body_line_h
+    header_gap = 48
+    header_h = header_size + header_gap
+
+    block_h = header_h + body_block_h
+    block_top = (VIDEO_HEIGHT - block_h) // 2
+
+    # ── Scrim: soft full-width dark band behind the text block ──
+    scrim_pad = 90
+    scrim_top = max(0, block_top - scrim_pad)
+    scrim_bottom = min(VIDEO_HEIGHT, block_top + block_h + scrim_pad)
+    scrim_h = scrim_bottom - scrim_top
+    scrim_arr = np.zeros((scrim_h, VIDEO_WIDTH, 4), dtype=np.uint8)
+    scrim_arr[:, :, 3] = int(255 * 0.45)
+    scrim_rgb = np.array(
+        Image.merge("RGB", [Image.fromarray(scrim_arr[:, :, i]) for i in range(3)])
+    )
+    scrim_alpha = np.array(Image.fromarray(scrim_arr[:, :, 3])).astype(np.float64) / 255.0
+    scrim_clip = ImageClip(scrim_rgb).with_duration(duration)
+    scrim_mask = ImageClip(scrim_alpha, is_mask=True).with_duration(duration)
+    scrim_clip = scrim_clip.with_mask(scrim_mask).with_position((0, scrim_top))
+
+    # ── Text canvas (full frame) ──
+    canvas = Image.new("RGBA", (VIDEO_WIDTH, VIDEO_HEIGHT), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(canvas)
+    orange = _hex_to_rgb(SUBTITLE_BG_COLOR) + (255,)
+    white = (255, 255, 255, 255)
+
+    def _draw_centered(text, font, y, fill):
+        left, top, right, bottom = font.getbbox(text)
+        w = right - left
+        x = (VIDEO_WIDTH - w) // 2
+        draw.text((x, y - top), text, font=font, fill=fill)
+
+    y = block_top
+    _draw_centered(header, header_font, y, orange)
+    y += header_h
+    for line in lines:
+        _draw_centered(line, body_font, y, white)
+        y += body_line_h
+
+    # Brand sign-off near the bottom: logo watermark if available, else @handle
+    logo_pasted = False
+    if logo_path:
+        try:
+            coin = _styled_logo(logo_path, diameter=190)
+            # Bottom-right corner. The coin image carries its own transparent
+            # pad, so small frame margins still leave a comfortable safe zone
+            # (clears Instagram's Story reply bar at the bottom-center).
+            lx = VIDEO_WIDTH - coin.width - 24
+            ly = VIDEO_HEIGHT - coin.height - 100
+            canvas.alpha_composite(coin, (lx, ly))
+            logo_pasted = True
+        except Exception as e:
+            logger.warning(f"⚠️  Could not load logo watermark: {e}")
+    if not logo_pasted:
+        _draw_centered(handle, handle_font, int(VIDEO_HEIGHT * 0.90), white)
+
+    r, g, b, a = canvas.split()
+    text_rgb = np.array(Image.merge("RGB", (r, g, b)))
+    text_alpha = np.array(a).astype(np.float64) / 255.0
+    text_clip = ImageClip(text_rgb).with_duration(duration)
+    text_mask = ImageClip(text_alpha, is_mask=True).with_duration(duration)
+    text_clip = text_clip.with_mask(text_mask).with_position((0, 0))
+
+    return [scrim_clip, text_clip]
+
+
 def make_fallback_background(duration: float) -> CompositeVideoClip:
     """Animated gradient background (dark blue→teal) when no visuals are
     available.  Uses Ken Burns motion so the screen is never static."""

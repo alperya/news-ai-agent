@@ -379,3 +379,89 @@ class InstagramPublisher:
         except Exception as e:
             logger.error(f"❌ Error posting Reels: {str(e)}")
             raise
+
+    def publish_story(self, video_url: str, dry_run: bool = False):
+        """Publish a video to Instagram Stories.
+
+        Stories use the same two-step container/publish flow as Reels but with
+        ``media_type='STORIES'``. The Stories endpoint does NOT accept a caption
+        — the text lives on the video itself.
+
+        Args:
+            video_url: Public URL to the video file (must be accessible by Meta).
+            dry_run:   If True, skip actual API calls.
+
+        Returns:
+            dict with media id and type.
+        """
+        if dry_run:
+            logger.info("[DRY RUN] Would post story to Instagram")
+            logger.info(f"[DRY RUN] Video URL: {video_url}")
+            return {'id': 'dry_run', 'type': 'story'}
+
+        try:
+            # STEP 0: Ensure valid token
+            logger.info("🔐 Validating Instagram token...")
+            self._ensure_valid_token()
+
+            # Step 1: Create STORIES media container
+            logger.info("📦 Creating Story media container...")
+            container_url = f"{self.graph_api_url}/{self.instagram_account_id}/media"
+            container_params = {
+                'media_type': 'STORIES',
+                'video_url': video_url,
+                'access_token': self.access_token,
+            }
+
+            response = requests.post(container_url, params=container_params)
+            response.raise_for_status()
+            creation_id = response.json().get('id')
+
+            if not creation_id:
+                raise ValueError("No creation_id returned from Instagram API")
+
+            logger.info(f"✅ Story container created: {creation_id}")
+
+            # Step 2: Wait for video processing (videos take longer than photos).
+            logger.info("⏳ Waiting for video to be processed...")
+            if not self._check_container_status(creation_id, max_attempts=80, delay=8):
+                raise ValueError("Story container not ready after maximum attempts")
+
+            # Step 3: Ensure token still valid
+            logger.info("🔐 Validating token before publishing...")
+            self._ensure_valid_token()
+
+            # Step 4: Publish the Story container
+            logger.info("📤 Publishing Story...")
+            publish_url = f"{self.graph_api_url}/{self.instagram_account_id}/media_publish"
+            publish_params = {
+                'creation_id': creation_id,
+                'access_token': self.access_token,
+            }
+
+            publish_response = requests.post(publish_url, params=publish_params)
+            publish_response.raise_for_status()
+
+            media_id = publish_response.json().get('id')
+            logger.info(f"✅ Story published: {media_id}")
+            logger.info(json.dumps({
+                "event": "post_published",
+                "post_id": media_id,
+                "post_type": "story",
+            }))
+
+            return {
+                'id': media_id,
+                'creation_id': creation_id,
+                'type': 'story',
+            }
+
+        except requests.exceptions.HTTPError as e:
+            error_msg = f"Instagram Story API error: {str(e)}"
+            if hasattr(e.response, 'text'):
+                error_msg += f" - {e.response.text}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        except Exception as e:
+            logger.error(f"❌ Error posting Story: {str(e)}")
+            raise

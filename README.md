@@ -10,12 +10,13 @@ An intelligent AI-powered pipeline that automatically scrapes Dutch news from NO
 - ✅ Instagram Graph API integration with automatic token refresh
 - ✅ **Instagram Reels** — auto-generated news videos with TTS narration, stock footage & subtitles
 - ✅ **YouTube Shorts** — same Reels video simultaneously published as a YouTube Short (news only; separate async Lambda)
+- ✅ **Daily Dutch-fact Story** — a curated "Did you know?" fact rendered as a short vertical video (Pexels B-roll + on-screen text + music, no TTS) and published as an Instagram Story each morning; feature-flagged, with a hot-editable S3 fact pool and least-recently-used rotation
 - ✅ **Reels hook** — AI-generated 8–12 word attention hook, displayed as a large overlay for the first 3 seconds
 - ✅ Tiered news selection (🇳🇱 Holland → 🇪🇺 Europe → 🌍 Global) with viral potential scoring
 - ✅ Source attribution with article links in posts
 - ✅ Duplicate detection — URL-based (all-time) + cross-source semantic deduplication via 3-day title window passed to AI selection
 - ✅ **Weekly events post** — every Wednesday 18:00, a PIL-generated infographic of 5–12 curated NL events drawn from 8 sources (Eventbrite, Ticketmaster, amsterdam.nl, rotterdam.nl, denhaag.nl, uitagenda.nl, festileaks.nl, doedagen.nl)
-- ✅ AWS Lambda deployment with scheduled posting (4× weekly cadence)
+- ✅ AWS Lambda deployment with scheduled posting (daily Story + 2 Reels/day + weekly events)
 - ✅ Infrastructure as Code (Terraform)
 - ✅ AWS Secrets Manager for credential management
 - ✅ Email alerts on errors (OOM, token expiry, publish failures) via AWS SNS
@@ -97,7 +98,8 @@ python3 scripts/update_secrets.py
 │   ├── ai_agent.py                # Claude AI content processing + event curation
 │   ├── news_scraper.py            # RSS scraping (NOS, RTL Nieuws)
 │   ├── event_scraper.py           # 📅 8-source NL event scraper
-│   ├── social_publisher.py        # Instagram publishing (photo + Reels)
+│   ├── social_publisher.py        # Instagram publishing (photo + Reels + Stories)
+│   ├── dutch_facts.py             # 💡 Daily fact pool + S3 LRU rotation
 │   ├── youtube_publisher.py       # YouTube Data API v3 — upload as Short
 │   ├── youtube_worker.py          # Async Lambda handler for YouTube Shorts
 │   ├── notifier.py                # Error alerts via AWS SNS (email)
@@ -111,7 +113,8 @@ python3 scripts/update_secrets.py
 │   │   ├── creator.py             # Reels orchestrator
 │   │   └── event_card.py          # 📅 PIL 1080×1080 events infographic generator
 │   ├── fonts/                     # Bundled fonts (Montserrat Bold, OFL)
-│   └── music/                     # Background music for Reels
+│   ├── logo/                      # Brand watermark for fact Stories
+│   └── music/                     # Background music for Reels & fact Stories
 ├── prompts/                       # AI prompt templates (editable text files)
 │   ├── batch_selection.txt        # News selection & prioritization prompt
 │   ├── single_article.txt         # Single article content generation prompt
@@ -141,9 +144,12 @@ AWS Lambda runs via EventBridge (UTC → Amsterdam CEST = UTC+2):
 
 | Schedule                | UTC   | Amsterdam | Instagram              | YouTube Shorts         |
 |-------------------------|-------|-----------|------------------------|------------------------|
+| Daily fact (daily)      | 06:00 | 08:00     | 💡 Story (Dutch fact)  | ✗ (Story only)         |
 | Morning (daily)         | 09:00 | 11:00     | 🎬 Reels (news)        | ▶️ Short (same video)  |
 | Afternoon (daily)       | 17:00 | 19:00     | 🎬 Reels (news)        | ▶️ Short (same video)  |
 | Events (Tue + Sat)      | 16:00 / 13:00 | 18:00 / 15:00 | 📅 Events Reels | ✗ (Instagram only) |
+
+> The daily fact Story is gated by `ENABLE_INSTAGRAM_STORIES` (Secrets Manager). When off, nothing is generated or published.
 
 > Note: cron times assume CEST (UTC+2). In winter (CET, UTC+1) posts run 1 hour later Amsterdam time.
 

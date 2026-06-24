@@ -17,12 +17,13 @@ from typing import List, Optional
 
 from moviepy import AudioFileClip, CompositeVideoClip
 
-from .config import FPS, VIDEO_WIDTH, VIDEO_HEIGHT
+from .config import FPS, VIDEO_WIDTH, VIDEO_HEIGHT, BG_MUSIC_VOLUME, reading_seconds
 from .tts import generate_tts, clean_for_narration
 from .footage import fetch_stock_clips, fetch_stock_image, download_image
 from .effects import (
     compose_stock_scenes,
     make_hook_clip,
+    make_fact_overlay,
     make_ken_burns_clip,
     make_fallback_background,
     make_subtitle_clip,
@@ -198,6 +199,114 @@ def create_news_video(
 
     size_mb = os.path.getsize(output_path) / (1024 * 1024)
     logger.info(f"✅ Video created: {output_path} ({size_mb:.1f} MB)")
+    return os.path.abspath(output_path)
+
+
+def create_fact_video(
+    fact_text: str,
+    footage_queries: Optional[List[str]],
+    music_path: str,
+    output_path: str,
+    duration: Optional[float] = None,
+) -> str:
+    """Create a short vertical "Did you know?" Dutch-fact video for Stories.
+
+    No TTS narration — the fact is read on screen — so the duration is sized
+    to the reading time of *fact_text* (short → higher story completion).
+    Background = Pexels Dutch B-roll (footage_queries), with Ken Burns /
+    gradient fallbacks; audio = background music only.
+
+    Args:
+        fact_text:        The fact shown on screen (English).
+        footage_queries:  Pexels search queries (specific → generic).
+        music_path:       Background music file (e.g. FACT_STORY_MUSIC).
+        output_path:      Where to save the final .mp4.
+        duration:         Override length in seconds; defaults to reading time.
+
+    Returns:
+        Absolute path to the generated video file.
+    """
+    from moviepy import AudioFileClip, concatenate_audioclips
+    from moviepy.audio.fx import AudioFadeOut
+
+    if duration is None:
+        duration = reading_seconds(fact_text)
+    logger.info(f"🎬 Creating fact video ({duration:.1f}s): {fact_text[:60]}...")
+
+    _cleanup_tmp()
+    tmp_dir = tempfile.mkdtemp()
+
+    try:
+        # ── 1. Background visuals (Pexels footage → Ken Burns → gradient) ──
+        logger.info("🖼️  Building background visuals...")
+        # Short story → only need a few clips (each scene ≥ MIN_CLIP_DURATION)
+        clip_count = max(2, int(duration / 3) + 1)
+        clip_paths = fetch_stock_clips(
+            fact_text, "", tmp_dir,
+            count=clip_count,
+            footage_queries=footage_queries,
+            headline=fact_text,
+        )
+        if clip_paths:
+            logger.info(f"   🎬 Using {len(clip_paths)} stock video clips")
+            background = compose_stock_scenes(clip_paths, duration)
+        else:
+            stock_img = fetch_stock_image(fact_text, "", tmp_dir)
+            if stock_img:
+                prepared = prepare_image_for_portrait(stock_img, tmp_dir)
+                logger.info("   🖼️  Ken Burns on Pexels stock photo")
+                background = make_ken_burns_clip(prepared, duration)
+            else:
+                logger.info("   🎨 Animated gradient fallback")
+                background = make_fallback_background(duration)
+
+        # ── 2. Compose text overlay ──
+        logger.info("🎨 Composing fact overlay...")
+        from .config import LOGO_WATERMARK
+        logo = str(LOGO_WATERMARK) if LOGO_WATERMARK.exists() else None
+        layers = [background] + make_fact_overlay(fact_text, duration, logo_path=logo)
+        video = CompositeVideoClip(layers, size=(VIDEO_WIDTH, VIDEO_HEIGHT))
+        video = video.with_duration(duration)
+
+        # ── 3. Background music only (trim/loop to duration, fade out) ──
+        logger.info("🎵 Adding background music...")
+        try:
+            music = AudioFileClip(str(music_path))
+            if music.duration >= duration:
+                music = music.subclipped(0, duration)
+            else:
+                loops = int(duration / music.duration) + 1
+                music = concatenate_audioclips([music] * loops).subclipped(0, duration)
+            music = music.with_volume_scaled(BG_MUSIC_VOLUME)
+            music = music.with_effects([AudioFadeOut(1.0)])
+            video = video.with_audio(music)
+        except Exception as e:
+            logger.warning(f"⚠️  Could not load background music: {e}")
+
+        # ── 4. Render ──
+        logger.info(f"💾 Rendering to {output_path}...")
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        temp_audio = os.path.join(
+            tempfile.gettempdir(), Path(output_path).stem + "_TEMP_AUDIO.mp4",
+        )
+        video.write_videofile(
+            output_path,
+            fps=FPS,
+            codec="libx264",
+            audio_codec="aac",
+            preset="ultrafast",
+            bitrate="4000k",
+            threads=4,
+            logger=None,
+            temp_audiofile=temp_audio,
+            ffmpeg_params=["-profile:v", "high", "-pix_fmt", "yuv420p"],
+        )
+        video.close()
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    size_mb = os.path.getsize(output_path) / (1024 * 1024)
+    logger.info(f"✅ Fact video created: {output_path} ({size_mb:.1f} MB)")
     return os.path.abspath(output_path)
 
 

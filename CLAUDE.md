@@ -15,7 +15,7 @@ Dutch-language social media automation: scrapes NOS/RTL news + 8 NL event source
 | `handler_metrics_collector` | `lambda_handler.py` | EventBridge daily 02:00 AMS | Fetches Instagram Insights, writes to DynamoDB |
 | `handler_analytics_engine` | `lambda_handler.py` | EventBridge Sunday 22:00 AMS | Claude analytics + prompt auto-update + SNS email |
 
-**Run mode detection** in `lambda_handler`: `event.get('format') == 'event_post'` → events pipeline; `event.get('format') == 'reels'` → Reels mode; otherwise → photo post.
+**Run mode detection** in `lambda_handler`: `event.get('format') == 'event_post'` → events pipeline; `event.get('format') == 'daily_fact'` → daily Dutch-fact Story pipeline; `event.get('format') == 'reels'` → Reels mode; otherwise → photo post.
 
 ---
 
@@ -26,6 +26,9 @@ Meta's video processing takes up to 10 minutes. Main Lambda has 15-min hard limi
 
 **YouTube Shorts via separate Lambda (`youtube_worker`)**
 The same MP4 already in S3 is also published to YouTube Shorts. Main handler invokes `youtube_worker` asynchronously immediately after invoking `reels_worker` — both are fire-and-forget. YouTube failure never blocks Instagram: the invoke is wrapped in its own try/except. Events content is intentionally excluded (static slideshow format performs poorly on YouTube Shorts; misaligns with the news-channel identity needed for monetization).
+
+**Daily Dutch-fact Story (story-only, feature-flagged)**
+Every day at 07:00 Amsterdam (EventBridge `{"format":"daily_fact"}` → `_run_daily_fact_pipeline`), a curated "Did you know?" Dutch fact is rendered as a short vertical video (Pexels Dutch B-roll + on-screen text + brand logo watermark `LOGO_WATERMARK` (`src/logo/`) + `FACT_STORY_MUSIC`, **no TTS**) and published as an **Instagram Story only** — no Reel, no YouTube. Duration = reading time of the text (`reading_seconds()` in `video/config.py`) so it's short enough to watch to completion. Deliberately not a Reel: news already posts 2 Reels/day and a 3rd would cannibalize reach; Stories are a separate surface. Story video is published via `reels_worker` (async, `publish_story=True, publish_reel=False`) so Meta's video processing happens off the main Lambda's clock. Gated by `ENABLE_INSTAGRAM_STORIES` (Secrets Manager) — when off, the pipeline returns immediately and generates **nothing** (no fact pick, no Pexels, no render). Fact pool lives in S3 `facts/pool.json` (hot-editable, seeded from `DEFAULT_FACTS` in `src/dutch_facts.py`); least-recently-used rotation in `facts/_rotation.json` means a fact repeats only after ~the whole pool cycles (~90 days). When the pool nearly cycles, a one-time SNS refill email is sent to `ALERT_EMAIL`; if ignored, facts simply repeat (system never stops, AI never auto-generates facts).
 
 **Two Claude models**
 - `claude-opus-4-6` / `claude-opus-4-7` → content generation (single_article, batch_selection, event_selection, footage queries). Quality matters here.
@@ -48,6 +51,7 @@ On every run, main handler reads all `posts_*.json` files from S3 to build a set
 |---|---|
 | `lambda_handler.py` | Lambda entry points, pipeline orchestration, S3 I/O |
 | `src/news_scraper.py` | RSS scraping — NOS + RTL Nieuws → `NewsArticle` objects |
+| `src/dutch_facts.py` | Daily "Did you know?" fact pool (`DEFAULT_FACTS` seed) + S3-backed LRU rotation (`get_fact_for_today`) + refill SNS alert |
 | `src/ai_agent.py` | Claude API calls — content gen, quality gate, event scoring/selection, footage queries |
 | `src/social_publisher.py` | Instagram Graph API v24.0 — photo posts + Reels container upload/publish |
 | `src/youtube_publisher.py` | YouTube Data API v3 — OAuth 2.0 refresh token flow, resumable upload as Short |
@@ -108,3 +112,6 @@ For local development, copy `.env.example` to `.env` and run `src/main.py`.
 - **Lambda ZIP size limit**: unzipped package must stay under 250 MB. Current size ~231 MB. `build_lambda.sh` aborts if >240 MB (safety gate). Key exclusions: `googleapiclient/discovery_cache/documents/` (all except `youtube.v3.json`) and `zstandard/`. If a new heavy dependency is added and the limit is hit, migrate to Lambda Container Image (ECR, no size limit).
 - **YouTube OAuth token**: invalidated if user revokes access or GCP OAuth app is in Testing mode (tokens expire in 7 days — must be Production). Fix: re-run OAuth Desktop flow locally, update `YOUTUBE_REFRESH_TOKEN` in Secrets Manager.
 - **YouTube vs events**: events Reels (slide-based PIL video) is published to Instagram only. YouTube receives news Reels only. See architectural decision above for rationale.
+- **Instagram Stories API limits**: `media_type=STORIES` containers accept **no caption** and **no interactive stickers** (polls/questions/links are app-only). The daily fact's text is baked into the video. Story reach is mostly existing followers, not discovery — Stories are a retention/completion surface, not a growth channel.
+- **`ENABLE_INSTAGRAM_STORIES` is checked twice**: first in `_run_daily_fact_pipeline` (so flag-off costs nothing), again in `reels_worker` (defense-in-depth before any Story publish). Both read the same Secrets Manager value.
+- **Fact rotation is hot-editable, no redeploy**: to add/change facts, edit `s3://<bucket>/facts/pool.json` directly. New entries (unseen `id`s) jump to the front of the LRU rotation. `DEFAULT_FACTS` only seeds the pool on first run when `pool.json` is absent.

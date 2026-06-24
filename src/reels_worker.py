@@ -49,6 +49,8 @@ def _load_secrets():
     secret = json.loads(resp['SecretString'])
     os.environ['INSTAGRAM_ACCESS_TOKEN'] = secret['INSTAGRAM_ACCESS_TOKEN']
     os.environ['INSTAGRAM_ACCOUNT_ID'] = secret['INSTAGRAM_ACCOUNT_ID']
+    if 'ENABLE_INSTAGRAM_STORIES' in secret:
+        os.environ['ENABLE_INSTAGRAM_STORIES'] = secret['ENABLE_INSTAGRAM_STORIES']
     logger.info("✅ Secrets loaded")
 
 
@@ -57,14 +59,22 @@ def lambda_handler(event, context):
     s3_video_key = event.get('s3_video_key')
     post_content = event.get('post_content')
     bucket_name = event.get('bucket_name') or os.environ.get('RESULTS_BUCKET', '')
+    # Which surfaces to publish this video to. Defaults preserve the original
+    # behaviour (Reel only); the daily-fact pipeline invokes with
+    # publish_reel=False, publish_story=True.
+    publish_reel = bool(event.get('publish_reel', True))
+    publish_story = bool(event.get('publish_story', False))
 
     logger.info("=" * 60)
     logger.info("📱 Reels Publisher — Starting")
     logger.info(f"📅 Timestamp: {timestamp}")
     logger.info(f"🎬 Video key: {s3_video_key}")
+    logger.info(f"🎯 Targets: reel={publish_reel} story={publish_story}")
     logger.info("=" * 60)
 
-    if not s3_video_key or not post_content or not bucket_name:
+    # post_content (caption) is only needed for the Reel; Stories take no caption.
+    missing_content = publish_reel and not post_content
+    if not s3_video_key or not bucket_name or missing_content:
         msg = (
             f"Missing required payload fields — "
             f"s3_video_key={'set' if s3_video_key else 'MISSING'}, "
@@ -77,6 +87,7 @@ def lambda_handler(event, context):
 
     try:
         _load_secrets()
+        stories_enabled = os.environ.get('ENABLE_INSTAGRAM_STORIES', 'false').lower() == 'true'
 
         s3 = boto3.client('s3')
         video_url = s3.generate_presigned_url(
@@ -87,22 +98,49 @@ def lambda_handler(event, context):
         logger.info("✅ Pre-signed URL generated")
 
         publisher = InstagramPublisher()
-        result = publisher.publish_reels(
-            content=post_content,
-            video_url=video_url,
-            dry_run=False,
-        )
+        results: dict = {}
+        errors: list = []
 
-        logger.info(f"✅ Reel published: {result.get('url', result)}")
+        # ── Reel ──
+        if publish_reel:
+            try:
+                results['reel'] = publisher.publish_reels(
+                    content=post_content, video_url=video_url, dry_run=False,
+                )
+                logger.info(f"✅ Reel published: {results['reel'].get('url', results['reel'])}")
+            except Exception as e:
+                logger.error(f"❌ Reel publish failed: {e}", exc_info=True)
+                alert_on_exception("Reels publish failed", e, detect_error_type(e))
+                errors.append(f"reel: {e}")
+
+        # ── Story ── (independent of the Reel; gated by feature flag)
+        if publish_story:
+            if not stories_enabled:
+                logger.info("⏸️  ENABLE_INSTAGRAM_STORIES disabled — skipping story")
+            else:
+                try:
+                    results['story'] = publisher.publish_story(video_url=video_url, dry_run=False)
+                    logger.info(f"✅ Story published: {results['story']}")
+                except Exception as e:
+                    logger.error(f"❌ Story publish failed: {e}", exc_info=True)
+                    alert_on_exception("Story publish failed", e, detect_error_type(e))
+                    errors.append(f"story: {e}")
+
+        if errors:
+            return {
+                'statusCode': 500,
+                'body': json.dumps({'status': 'partial_error', 'errors': errors,
+                                    'result': results, 'timestamp': timestamp}),
+            }
         return {
             'statusCode': 200,
-            'body': json.dumps({'status': 'success', 'result': result, 'timestamp': timestamp}),
+            'body': json.dumps({'status': 'success', 'result': results, 'timestamp': timestamp}),
         }
 
     except Exception as e:
-        logger.error(f"❌ Reels publish failed: {e}", exc_info=True)
+        logger.error(f"❌ Publish worker failed: {e}", exc_info=True)
         error_type = detect_error_type(e)
-        alert_on_exception("Reels publish failed", e, error_type)
+        alert_on_exception("Publish worker failed", e, error_type)
         return {
             'statusCode': 500,
             'body': json.dumps({'status': 'error', 'error': str(e), 'timestamp': timestamp}),

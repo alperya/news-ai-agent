@@ -552,6 +552,29 @@ resource "aws_cloudwatch_event_target" "events_saturday_target" {
   })
 }
 
+resource "aws_cloudwatch_event_rule" "daily_fact_schedule" {
+  name                = "${var.project_name}-daily-fact"
+  description         = "Daily Dutch-fact Story — 08:00 Amsterdam (06:00 UTC / CEST). Fills the empty morning slot before the 11:00 Reel; Stories don't cannibalize Reel reach."
+  schedule_expression = "cron(0 6 * * ? *)"
+  state               = "ENABLED"
+
+  tags = {
+    Name        = "${var.project_name}-daily-fact"
+    Environment = "production"
+    ManagedBy   = "terraform"
+  }
+}
+
+resource "aws_cloudwatch_event_target" "daily_fact_target" {
+  rule      = aws_cloudwatch_event_rule.daily_fact_schedule.name
+  target_id = "daily-fact-lambda"
+  arn       = aws_lambda_function.news_agent.arn
+
+  input = jsonencode({
+    format = "daily_fact"
+  })
+}
+
 # ===== Lambda Permissions for EventBridge =====
 resource "aws_lambda_permission" "allow_morning_eventbridge" {
   statement_id  = "AllowExecutionFromEventBridgeMorning"
@@ -591,6 +614,14 @@ resource "aws_lambda_permission" "allow_events_saturday_eventbridge" {
   function_name = aws_lambda_function.news_agent.function_name
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.events_saturday_schedule.arn
+}
+
+resource "aws_lambda_permission" "allow_daily_fact_eventbridge" {
+  statement_id  = "AllowExecutionFromEventBridgeDailyFact"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.news_agent.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.daily_fact_schedule.arn
 }
 
 # ===== Token Refresh Lambda =====

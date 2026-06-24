@@ -114,6 +114,10 @@ def get_secrets():
         if key in secret:
             os.environ[key] = secret[key]
 
+    # Feature flag: daily Dutch-fact Instagram Story (default off)
+    if 'ENABLE_INSTAGRAM_STORIES' in secret:
+        os.environ['ENABLE_INSTAGRAM_STORIES'] = secret['ENABLE_INSTAGRAM_STORIES']
+
     # Set AI prompts if available
     if 'AI_PROMPT_BATCH_SELECTION' in secret:
         os.environ['AI_PROMPT_BATCH_SELECTION'] = secret['AI_PROMPT_BATCH_SELECTION']
@@ -270,6 +274,83 @@ def _finish_event_pipeline(
         "statusCode": http_code,
         "body": json.dumps({"status": status, "timestamp": timestamp, "error": error}),
     }
+
+
+def _run_daily_fact_pipeline(timestamp: str, bucket_name: str, dry_run: bool = False) -> dict:
+    """Daily "Did you know?" Dutch-fact Story — runs at 07:00 (format: daily_fact).
+
+    Story-only (no Reel, no YouTube). Gated by ENABLE_INSTAGRAM_STORIES — when
+    disabled, returns immediately WITHOUT generating any content (no fact
+    selection, no Pexels calls, no render), so nothing is wasted.
+    """
+    logger.info("\n" + "=" * 60)
+    logger.info("💡 DAILY FACT PIPELINE: Dutch-fact Story")
+    logger.info("=" * 60)
+
+    if os.environ.get('ENABLE_INSTAGRAM_STORIES', 'false').lower() != 'true':
+        logger.info("⏸️  ENABLE_INSTAGRAM_STORIES disabled — skipping (no content generated)")
+        return {'statusCode': 200,
+                'body': json.dumps({'status': 'skipped', 'reason': 'flag_disabled', 'timestamp': timestamp})}
+
+    try:
+        from dutch_facts import get_fact_for_today
+        from video import create_fact_video
+        from video.config import FACT_STORY_MUSIC
+
+        # Pick today's fact (least-recently-used rotation, state in S3)
+        fact = get_fact_for_today(bucket_name)
+
+        # Render short vertical video (text + Dutch B-roll + music, no narration)
+        video_path = f'/tmp/fact_{timestamp}.mp4'
+        create_fact_video(
+            fact_text=fact['text'],
+            footage_queries=fact.get('footage_queries'),
+            music_path=str(FACT_STORY_MUSIC),
+            output_path=video_path,
+        )
+
+        # Upload to S3
+        s3_video_key = f'facts/fact_{timestamp}.mp4'
+        s3_client = boto3.client('s3')
+        with open(video_path, 'rb') as vf:
+            s3_client.put_object(
+                Bucket=bucket_name, Key=s3_video_key, Body=vf, ContentType='video/mp4',
+            )
+        logger.info(f"✅ Fact video uploaded to S3: {s3_video_key}")
+
+        if dry_run:
+            logger.info("[DRY RUN] Skipping Story publish; video kept in S3 for inspection")
+            return {'statusCode': 200,
+                    'body': json.dumps({'status': 'dry_run', 'fact_id': fact['id'],
+                                        's3_key': s3_video_key, 'timestamp': timestamp})}
+
+        # Hand off Story publishing to the async worker (video processing +
+        # container polling happen there, off the main Lambda's clock).
+        reels_fn = os.environ.get('REELS_PUBLISH_FUNCTION_NAME', 'news-ai-agent-reels-publish')
+        lambda_client = boto3.client('lambda')
+        lambda_client.invoke(
+            FunctionName=reels_fn,
+            InvocationType='Event',  # async — fire and forget
+            Payload=json.dumps({
+                'publish_reel': False,
+                'publish_story': True,
+                's3_video_key': s3_video_key,
+                'bucket_name': bucket_name,
+                'timestamp': timestamp,
+            }).encode(),
+        )
+        logger.info(f"✅ Story publish delegated to {reels_fn} (async)")
+
+        return {'statusCode': 200,
+                'body': json.dumps({'status': 'queued', 'fact_id': fact['id'],
+                                    's3_key': s3_video_key, 'timestamp': timestamp})}
+
+    except Exception as e:
+        logger.error(f"❌ Daily fact pipeline failed: {e}", exc_info=True)
+        error_type = detect_error_type(e)
+        alert_on_exception("Daily fact story failed", e, error_type)
+        return {'statusCode': 500,
+                'body': json.dumps({'status': 'error', 'error': str(e), 'timestamp': timestamp})}
 
 
 def _run_event_pipeline(timestamp: str, bucket_name: str, ai_agent, dry_run: bool = False) -> dict:
@@ -467,6 +548,12 @@ def lambda_handler(event, context):
             ai_agent = NewsAIAgent()
             dry_run = bool(event.get('dry_run', False))
             return _run_event_pipeline(timestamp, bucket_name, ai_agent, dry_run=dry_run)
+
+        # Daily Dutch-fact Story run — bypasses the news pipeline entirely
+        is_daily_fact = isinstance(event, dict) and event.get('format') == 'daily_fact'
+        if is_daily_fact:
+            dry_run = bool(event.get('dry_run', False))
+            return _run_daily_fact_pipeline(timestamp, bucket_name, dry_run=dry_run)
 
         # STAGE 1: Scrape news
         logger.info("\n📰 STAGE 1: Scraping news articles...")
