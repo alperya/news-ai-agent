@@ -457,54 +457,19 @@ def make_hook_clip(hook_text: str, duration: float = 3.0) -> list:
     return [scrim_clip, text_clip]
 
 
-def _styled_logo(logo_path, diameter: int = 190, opacity: float = 0.88) -> "Image.Image":
-    """Turn a square logo into a circular brand medallion with a soft shadow.
-
-    The source watermark has a solid cream background, which reads as a pasted
-    square over footage. Masking it to a circle, adding a subtle drop shadow,
-    and easing the opacity makes it sit on the video like an intentional
-    watermark rather than a sticker.
-    """
-    from PIL import ImageDraw
-
-    logo = Image.open(logo_path).convert("RGBA").resize(
-        (diameter, diameter), Image.Resampling.LANCZOS,
-    )
-    # Circular mask → drop the square corners (scaled by opacity for a watermark feel)
-    mask = Image.new("L", (diameter, diameter), 0)
-    ImageDraw.Draw(mask).ellipse((0, 0, diameter - 1, diameter - 1), fill=int(255 * opacity))
-    logo.putalpha(mask)
-
-    pad = int(diameter * 0.22)
-    size = diameter + 2 * pad
-    out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-
-    # Soft drop shadow, nudged slightly down
-    shadow = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    drop = int(pad * 0.35)
-    ImageDraw.Draw(shadow).ellipse(
-        (pad, pad + drop, pad + diameter, pad + diameter + drop), fill=(0, 0, 0, 110),
-    )
-    shadow = shadow.filter(ImageFilter.GaussianBlur(pad * 0.45))
-
-    out = Image.alpha_composite(out, shadow)
-    out.alpha_composite(logo, (pad, pad))
-    return out
-
-
 def make_fact_overlay(
     fact_text: str,
     duration: float,
     header: str = "DID YOU KNOW?",
-    logo_path=None,
-    handle: str = "@dutch_news_english",
 ) -> list:
     """Full-duration overlay for the daily Dutch-fact story.
 
     Layout (centered vertical block over a soft dark scrim):
       • small orange header  ("DID YOU KNOW?")
       • large white fact body, word-wrapped, the hero
-      • brand logo watermark near the bottom (falls back to the @handle text)
+
+    No branding is baked in — Instagram already shows the account avatar and
+    handle in the Story's top-left corner.
 
     Returns ``[scrim_clip, text_clip]`` covering the whole frame.
     """
@@ -512,7 +477,6 @@ def make_fact_overlay(
 
     header_size = 52
     body_size = 72
-    handle_size = 44
 
     def _font(size: int):
         try:
@@ -522,7 +486,6 @@ def make_fact_overlay(
 
     header_font = _font(header_size)
     body_font = _font(body_size)
-    handle_font = _font(handle_size)
 
     pad_x = 80
     max_text_width = VIDEO_WIDTH - 2 * pad_x
@@ -584,23 +547,6 @@ def make_fact_overlay(
     for line in lines:
         _draw_centered(line, body_font, y, white)
         y += body_line_h
-
-    # Brand sign-off near the bottom: logo watermark if available, else @handle
-    logo_pasted = False
-    if logo_path:
-        try:
-            coin = _styled_logo(logo_path, diameter=190)
-            # Bottom-right corner. The coin image carries its own transparent
-            # pad, so small frame margins still leave a comfortable safe zone
-            # (clears Instagram's Story reply bar at the bottom-center).
-            lx = VIDEO_WIDTH - coin.width - 24
-            ly = VIDEO_HEIGHT - coin.height - 100
-            canvas.alpha_composite(coin, (lx, ly))
-            logo_pasted = True
-        except Exception as e:
-            logger.warning(f"⚠️  Could not load logo watermark: {e}")
-    if not logo_pasted:
-        _draw_centered(handle, handle_font, int(VIDEO_HEIGHT * 0.90), white)
 
     r, g, b, a = canvas.split()
     text_rgb = np.array(Image.merge("RGB", (r, g, b)))

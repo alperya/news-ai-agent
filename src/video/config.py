@@ -96,19 +96,6 @@ SAD_MUSIC_FILE = _SRC_DIR / "music" / "sad_music.mp3"
 FACT_STORY_MUSIC = _SRC_DIR / "music" / "story_dutch_lifestyle_30sec.mp3"
 
 
-def _find_logo() -> Path:
-    """Locate the brand watermark, tolerating local vs flat-Lambda layouts."""
-    name = "dutch_news_watermark_150x150.png"
-    for c in (_SRC_DIR / "logo" / name, _SRC_DIR / name, _VIDEO_PKG_DIR / name):
-        if c.exists():
-            return c
-    return _SRC_DIR / "logo" / name
-
-
-# Brand watermark used as the sign-off on fact stories
-LOGO_WATERMARK = _find_logo()
-
-
 def reading_seconds(
     text: str,
     wps: float = 2.5,

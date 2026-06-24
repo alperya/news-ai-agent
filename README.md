@@ -113,7 +113,6 @@ python3 scripts/update_secrets.py
 │   │   ├── creator.py             # Reels orchestrator
 │   │   └── event_card.py          # 📅 PIL 1080×1080 events infographic generator
 │   ├── fonts/                     # Bundled fonts (Montserrat Bold, OFL)
-│   ├── logo/                      # Brand watermark for fact Stories
 │   └── music/                     # Background music for Reels & fact Stories
 ├── prompts/                       # AI prompt templates (editable text files)
 │   ├── batch_selection.txt        # News selection & prioritization prompt

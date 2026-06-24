@@ -262,9 +262,7 @@ def create_fact_video(
 
         # ── 2. Compose text overlay ──
         logger.info("🎨 Composing fact overlay...")
-        from .config import LOGO_WATERMARK
-        logo = str(LOGO_WATERMARK) if LOGO_WATERMARK.exists() else None
-        layers = [background] + make_fact_overlay(fact_text, duration, logo_path=logo)
+        layers = [background] + make_fact_overlay(fact_text, duration)
         video = CompositeVideoClip(layers, size=(VIDEO_WIDTH, VIDEO_HEIGHT))
         video = video.with_duration(duration)
 
