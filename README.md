@@ -11,6 +11,7 @@ An intelligent AI-powered pipeline that automatically scrapes Dutch news from NO
 - ✅ **Instagram Reels** — auto-generated news videos with TTS narration, stock footage & subtitles
 - ✅ **YouTube Shorts** — same Reels video simultaneously published as a YouTube Short (news only; separate async Lambda)
 - ✅ **Daily Dutch-fact Story** — a curated "Did you know?" fact rendered as a short vertical video (Pexels B-roll + on-screen text + music, no TTS) and published as an Instagram Story each morning; feature-flagged, with a hot-editable S3 fact pool and least-recently-used rotation
+- ✅ **Facebook Page cross-posting** — whatever is published to Instagram (Reels, photos, the daily Story) is mirrored to the connected Facebook Page (FB Reels / photos / Stories); best-effort, never blocks Instagram
 - ✅ **Reels hook** — AI-generated 8–12 word attention hook, displayed as a large overlay for the first 3 seconds
 - ✅ Tiered news selection (🇳🇱 Holland → 🇪🇺 Europe → 🌍 Global) with viral potential scoring
 - ✅ Source attribution with article links in posts

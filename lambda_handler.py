@@ -18,7 +18,7 @@ sys.path.insert(0, _dir)
 
 from news_scraper import DutchNewsScraper
 from ai_agent import NewsAIAgent
-from social_publisher import InstagramPublisher
+from social_publisher import InstagramPublisher, FacebookPublisher
 from video import create_news_video
 from event_scraper import EventScraper
 from video.event_card import generate_carousel_slides, generate_reels_video
@@ -511,6 +511,14 @@ def _run_event_pipeline(timestamp: str, bucket_name: str, ai_agent, dry_run: boo
         logger.info(f"✅ Reels published: {publish_result}")
         summary["publish_result"] = str(publish_result)
 
+        # Cross-post the same Reel to the connected Facebook Page (best-effort)
+        if not dry_run and os.environ.get('FACEBOOK_PAGE_ID'):
+            try:
+                fb = FacebookPublisher().publish_reel(video_url=video_url, caption=caption)
+                logger.info(f"✅ Facebook Reel published: {fb}")
+            except Exception as fb_err:
+                logger.warning(f"⚠️ Facebook Reel publish failed (non-critical): {fb_err}")
+
         # Final S3 records
         save_to_s3(selected_events, f"events_{timestamp}.json", bucket_name)
 
@@ -796,6 +804,16 @@ def lambda_handler(event, context):
                         image_url=post.get('image_url'),
                         dry_run=False,
                     )
+
+                    # Cross-post the same photo to the connected Facebook Page (best-effort)
+                    if os.environ.get('FACEBOOK_PAGE_ID') and post.get('image_url'):
+                        try:
+                            fb = FacebookPublisher().publish_photo(
+                                image_url=post['image_url'], caption=post['full_post'],
+                            )
+                            logger.info(f"✅ Facebook photo published: {fb}")
+                        except Exception as fb_err:
+                            logger.warning(f"⚠️ Facebook photo publish failed (non-critical): {fb_err}")
 
                 logger.info(f"✅ Post {idx} processed: {result}")
                 published_count += 1

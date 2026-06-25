@@ -115,6 +115,18 @@ def lambda_handler(event, context):
                 alert_on_exception("Reels publish failed", e, detect_error_type(e))
                 errors.append(f"reel: {e}")
 
+            # Cross-post the same video to the connected Facebook Page as a Reel.
+            # Best-effort: a Facebook failure never fails the run.
+            if os.environ.get('FACEBOOK_PAGE_ID'):
+                try:
+                    results['facebook_reel'] = FacebookPublisher().publish_reel(
+                        video_url=video_url, caption=post_content, dry_run=False,
+                    )
+                    logger.info(f"✅ Facebook Reel published: {results['facebook_reel']}")
+                except Exception as e:
+                    logger.error(f"❌ Facebook Reel publish failed (non-critical): {e}", exc_info=True)
+                    alert_on_exception("Facebook Reel publish failed", e, detect_error_type(e))
+
         # ── Story ── (independent of the Reel; gated by feature flag)
         if publish_story:
             if not stories_enabled:

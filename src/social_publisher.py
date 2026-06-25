@@ -587,3 +587,119 @@ class FacebookPublisher:
         except Exception as e:
             logger.error(f"❌ Error posting Facebook Story: {str(e)}")
             raise
+
+    def publish_reel(self, video_url: str, caption: str = "", dry_run: bool = False):
+        """Publish a video as a Reel on the Facebook Page.
+
+        Mirrors the Instagram Reels publish so that whatever goes to Instagram
+        as a Reel is cross-posted to Facebook as a Reel too.
+
+        Args:
+            video_url: Public URL to the video (must be fetchable by Meta).
+            caption:   Reel description/caption.
+            dry_run:   If True, skip actual API calls.
+        """
+        if dry_run:
+            logger.info("[DRY RUN] Would post Facebook Reel")
+            logger.info(f"[DRY RUN] Video URL: {video_url}")
+            return {'id': 'dry_run', 'type': 'facebook_reel'}
+
+        try:
+            page_token = self._get_page_token()
+
+            # Step 1: Start an upload session
+            logger.info("📦 Starting Facebook Reel upload session...")
+            start = requests.post(
+                f"{self.graph_api_url}/{self.page_id}/video_reels",
+                params={'upload_phase': 'start', 'access_token': page_token},
+            )
+            start.raise_for_status()
+            sj = start.json()
+            video_id = sj['video_id']
+            upload_url = sj['upload_url']
+            logger.info(f"✅ Upload session: video_id={video_id}")
+
+            # Step 2: Hand Meta the hosted file URL to fetch
+            logger.info("📤 Uploading video to Facebook (hosted file)...")
+            up = requests.post(
+                upload_url,
+                headers={'Authorization': f'OAuth {page_token}', 'file_url': video_url},
+            )
+            up.raise_for_status()
+
+            # Step 3: Wait until the upload is fetched/processed
+            logger.info("⏳ Waiting for Facebook to process the video...")
+            self._wait_upload_complete(video_id, page_token)
+
+            # Step 4: Finish → publishes the Reel
+            logger.info("📤 Publishing Facebook Reel...")
+            fin = requests.post(
+                f"{self.graph_api_url}/{self.page_id}/video_reels",
+                params={
+                    'upload_phase': 'finish',
+                    'video_id': video_id,
+                    'video_state': 'PUBLISHED',
+                    'description': caption,
+                    'access_token': page_token,
+                },
+            )
+            fin.raise_for_status()
+            fj = fin.json()
+            post_id = fj.get('post_id') or video_id
+            logger.info(f"✅ Facebook Reel published: {post_id}")
+            logger.info(json.dumps({
+                "event": "post_published",
+                "post_id": post_id,
+                "post_type": "facebook_reel",
+            }))
+            return {'id': post_id, 'video_id': video_id, 'type': 'facebook_reel'}
+
+        except requests.exceptions.HTTPError as e:
+            error_msg = f"Facebook Reel API error: {str(e)}"
+            if hasattr(e.response, 'text'):
+                error_msg += f" - {e.response.text}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        except Exception as e:
+            logger.error(f"❌ Error posting Facebook Reel: {str(e)}")
+            raise
+
+    def publish_photo(self, image_url: str, caption: str = "", dry_run: bool = False):
+        """Publish a photo post to the Facebook Page.
+
+        Args:
+            image_url: Public image URL.
+            caption:   Post text.
+            dry_run:   If True, skip actual API calls.
+        """
+        if dry_run:
+            logger.info("[DRY RUN] Would post Facebook photo")
+            return {'id': 'dry_run', 'type': 'facebook_photo'}
+
+        try:
+            page_token = self._get_page_token()
+            logger.info("📤 Publishing Facebook photo...")
+            resp = requests.post(
+                f"{self.graph_api_url}/{self.page_id}/photos",
+                params={'url': image_url, 'caption': caption, 'access_token': page_token},
+            )
+            resp.raise_for_status()
+            rj = resp.json()
+            post_id = rj.get('post_id') or rj.get('id')
+            logger.info(f"✅ Facebook photo published: {post_id}")
+            logger.info(json.dumps({
+                "event": "post_published",
+                "post_id": post_id,
+                "post_type": "facebook_photo",
+            }))
+            return {'id': post_id, 'type': 'facebook_photo'}
+
+        except requests.exceptions.HTTPError as e:
+            error_msg = f"Facebook photo API error: {str(e)}"
+            if hasattr(e.response, 'text'):
+                error_msg += f" - {e.response.text}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        except Exception as e:
+            logger.error(f"❌ Error posting Facebook photo: {str(e)}")
+            raise
