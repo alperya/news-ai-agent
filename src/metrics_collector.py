@@ -156,23 +156,43 @@ class MetricsCollector:
 
     @staticmethod
     def _topic(caption: str) -> str:
+        """Classify a post by THEME (not geography).
+
+        The old version listed "Netherlands" first, but NL keywords
+        (amsterdam/dutch/nl) match nearly every caption, so every post was
+        labelled "Netherlands" and topic-level performance was unmeasurable.
+        Here the thematic categories come first (most specific → first match
+        wins); geography is intentionally not a topic.
+        """
         if not caption:
-            return "World"
+            return "Other"
         cap = caption.lower()
         topics = [
-            (["netherlands", "amsterdam", "rotterdam", "den haag", "nederland", "dutch", "nl "], "Netherlands"),
-            (["ukraine", "russia", "europe", "eu ", "nato"], "Europe"),
-            (["climate", "energy", "environment", "solar", "wind"], "Climate/Energy"),
-            (["economy", "inflation", "market", "stock", "trade"], "Economy"),
-            (["tech", "ai ", "artificial intelligence", "software", "startup"], "Technology"),
-            (["sport", "football", "soccer", "eredivisie", "olympic"], "Sports"),
-            (["festival", "events", "concert", "museum", "exhibition"], "Events"),
-            (["health", "covid", "hospital", "medicine", "vaccine"], "Health"),
+            (["storm", "knmi", "lightning", "thunder", "flood", "heatwave", "heat wave",
+              "snow", "weather", "code orange", "code red", "code yellow",
+              "code oranje", "code rood", "code geel", "rainfall", "wind gust"], "Weather"),
+            (["schiphol", "railway", "train", "rail strike", "metro", "tram ", "flight",
+              "airport", "road clos", "traffic jam", "public transport", "travel disruption",
+              "ns strike", "prorail"], "Transport"),
+            (["police", "explosion", "shooting", "stabbing", "arrest", "raid", "bomb",
+              "suspect", "attack", "manhunt", "crime"], "Crime/Security"),
+            (["election", "cabinet", "parliament", "minister", "coalition", "vote",
+              "tax", "benefit", "rent regulation", "new law", "government"], "Politics/Policy"),
+            (["inflation", "energy bill", "housing market", "mortgage", "cost of living",
+              "wages", "economy", "stock"], "Economy"),
+            (["eredivisie", "football", "soccer", "olympic", "tournament",
+              "ajax", "psv", "feyenoord", "championship"], "Sports"),
+            (["festival", "concert", "museum", "exhibition", "things to do", "this week in"], "Events"),
+            (["euthanasia", "hospital", "healthcare", "covid", "vaccine", "medicine"], "Health"),
+            (["king", "queen", "royal", "koningsdag", "prince", "princess"], "Society/Royal"),
+            (["climate", "solar", "wind energy", "emissions", "sustainab", "environment"], "Climate/Energy"),
+            (["artificial intelligence", "ai ", "software", "startup", "chip", "semiconductor"], "Technology"),
+            (["ukraine", "russia", "nato", "eu ", "european union", "brussels"], "Europe"),
         ]
         for keywords, label in topics:
             if any(k in cap for k in keywords):
                 return label
-        return "World"
+        return "Other"
 
     # ── Main ─────────────────────────────────────────────────────────────────
 

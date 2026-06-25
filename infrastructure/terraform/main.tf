@@ -508,9 +508,9 @@ resource "aws_cloudwatch_event_target" "evening_target" {
 # Weekly events post: Wednesday 18:00 Amsterdam (17:00 UTC / CET)
 resource "aws_cloudwatch_event_rule" "events_tuesday_schedule" {
   name                = "${var.project_name}-events-tuesday"
-  description         = "NL events post — Tuesday 18:00 Amsterdam (16:00 UTC / CEST)"
+  description         = "Disabled — events cut to 1×/week (Saturday only); events_reel underperforms (RA 0.24x)"
   schedule_expression = "cron(0 16 ? * TUE *)"
-  state               = "ENABLED"
+  state               = "DISABLED"
 
   tags = {
     Name        = "${var.project_name}-events-tuesday"
