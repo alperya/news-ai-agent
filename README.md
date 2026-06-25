@@ -148,7 +148,7 @@ AWS Lambda runs via EventBridge (UTC → Amsterdam CEST = UTC+2):
 | Daily fact (daily)      | 06:00 | 08:00     | 💡 Story (Dutch fact)  | ✗ (Story only)         |
 | Morning (daily)         | 09:00 | 11:00     | 🎬 Reels (news)        | ▶️ Short (same video)  |
 | Afternoon (daily)       | 17:00 | 19:00     | 🎬 Reels (news)        | ▶️ Short (same video)  |
-| Events (Tue + Sat)      | 16:00 / 13:00 | 18:00 / 15:00 | 📅 Events Reels | ✗ (Instagram only) |
+| Events (Thursday)       | 16:00 | 18:00     | 📅 Events Reels (IG + FB) | ✗ (no YouTube)         |
 
 > The daily fact Story is gated by `ENABLE_INSTAGRAM_STORIES` (Secrets Manager). When off, nothing is generated or published.
 
@@ -156,7 +156,7 @@ AWS Lambda runs via EventBridge (UTC → Amsterdam CEST = UTC+2):
 
 ### 📅 Weekly Events Post
 
-Twice weekly (Tuesday 18:00 + Saturday 15:00 Amsterdam time) the pipeline runs a separate events mode (`format: event_post`) that:
+Weekly (Thursday 18:00 Amsterdam time) the pipeline runs a separate events mode (`format: event_post`) that:
 1. Scrapes upcoming NL events from **8 sources**: Eventbrite API, Ticketmaster API, amsterdam.nl, rotterdam.nl, denhaag.nl, uitagenda.nl, festileaks.nl, doedagen.nl
 2. Scores each event with Claude Haiku (0–8 rubric: audience fit, completeness, public access, visual appeal)
 3. Selects the best 5–12 events with Claude Opus and generates the caption

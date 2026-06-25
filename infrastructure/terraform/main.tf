@@ -13,7 +13,7 @@ provider "aws" {
 variable "aws_region" {
   description = "AWS region"
   type        = string
-  default     = "eu-central-1"  # Frankfurt - closest to Amsterdam
+  default     = "eu-central-1" # Frankfurt - closest to Amsterdam
 }
 
 variable "project_name" {
@@ -25,13 +25,13 @@ variable "project_name" {
 variable "lambda_timeout" {
   description = "Lambda timeout in seconds"
   type        = number
-  default     = 900  # 15 minutes - video rendering on Lambda needs generous timeout
+  default     = 900 # 15 minutes - video rendering on Lambda needs generous timeout
 }
 
 variable "lambda_memory" {
   description = "Lambda memory in MB"
   type        = number
-  default     = 3008  # ~3 GB (Lambda max) - video rendering needs RAM + more memory = more Lambda CPU
+  default     = 3008 # ~3 GB (Lambda max) - video rendering needs RAM + more memory = more Lambda CPU
 }
 
 variable "alert_email" {
@@ -45,7 +45,7 @@ data "aws_caller_identity" "current" {}
 # ===== S3 Bucket for Results =====
 resource "aws_s3_bucket" "results" {
   bucket = "${var.project_name}-results-${data.aws_caller_identity.current.account_id}"
-  
+
   tags = {
     Name        = "${var.project_name}-results"
     Environment = "production"
@@ -55,7 +55,7 @@ resource "aws_s3_bucket" "results" {
 
 resource "aws_s3_bucket_versioning" "results" {
   bucket = aws_s3_bucket.results.id
-  
+
   versioning_configuration {
     status = "Enabled"
   }
@@ -114,7 +114,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "results_lifecycle" {
 resource "aws_secretsmanager_secret" "credentials" {
   name        = "${var.project_name}/credentials"
   description = "Instagram and AI API credentials"
-  
+
   tags = {
     Name        = "${var.project_name}-credentials"
     Environment = "production"
@@ -155,7 +155,7 @@ resource "aws_iam_role" "lambda_role" {
       }
     }]
   })
-  
+
   tags = {
     Name        = "${var.project_name}-lambda-role"
     Environment = "production"
@@ -229,7 +229,7 @@ resource "aws_iam_role_policy" "lambda_policy" {
 resource "aws_cloudwatch_log_group" "lambda_logs" {
   name              = "/aws/lambda/${var.project_name}"
   retention_in_days = 7
-  
+
   tags = {
     Name        = "${var.project_name}-logs"
     Environment = "production"
@@ -305,14 +305,14 @@ resource "aws_s3_object" "lambda_zip" {
 
 # ===== Lambda Function =====
 resource "aws_lambda_function" "news_agent" {
-  s3_bucket        = aws_s3_bucket.results.id
-  s3_key           = aws_s3_object.lambda_zip.key
-  function_name    = var.project_name
-  role            = aws_iam_role.lambda_role.arn
-  handler         = "lambda_handler.lambda_handler"
-  runtime         = "python3.12"
-  timeout         = var.lambda_timeout
-  memory_size     = var.lambda_memory
+  s3_bucket     = aws_s3_bucket.results.id
+  s3_key        = aws_s3_object.lambda_zip.key
+  function_name = var.project_name
+  role          = aws_iam_role.lambda_role.arn
+  handler       = "lambda_handler.lambda_handler"
+  runtime       = "python3.12"
+  timeout       = var.lambda_timeout
+  memory_size   = var.lambda_memory
 
   source_code_hash = filebase64sha256("../../lambda_deployment.zip")
 
@@ -341,14 +341,14 @@ resource "aws_lambda_function" "news_agent" {
 
 # ===== Lambda Function — Reels Publisher (async, invoked by news-agent) =====
 resource "aws_lambda_function" "reels_publish" {
-  s3_bucket        = aws_s3_bucket.results.id
-  s3_key           = aws_s3_object.lambda_zip.key
-  function_name    = "${var.project_name}-reels-publish"
-  role             = aws_iam_role.lambda_role.arn
-  handler          = "reels_worker.lambda_handler"
-  runtime          = "python3.12"
-  timeout          = 600   # 10 minutes: Meta polling up to 80×8s=640s, capped here
-  memory_size      = 256   # no video processing — minimal RAM needed
+  s3_bucket     = aws_s3_bucket.results.id
+  s3_key        = aws_s3_object.lambda_zip.key
+  function_name = "${var.project_name}-reels-publish"
+  role          = aws_iam_role.lambda_role.arn
+  handler       = "reels_worker.lambda_handler"
+  runtime       = "python3.12"
+  timeout       = 600 # 10 minutes: Meta polling up to 80×8s=640s, capped here
+  memory_size   = 256 # no video processing — minimal RAM needed
 
   source_code_hash = filebase64sha256("../../lambda_deployment.zip")
 
@@ -385,14 +385,14 @@ resource "aws_cloudwatch_log_group" "reels_publish_logs" {
 
 # ===== Lambda Function — YouTube Shorts Publisher (async, invoked by news-agent) =====
 resource "aws_lambda_function" "youtube_publish" {
-  s3_bucket        = aws_s3_bucket.results.id
-  s3_key           = aws_s3_object.lambda_zip.key
-  function_name    = "${var.project_name}-youtube-publish"
-  role             = aws_iam_role.lambda_role.arn
-  handler          = "youtube_worker.lambda_handler"
-  runtime          = "python3.12"
-  timeout          = 300  # 5 minutes: video download (~10s) + YouTube upload (~2 min)
-  memory_size      = 256  # no video rendering — minimal RAM needed
+  s3_bucket     = aws_s3_bucket.results.id
+  s3_key        = aws_s3_object.lambda_zip.key
+  function_name = "${var.project_name}-youtube-publish"
+  role          = aws_iam_role.lambda_role.arn
+  handler       = "youtube_worker.lambda_handler"
+  runtime       = "python3.12"
+  timeout       = 300 # 5 minutes: video download (~10s) + YouTube upload (~2 min)
+  memory_size   = 256 # no video rendering — minimal RAM needed
 
   source_code_hash = filebase64sha256("../../lambda_deployment.zip")
 
@@ -506,45 +506,22 @@ resource "aws_cloudwatch_event_target" "evening_target" {
 }
 
 # Weekly events post: Wednesday 18:00 Amsterdam (17:00 UTC / CET)
-resource "aws_cloudwatch_event_rule" "events_tuesday_schedule" {
-  name                = "${var.project_name}-events-tuesday"
-  description         = "Disabled — events cut to 1×/week (Saturday only); events_reel underperforms (RA 0.24x)"
-  schedule_expression = "cron(0 16 ? * TUE *)"
-  state               = "DISABLED"
-
-  tags = {
-    Name        = "${var.project_name}-events-tuesday"
-    Environment = "production"
-    ManagedBy   = "terraform"
-  }
-}
-
-resource "aws_cloudwatch_event_target" "events_tuesday_target" {
-  rule      = aws_cloudwatch_event_rule.events_tuesday_schedule.name
-  target_id = "events-tuesday-lambda"
-  arn       = aws_lambda_function.news_agent.arn
-
-  input = jsonencode({
-    format = "event_post"
-  })
-}
-
-resource "aws_cloudwatch_event_rule" "events_saturday_schedule" {
-  name                = "${var.project_name}-events-saturday"
-  description         = "NL events post — Saturday 15:00 Amsterdam (13:00 UTC / CEST)"
-  schedule_expression = "cron(0 13 ? * SAT *)"
+resource "aws_cloudwatch_event_rule" "events_thursday_schedule" {
+  name                = "${var.project_name}-events-thursday"
+  description         = "NL events post — Thursday 18:00 Amsterdam (16:00 UTC / CEST). Thursday captures weekend + week-ahead planning intent with ticket lead time (utility content)."
+  schedule_expression = "cron(0 16 ? * THU *)"
   state               = "ENABLED"
 
   tags = {
-    Name        = "${var.project_name}-events-saturday"
+    Name        = "${var.project_name}-events-thursday"
     Environment = "production"
     ManagedBy   = "terraform"
   }
 }
 
-resource "aws_cloudwatch_event_target" "events_saturday_target" {
-  rule      = aws_cloudwatch_event_rule.events_saturday_schedule.name
-  target_id = "events-saturday-lambda"
+resource "aws_cloudwatch_event_target" "events_thursday_target" {
+  rule      = aws_cloudwatch_event_rule.events_thursday_schedule.name
+  target_id = "events-thursday-lambda"
   arn       = aws_lambda_function.news_agent.arn
 
   input = jsonencode({
@@ -600,20 +577,12 @@ resource "aws_lambda_permission" "allow_evening_eventbridge" {
   source_arn    = aws_cloudwatch_event_rule.evening_schedule.arn
 }
 
-resource "aws_lambda_permission" "allow_events_tuesday_eventbridge" {
-  statement_id  = "AllowExecutionFromEventBridgeEventsTuesday"
+resource "aws_lambda_permission" "allow_events_thursday_eventbridge" {
+  statement_id  = "AllowExecutionFromEventBridgeEventsThursday"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.news_agent.function_name
   principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.events_tuesday_schedule.arn
-}
-
-resource "aws_lambda_permission" "allow_events_saturday_eventbridge" {
-  statement_id  = "AllowExecutionFromEventBridgeEventsSaturday"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.news_agent.function_name
-  principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.events_saturday_schedule.arn
+  source_arn    = aws_cloudwatch_event_rule.events_thursday_schedule.arn
 }
 
 resource "aws_lambda_permission" "allow_daily_fact_eventbridge" {
@@ -629,14 +598,14 @@ resource "aws_lambda_permission" "allow_daily_fact_eventbridge" {
 # (60-day TTL) for a fresh one and write it back to Secrets Manager.
 
 resource "aws_lambda_function" "token_refresh" {
-  s3_bucket        = aws_s3_bucket.results.id
-  s3_key           = aws_s3_object.lambda_zip.key
-  function_name    = "${var.project_name}-token-refresh"
-  role             = aws_iam_role.lambda_role.arn
-  handler          = "token_refresher.lambda_handler"
-  runtime          = "python3.12"
-  timeout          = 60
-  memory_size      = 256
+  s3_bucket     = aws_s3_bucket.results.id
+  s3_key        = aws_s3_object.lambda_zip.key
+  function_name = "${var.project_name}-token-refresh"
+  role          = aws_iam_role.lambda_role.arn
+  handler       = "token_refresher.lambda_handler"
+  runtime       = "python3.12"
+  timeout       = 60
+  memory_size   = 256
 
   source_code_hash = filebase64sha256("../../lambda_deployment.zip")
 

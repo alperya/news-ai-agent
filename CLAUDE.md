@@ -1,6 +1,6 @@
 # News AI Agent — Project Context
 
-Dutch-language social media automation: scrapes NOS/RTL news + 8 NL event sources, generates AI content with Claude, publishes photo posts and Reels to **Instagram** and the same Reels as **YouTube Shorts** — 2× daily for news, twice weekly for events (events: Instagram only).
+Dutch-language social media automation: scrapes NOS/RTL news + 8 NL event sources, generates AI content with Claude, publishes photo posts and Reels to **Instagram** and the same Reels as **YouTube Shorts** — 2× daily for news, weekly for events on Thursday (events go to Instagram + Facebook, but not YouTube).
 
 ---
 
