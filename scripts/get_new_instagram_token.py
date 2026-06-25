@@ -10,11 +10,15 @@ How to get the short-lived token:
   1. Go to https://developers.facebook.com/tools/explorer/
   2. Select your app (APP_ID: check .env)
   3. Click "Generate Access Token"
-  4. Select permissions:
+  4. Select permissions (select ALL of these so no feature loses access):
        ✅ instagram_basic
        ✅ instagram_content_publish
+       ✅ instagram_manage_insights
+       ✅ instagram_manage_comments
        ✅ pages_read_engagement
        ✅ pages_show_list
+       ✅ pages_manage_posts      ← required for Facebook Page Stories
+       ✅ business_management
   5. Authorize — copy the token that appears in the top field
   6. Paste it here when prompted
 """
@@ -52,11 +56,15 @@ print(
     "\n1. Visit: https://developers.facebook.com/tools/explorer/"
     f"\n2. Select app with ID: {META_APP_ID}"
     "\n3. Click 'Generate Access Token'"
-    "\n4. Required permissions:"
+    "\n4. Required permissions (select ALL — missing ones disable features):"
     "\n     ✅ instagram_basic"
     "\n     ✅ instagram_content_publish"
+    "\n     ✅ instagram_manage_insights"
+    "\n     ✅ instagram_manage_comments"
     "\n     ✅ pages_read_engagement"
     "\n     ✅ pages_show_list"
+    "\n     ✅ pages_manage_posts      (required for Facebook Page Stories)"
+    "\n     ✅ business_management"
     "\n5. Authorize and copy the token from the top field\n"
 )
 

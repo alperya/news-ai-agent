@@ -117,6 +117,9 @@ def get_secrets():
     # Feature flag: daily Dutch-fact Instagram Story (default off)
     if 'ENABLE_INSTAGRAM_STORIES' in secret:
         os.environ['ENABLE_INSTAGRAM_STORIES'] = secret['ENABLE_INSTAGRAM_STORIES']
+    # Connected Facebook Page — when set, the Story is cross-posted to FB
+    if 'FACEBOOK_PAGE_ID' in secret:
+        os.environ['FACEBOOK_PAGE_ID'] = secret['FACEBOOK_PAGE_ID']
 
     # Set AI prompts if available
     if 'AI_PROMPT_BATCH_SELECTION' in secret:

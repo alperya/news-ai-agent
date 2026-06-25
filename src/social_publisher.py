@@ -465,3 +465,125 @@ class InstagramPublisher:
         except Exception as e:
             logger.error(f"❌ Error posting Story: {str(e)}")
             raise
+
+
+class FacebookPublisher:
+    """Publish video Stories to a Facebook Page via the Graph API.
+
+    Uses the same Meta user token as Instagram (INSTAGRAM_ACCESS_TOKEN); the
+    Page access token is derived from it at runtime, so there is no separate
+    token to manage. Requires the `pages_manage_posts` permission.
+    """
+
+    def __init__(self):
+        self.user_token = os.getenv('INSTAGRAM_ACCESS_TOKEN')
+        self.page_id = os.getenv('FACEBOOK_PAGE_ID')
+        if not self.user_token:
+            raise ValueError("INSTAGRAM_ACCESS_TOKEN not found in environment")
+        if not self.page_id:
+            raise ValueError("FACEBOOK_PAGE_ID not found in environment")
+        self.graph_api_url = "https://graph.facebook.com/v24.0"
+        self._page_token = None
+
+    def _get_page_token(self) -> str:
+        """Derive the Page access token from the user token (cached)."""
+        if self._page_token:
+            return self._page_token
+        resp = requests.get(
+            f"{self.graph_api_url}/{self.page_id}",
+            params={'fields': 'access_token', 'access_token': self.user_token},
+        )
+        resp.raise_for_status()
+        token = resp.json().get('access_token')
+        if not token:
+            raise ValueError("Could not derive Facebook Page access token")
+        self._page_token = token
+        return token
+
+    def _wait_upload_complete(self, video_id: str, page_token: str,
+                              max_attempts: int = 60, delay: int = 5) -> None:
+        """Poll until Meta finishes fetching/processing the uploaded video."""
+        status_url = f"{self.graph_api_url}/{video_id}"
+        for attempt in range(max_attempts):
+            resp = requests.get(status_url, params={'fields': 'status', 'access_token': page_token})
+            resp.raise_for_status()
+            status = resp.json().get('status', {})
+            up = (status.get('uploading_phase') or {}).get('status')
+            proc = (status.get('processing_phase') or {}).get('status')
+            if up == 'error' or proc == 'error':
+                raise ValueError(f"Facebook video processing error: {status}")
+            if up == 'complete' and proc in ('complete', None, 'not_started'):
+                # uploaded; processing may still be in_progress but finish can proceed
+                if proc != 'in_progress':
+                    logger.info(f"✅ FB video ready (attempt {attempt + 1})")
+                    return
+            logger.info(f"⏳ FB video processing... (attempt {attempt + 1}/{max_attempts}, "
+                        f"upload={up}, processing={proc})")
+            time.sleep(delay)
+        raise ValueError("Facebook video not ready after maximum attempts")
+
+    def publish_story(self, video_url: str, dry_run: bool = False):
+        """Publish a video to the Facebook Page's Stories.
+
+        Args:
+            video_url: Public URL to the video (must be fetchable by Meta).
+            dry_run:   If True, skip actual API calls.
+        """
+        if dry_run:
+            logger.info("[DRY RUN] Would post Facebook Story")
+            logger.info(f"[DRY RUN] Video URL: {video_url}")
+            return {'id': 'dry_run', 'type': 'facebook_story'}
+
+        try:
+            page_token = self._get_page_token()
+
+            # Step 1: Start an upload session
+            logger.info("📦 Starting Facebook video-story upload session...")
+            start = requests.post(
+                f"{self.graph_api_url}/{self.page_id}/video_stories",
+                params={'upload_phase': 'start', 'access_token': page_token},
+            )
+            start.raise_for_status()
+            sj = start.json()
+            video_id = sj['video_id']
+            upload_url = sj['upload_url']
+            logger.info(f"✅ Upload session: video_id={video_id}")
+
+            # Step 2: Hand Meta the hosted file URL to fetch
+            logger.info("📤 Uploading video to Facebook (hosted file)...")
+            up = requests.post(
+                upload_url,
+                headers={'Authorization': f'OAuth {page_token}', 'file_url': video_url},
+            )
+            up.raise_for_status()
+
+            # Step 3: Wait until the upload is fetched/processed
+            logger.info("⏳ Waiting for Facebook to process the video...")
+            self._wait_upload_complete(video_id, page_token)
+
+            # Step 4: Finish → publishes the Story
+            logger.info("📤 Publishing Facebook Story...")
+            fin = requests.post(
+                f"{self.graph_api_url}/{self.page_id}/video_stories",
+                params={'upload_phase': 'finish', 'video_id': video_id, 'access_token': page_token},
+            )
+            fin.raise_for_status()
+            fj = fin.json()
+            post_id = fj.get('post_id') or fj.get('id')
+            logger.info(f"✅ Facebook Story published: {post_id}")
+            logger.info(json.dumps({
+                "event": "post_published",
+                "post_id": post_id,
+                "post_type": "facebook_story",
+            }))
+            return {'id': post_id, 'video_id': video_id, 'type': 'facebook_story'}
+
+        except requests.exceptions.HTTPError as e:
+            error_msg = f"Facebook Story API error: {str(e)}"
+            if hasattr(e.response, 'text'):
+                error_msg += f" - {e.response.text}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        except Exception as e:
+            logger.error(f"❌ Error posting Facebook Story: {str(e)}")
+            raise

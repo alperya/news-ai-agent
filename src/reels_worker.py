@@ -27,7 +27,7 @@ _dir = os.path.dirname(__file__)
 sys.path.insert(0, os.path.join(_dir, 'src'))
 sys.path.insert(0, _dir)
 
-from social_publisher import InstagramPublisher
+from social_publisher import InstagramPublisher, FacebookPublisher
 from notifier import send_alert, alert_on_exception, detect_error_type
 
 logger = logging.getLogger()
@@ -51,6 +51,8 @@ def _load_secrets():
     os.environ['INSTAGRAM_ACCOUNT_ID'] = secret['INSTAGRAM_ACCOUNT_ID']
     if 'ENABLE_INSTAGRAM_STORIES' in secret:
         os.environ['ENABLE_INSTAGRAM_STORIES'] = secret['ENABLE_INSTAGRAM_STORIES']
+    if 'FACEBOOK_PAGE_ID' in secret:
+        os.environ['FACEBOOK_PAGE_ID'] = secret['FACEBOOK_PAGE_ID']
     logger.info("✅ Secrets loaded")
 
 
@@ -125,6 +127,19 @@ def lambda_handler(event, context):
                     logger.error(f"❌ Story publish failed: {e}", exc_info=True)
                     alert_on_exception("Story publish failed", e, detect_error_type(e))
                     errors.append(f"story: {e}")
+
+                # Cross-post the same video to the connected Facebook Page Story.
+                # Best-effort: a Facebook failure never fails the run (Instagram
+                # is the primary surface). Only runs when FACEBOOK_PAGE_ID is set.
+                if os.environ.get('FACEBOOK_PAGE_ID'):
+                    try:
+                        results['facebook_story'] = FacebookPublisher().publish_story(
+                            video_url=video_url, dry_run=False,
+                        )
+                        logger.info(f"✅ Facebook Story published: {results['facebook_story']}")
+                    except Exception as e:
+                        logger.error(f"❌ Facebook Story publish failed (non-critical): {e}", exc_info=True)
+                        alert_on_exception("Facebook Story publish failed", e, detect_error_type(e))
 
         if errors:
             return {
