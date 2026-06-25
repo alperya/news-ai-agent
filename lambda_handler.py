@@ -18,7 +18,7 @@ sys.path.insert(0, _dir)
 
 from news_scraper import DutchNewsScraper
 from ai_agent import NewsAIAgent
-from social_publisher import InstagramPublisher, FacebookPublisher
+from publishing import build_crossposter, REEL, PHOTO
 from video import create_news_video
 from event_scraper import EventScraper
 from video.event_card import generate_carousel_slides, generate_reels_video
@@ -502,22 +502,15 @@ def _run_event_pipeline(timestamp: str, bucket_name: str, ai_agent, dry_run: boo
         logger.info(f"✅ Reels video uploaded to S3: s3://{bucket_name}/{reel_s3_key}")
         logger.info(f"🔗 Pre-signed URL (1h): {video_url[:120]}…")
 
-        # ── Stage 5: Publish as Reels ─────────────────────────────────────────
+        # ── Stage 5: Publish as Reels (Instagram primary + Facebook best-effort) ─
         logger.info(f"\n📱 STAGE 5: Publishing REELS...")
-        publisher = InstagramPublisher()
-        publish_result = publisher.publish_reels(
-            content=caption, video_url=video_url, dry_run=dry_run,
+        outcome = build_crossposter().publish(
+            REEL, media_url=video_url, caption=caption, dry_run=dry_run,
         )
-        logger.info(f"✅ Reels published: {publish_result}")
-        summary["publish_result"] = str(publish_result)
-
-        # Cross-post the same Reel to the connected Facebook Page (best-effort)
-        if not dry_run and os.environ.get('FACEBOOK_PAGE_ID'):
-            try:
-                fb = FacebookPublisher().publish_reel(video_url=video_url, caption=caption)
-                logger.info(f"✅ Facebook Reel published: {fb}")
-            except Exception as fb_err:
-                logger.warning(f"⚠️ Facebook Reel publish failed (non-critical): {fb_err}")
+        if outcome['primary_error']:
+            raise outcome['primary_error']
+        logger.info(f"✅ Reels published: {outcome['results']}")
+        summary["publish_result"] = str(outcome['results'])
 
         # Final S3 records
         save_to_s3(selected_events, f"events_{timestamp}.json", bucket_name)
@@ -798,22 +791,13 @@ def lambda_handler(event, context):
                     result = {'status': 'queued', 'publishers': [reels_fn, 'youtube'], 's3_key': s3_video_key}
 
                 else:
-                    publisher = InstagramPublisher()
-                    result = publisher.publish_post(
-                        content=post['full_post'],
-                        image_url=post.get('image_url'),
-                        dry_run=False,
+                    # Instagram primary (+ Facebook best-effort) photo post
+                    outcome = build_crossposter().publish(
+                        PHOTO, media_url=post.get('image_url'), caption=post['full_post'],
                     )
-
-                    # Cross-post the same photo to the connected Facebook Page (best-effort)
-                    if os.environ.get('FACEBOOK_PAGE_ID') and post.get('image_url'):
-                        try:
-                            fb = FacebookPublisher().publish_photo(
-                                image_url=post['image_url'], caption=post['full_post'],
-                            )
-                            logger.info(f"✅ Facebook photo published: {fb}")
-                        except Exception as fb_err:
-                            logger.warning(f"⚠️ Facebook photo publish failed (non-critical): {fb_err}")
+                    if outcome['primary_error']:
+                        raise outcome['primary_error']
+                    result = outcome['results']
 
                 logger.info(f"✅ Post {idx} processed: {result}")
                 published_count += 1

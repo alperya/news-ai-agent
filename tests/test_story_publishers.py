@@ -15,6 +15,39 @@ os.environ.setdefault("INSTAGRAM_ACCESS_TOKEN", "user-token")
 os.environ.setdefault("INSTAGRAM_ACCOUNT_ID", "ig-acct")
 
 from social_publisher import InstagramPublisher, FacebookPublisher
+from publishing import REEL, PHOTO, STORY
+
+
+class TestAdapterInterface:
+    """The unified ChannelPublisher.publish(kind) delegates to the right method."""
+
+    def test_instagram_supports_all_kinds(self):
+        ig = InstagramPublisher()
+        assert ig.name == "instagram"
+        assert all(ig.supports(k) for k in (REEL, PHOTO, STORY))
+        assert not ig.supports("carousel")
+
+    def test_facebook_supports_all_kinds(self):
+        os.environ["FACEBOOK_PAGE_ID"] = "page1"
+        fb = FacebookPublisher()
+        assert fb.name == "facebook"
+        assert all(fb.supports(k) for k in (REEL, PHOTO, STORY))
+
+    def test_instagram_publish_delegates_by_kind(self):
+        ig = InstagramPublisher()
+        with patch.object(ig, "publish_story") as m:
+            ig.publish(STORY, media_url="v.mp4")
+            m.assert_called_once_with(video_url="v.mp4", dry_run=False)
+        with patch.object(ig, "publish_reels") as m:
+            ig.publish(REEL, media_url="v.mp4", caption="c")
+            m.assert_called_once_with(content="c", video_url="v.mp4", dry_run=False)
+
+    def test_facebook_publish_delegates_by_kind(self):
+        os.environ["FACEBOOK_PAGE_ID"] = "page1"
+        fb = FacebookPublisher()
+        with patch.object(fb, "publish_reel") as m:
+            fb.publish(REEL, media_url="v.mp4", caption="c")
+            m.assert_called_once_with(video_url="v.mp4", caption="c", dry_run=False)
 
 
 def _resp(json_data):

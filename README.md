@@ -99,7 +99,8 @@ python3 scripts/update_secrets.py
 │   ├── ai_agent.py                # Claude AI content processing + event curation
 │   ├── news_scraper.py            # RSS scraping (NOS, RTL Nieuws)
 │   ├── event_scraper.py           # 📅 8-source NL event scraper
-│   ├── social_publisher.py        # Instagram publishing (photo + Reels + Stories)
+│   ├── publishing.py              # Channel-agnostic CrossPoster (fan-out to all channels)
+│   ├── social_publisher.py        # Channel adapters: Instagram + Facebook (photo/Reels/Stories)
 │   ├── dutch_facts.py             # 💡 Daily fact pool + S3 LRU rotation
 │   ├── youtube_publisher.py       # YouTube Data API v3 — upload as Short
 │   ├── youtube_worker.py          # Async Lambda handler for YouTube Shorts

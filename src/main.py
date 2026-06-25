@@ -279,15 +279,12 @@ class NewsAIPipeline:
         logger.info(f"⚠️  LIVE MODE - Will actually post to {platform_name}!")
         
         try:
-            if platform == 'instagram':
-                from social_publisher import InstagramPublisher
-                publisher = InstagramPublisher()
-                logger.info("✅ Instagram client initialized")
-            else:
-                from social_publisher import TwitterPublisher
-                publisher = TwitterPublisher()
-                logger.info("✅ Twitter client initialized")
-            
+            # Local CLI publishes to Instagram only. Other channels run in the
+            # Lambda pipeline via the CrossPoster (src/publishing.py).
+            from social_publisher import InstagramPublisher
+            publisher = InstagramPublisher()
+            logger.info("✅ Instagram client initialized")
+
             posted_results = []
             
             # Post only the first post (one post per run)

@@ -91,6 +91,9 @@ local_only/
 # Local Claude Code config (personal preferences, not for sharing)
 .claude/local.md
 
+# Implementation plans kept as "lessons learned" (repurposed as blog content)
+learnings/
+
 # AI Prompt templates (contain custom instructions)
 prompts/*.txt
 !prompts/*.txt.example

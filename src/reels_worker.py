@@ -27,7 +27,7 @@ _dir = os.path.dirname(__file__)
 sys.path.insert(0, os.path.join(_dir, 'src'))
 sys.path.insert(0, _dir)
 
-from social_publisher import InstagramPublisher, FacebookPublisher
+from publishing import build_crossposter, REEL, STORY
 from notifier import send_alert, alert_on_exception, detect_error_type
 
 logger = logging.getLogger()
@@ -99,59 +99,30 @@ def lambda_handler(event, context):
         )
         logger.info("✅ Pre-signed URL generated")
 
-        publisher = InstagramPublisher()
+        # One dispatcher fans each artifact out to Instagram (primary) + every
+        # configured secondary channel (Facebook today). Best-effort handling
+        # and alerting live in CrossPoster; here we only map a primary failure
+        # to a non-200 response.
+        crossposter = build_crossposter()
         results: dict = {}
         errors: list = []
 
-        # ── Reel ──
+        # ── Reel ── (IG + FB)
         if publish_reel:
-            try:
-                results['reel'] = publisher.publish_reels(
-                    content=post_content, video_url=video_url, dry_run=False,
-                )
-                logger.info(f"✅ Reel published: {results['reel'].get('url', results['reel'])}")
-            except Exception as e:
-                logger.error(f"❌ Reel publish failed: {e}", exc_info=True)
-                alert_on_exception("Reels publish failed", e, detect_error_type(e))
-                errors.append(f"reel: {e}")
+            outcome = crossposter.publish(REEL, media_url=video_url, caption=post_content)
+            results['reel'] = outcome['results']
+            if outcome['primary_error']:
+                errors.append(f"reel: {outcome['primary_error']}")
 
-            # Cross-post the same video to the connected Facebook Page as a Reel.
-            # Best-effort: a Facebook failure never fails the run.
-            if os.environ.get('FACEBOOK_PAGE_ID'):
-                try:
-                    results['facebook_reel'] = FacebookPublisher().publish_reel(
-                        video_url=video_url, caption=post_content, dry_run=False,
-                    )
-                    logger.info(f"✅ Facebook Reel published: {results['facebook_reel']}")
-                except Exception as e:
-                    logger.error(f"❌ Facebook Reel publish failed (non-critical): {e}", exc_info=True)
-                    alert_on_exception("Facebook Reel publish failed", e, detect_error_type(e))
-
-        # ── Story ── (independent of the Reel; gated by feature flag)
+        # ── Story ── (IG + FB; gated by the daily-story feature flag)
         if publish_story:
             if not stories_enabled:
                 logger.info("⏸️  ENABLE_INSTAGRAM_STORIES disabled — skipping story")
             else:
-                try:
-                    results['story'] = publisher.publish_story(video_url=video_url, dry_run=False)
-                    logger.info(f"✅ Story published: {results['story']}")
-                except Exception as e:
-                    logger.error(f"❌ Story publish failed: {e}", exc_info=True)
-                    alert_on_exception("Story publish failed", e, detect_error_type(e))
-                    errors.append(f"story: {e}")
-
-                # Cross-post the same video to the connected Facebook Page Story.
-                # Best-effort: a Facebook failure never fails the run (Instagram
-                # is the primary surface). Only runs when FACEBOOK_PAGE_ID is set.
-                if os.environ.get('FACEBOOK_PAGE_ID'):
-                    try:
-                        results['facebook_story'] = FacebookPublisher().publish_story(
-                            video_url=video_url, dry_run=False,
-                        )
-                        logger.info(f"✅ Facebook Story published: {results['facebook_story']}")
-                    except Exception as e:
-                        logger.error(f"❌ Facebook Story publish failed (non-critical): {e}", exc_info=True)
-                        alert_on_exception("Facebook Story publish failed", e, detect_error_type(e))
+                outcome = crossposter.publish(STORY, media_url=video_url)
+                results['story'] = outcome['results']
+                if outcome['primary_error']:
+                    errors.append(f"story: {outcome['primary_error']}")
 
         if errors:
             return {

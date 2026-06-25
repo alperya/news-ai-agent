@@ -1,4 +1,4 @@
-"""Social Media Publisher"""
+"""Social Media Publisher — Instagram + Facebook channel adapters."""
 import json
 import os
 import logging
@@ -6,66 +6,29 @@ import requests
 import time
 from typing import Optional
 
-try:
-    import tweepy
-    HAS_TWEEPY = True
-except ImportError:
-    tweepy = None
-    HAS_TWEEPY = False
+from publishing import ChannelPublisher, REEL, PHOTO, STORY
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class TwitterPublisher:
-    def __init__(self):
-        if not HAS_TWEEPY:
-            raise ImportError("tweepy is not installed. Install it to enable Twitter publishing.")
 
-        self.api_key = os.getenv('TWITTER_API_KEY')
-        self.api_secret = os.getenv('TWITTER_API_SECRET')
-        self.access_token = os.getenv('TWITTER_ACCESS_TOKEN')
-        self.access_token_secret = os.getenv('TWITTER_ACCESS_TOKEN_SECRET')
-        
-        if not all([self.api_key, self.api_secret, self.access_token, self.access_token_secret]):
-            raise ValueError("Missing Twitter credentials")
-        
-        self.client = tweepy.Client(  # type: ignore[attr-defined]
-            consumer_key=self.api_key,
-            consumer_secret=self.api_secret,
-            access_token=self.access_token,
-            access_token_secret=self.access_token_secret
-        )
-    
-    def publish_post(self, content: str, dry_run: bool = False):
-        if dry_run:
-            logger.info(f"[DRY RUN] Would post:\n{content}")
-            return {'id': 'dry_run', 'text': content}
-        
-        try:
-            response = self.client.create_tweet(text=content)
-            data = getattr(response, "data", {}) or {}  # type: ignore[attr-defined]
-            logger.info(f"✅ Posted: {data.get('id')}")
-            return data
-        except (tweepy.Forbidden if tweepy is not None else Exception) as e:  # type: ignore[attr-defined]
-            # Check if it's a rate limit error
-            error_str = str(e)
-            if "You are not permitted to perform this action" in error_str:
-                logger.error("❌ Twitter API Rate Limit Exceeded!")
-                logger.error("   Daily limit of 17 tweets reached (Essential tier)")
-                logger.error("   Limit resets in ~24 hours")
-                logger.info("💡 Solutions:")
-                logger.info("   1. Wait 24 hours for limit reset")
-                logger.info("   2. Use Instagram instead (unlimited)")
-                logger.info("   3. Upgrade to Premium tier")
-                logger.info("   📚 See: TWITTER_403_EXPLAINED.md")
-            raise
-        except Exception as e:
-            logger.error(f"❌ Error posting to Twitter: {str(e)}")
-            raise
-
-
-class InstagramPublisher:
+class InstagramPublisher(ChannelPublisher):
     """Instagram Publisher using Meta Graph API."""
+
+    name = "instagram"
+
+    def supports(self, kind: str) -> bool:
+        return kind in (REEL, PHOTO, STORY)
+
+    def publish(self, kind: str, *, media_url: str, caption: str = "",
+                dry_run: bool = False) -> dict:
+        if kind == REEL:
+            return self.publish_reels(content=caption, video_url=media_url, dry_run=dry_run)
+        if kind == PHOTO:
+            return self.publish_post(content=caption, image_url=media_url, dry_run=dry_run)
+        if kind == STORY:
+            return self.publish_story(video_url=media_url, dry_run=dry_run)
+        raise ValueError(f"Instagram does not support kind '{kind}'")
 
     def __init__(self):
         self.access_token = os.getenv('INSTAGRAM_ACCESS_TOKEN')
@@ -203,95 +166,6 @@ class InstagramPublisher:
             raise ValueError(error_msg)
         except Exception as e:
             logger.error(f"❌ Error posting to Instagram: {str(e)}")
-            raise
-
-    def publish_carousel(self, image_urls: list, caption: str, dry_run: bool = False) -> dict:
-        """Publish a carousel post (2–10 images) to Instagram.
-
-        Args:
-            image_urls: List of public image URLs (first = overview card, rest = event slides).
-            caption:    Caption text for the carousel post.
-            dry_run:    If True, skip API calls.
-
-        Returns:
-            dict with media id and URL.
-        """
-        if dry_run:
-            logger.info(f"[DRY RUN] Would post carousel ({len(image_urls)} slides) to Instagram")
-            return {"id": "dry_run", "slides": len(image_urls)}
-
-        if not (2 <= len(image_urls) <= 10):
-            raise ValueError(f"Carousel requires 2–10 images, got {len(image_urls)}")
-
-        try:
-            self._ensure_valid_token()
-
-            # Step 1: Create a carousel item container for each image
-            child_ids: list = []
-            for i, url in enumerate(image_urls):
-                logger.info(f"   📷 Creating carousel item {i+1}/{len(image_urls)}...")
-                resp = requests.post(
-                    f"{self.graph_api_url}/{self.instagram_account_id}/media",
-                    params={
-                        "image_url": url,
-                        "is_carousel_item": "true",
-                        "access_token": self.access_token,
-                    },
-                )
-                resp.raise_for_status()
-                child_id = resp.json().get("id")
-                if not child_id:
-                    raise ValueError(f"No id returned for carousel item {i+1}")
-
-                # Wait for child item to be ready before moving on
-                if not self._check_container_status(child_id, max_attempts=20, delay=2):
-                    raise ValueError(f"Carousel item {i+1} not ready after max attempts")
-                child_ids.append(child_id)
-                logger.info(f"   ✅ Carousel item {i+1} ready: {child_id}")
-
-            # Step 2: Create the parent carousel container
-            logger.info(f"📦 Creating carousel container ({len(child_ids)} children)...")
-            resp = requests.post(
-                f"{self.graph_api_url}/{self.instagram_account_id}/media",
-                params={
-                    "media_type": "CAROUSEL",
-                    "caption": caption,
-                    "children": ",".join(child_ids),
-                    "access_token": self.access_token,
-                },
-            )
-            resp.raise_for_status()
-            creation_id = resp.json().get("id")
-            if not creation_id:
-                raise ValueError("No creation_id returned for carousel container")
-
-            logger.info(f"✅ Carousel container created: {creation_id}")
-
-            # Step 3: Wait for carousel container to be ready
-            if not self._check_container_status(creation_id, max_attempts=30, delay=2):
-                raise ValueError("Carousel container not ready after max attempts")
-
-            # Step 4: Publish
-            self._ensure_valid_token()
-            logger.info("📤 Publishing carousel...")
-            resp = requests.post(
-                f"{self.graph_api_url}/{self.instagram_account_id}/media_publish",
-                params={"creation_id": creation_id, "access_token": self.access_token},
-            )
-            resp.raise_for_status()
-            media_id = resp.json().get("id")
-            logger.info(f"✅ Carousel posted to Instagram: {media_id} ({len(image_urls)} slides)")
-            return {"id": media_id, "creation_id": creation_id, "slides": len(image_urls),
-                    "url": f"https://www.instagram.com/p/{media_id}/"}
-
-        except requests.exceptions.HTTPError as e:
-            error_msg = f"Instagram Carousel API error: {str(e)}"
-            if hasattr(e.response, "text"):
-                error_msg += f" — {e.response.text}"
-            logger.error(error_msg)
-            raise ValueError(error_msg)
-        except Exception as e:
-            logger.error(f"❌ Error publishing carousel: {str(e)}")
             raise
 
     def publish_reels(self, content: str, video_url: str, dry_run: bool = False):
@@ -467,13 +341,15 @@ class InstagramPublisher:
             raise
 
 
-class FacebookPublisher:
-    """Publish video Stories to a Facebook Page via the Graph API.
+class FacebookPublisher(ChannelPublisher):
+    """Publish Reels / photos / Stories to a Facebook Page via the Graph API.
 
     Uses the same Meta user token as Instagram (INSTAGRAM_ACCESS_TOKEN); the
     Page access token is derived from it at runtime, so there is no separate
     token to manage. Requires the `pages_manage_posts` permission.
     """
+
+    name = "facebook"
 
     def __init__(self):
         self.user_token = os.getenv('INSTAGRAM_ACCESS_TOKEN')
@@ -484,6 +360,19 @@ class FacebookPublisher:
             raise ValueError("FACEBOOK_PAGE_ID not found in environment")
         self.graph_api_url = "https://graph.facebook.com/v24.0"
         self._page_token = None
+
+    def supports(self, kind: str) -> bool:
+        return kind in (REEL, PHOTO, STORY)
+
+    def publish(self, kind: str, *, media_url: str, caption: str = "",
+                dry_run: bool = False) -> dict:
+        if kind == REEL:
+            return self.publish_reel(video_url=media_url, caption=caption, dry_run=dry_run)
+        if kind == PHOTO:
+            return self.publish_photo(image_url=media_url, caption=caption, dry_run=dry_run)
+        if kind == STORY:
+            return self.publish_story(video_url=media_url, dry_run=dry_run)
+        raise ValueError(f"Facebook does not support kind '{kind}'")
 
     def _get_page_token(self) -> str:
         """Derive the Page access token from the user token (cached)."""
