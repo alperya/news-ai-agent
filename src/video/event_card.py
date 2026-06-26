@@ -279,16 +279,30 @@ def create_event_list_slide(
     return output_path
 
 
+def _slide_seconds(n_events: int, is_cover: bool = False) -> float:
+    """On-screen time for a slide, sized to its reading load (read-once pacing).
+
+    Cover is light (title + count); a list slide scales with how many events it
+    holds. This drives a content-dynamic total video length instead of padding
+    to a fixed 60 s, which keeps the completion rate high.
+    """
+    if is_cover:
+        return 4.0
+    return round(min(11.0, 3.0 + 1.6 * n_events), 2)
+
+
 def generate_carousel_slides(
     events: List[dict],
     date_range: str,
     tmp_prefix: str,
-) -> List[str]:
+) -> tuple:
     """Generate all carousel slides: 1 cover + N list slides (4 events each).
 
-    Returns list of local file paths ordered cover → list slides.
+    Returns ``(paths, durations)`` ordered cover → list slides, where each
+    duration is the slide's read-once on-screen time (seconds).
     """
     paths: List[str] = []
+    durations: List[float] = []
 
     cover_path = f"{tmp_prefix}_cover.jpg"
     create_cover_slide(
@@ -297,6 +311,7 @@ def generate_carousel_slides(
         output_path=cover_path,
     )
     paths.append(cover_path)
+    durations.append(_slide_seconds(0, is_cover=True))
 
     chunks = [events[i:i + EVENTS_PER_SLIDE] for i in range(0, len(events), EVENTS_PER_SLIDE)]
     for slide_idx, chunk in enumerate(chunks, start=2):
@@ -308,24 +323,30 @@ def generate_carousel_slides(
             slide_number=slide_idx,
         )
         paths.append(list_path)
+        durations.append(_slide_seconds(len(chunk)))
 
-    return paths
+    return paths, durations
 
 
 def generate_reels_video(
     slide_paths: List[str],
     output_path: str,
+    slide_durations: Optional[List[float]] = None,
     music_path: Optional[str] = None,
-    target_duration: float = 60.0,
-    slide_duration: float = 5.0,
+    max_duration: float = 45.0,
 ) -> str:
-    """Create a 1080×1920 Reels video (~60 s) from carousel slides with music.
+    """Create a 1080×1920 Reels video from carousel slides with music.
 
-    Slides loop to fill target_duration (5 s each — sweet spot for Instagram
-    Reels: long enough to read, short enough to hold attention).
+    Plays each slide EXACTLY ONCE for its own reading time — no looping. The old
+    version padded every video to 60 s by looping slides 2–3×, which tanked the
+    completion rate (avg watch ~7 s / 60 s ≈ 11 %). Completion rate is the
+    strongest Reels ranking signal, so a content-sized read-once video (~30 s)
+    roughly triples it. ``slide_durations`` (parallel to ``slide_paths``) gives
+    per-slide seconds; if the total would exceed ``max_duration`` every slide is
+    scaled down to fit. Music is trimmed to the exact total. Falls back to a
+    flat 7 s/slide when durations are not supplied.
     Built entirely with ffmpeg concat demuxer for maximum player compatibility.
     """
-    import math
     import os
     import subprocess
     from pathlib import Path
@@ -337,18 +358,25 @@ def generate_reels_video(
     if not slide_paths:
         raise ValueError("No slide paths provided to generate_reels_video")
 
+    durations = list(slide_durations) if slide_durations else [7.0] * len(slide_paths)
+    if len(durations) != len(slide_paths):
+        raise ValueError("slide_durations must match slide_paths length")
+    # Keep the read-once total within the cap (scale every slide proportionally)
+    total = sum(durations)
+    if total > max_duration:
+        scale = max_duration / total
+        durations = [d * scale for d in durations]
+
     # Slides are already native 1080×1920 — use them directly, no composition step
-    # Build ffmpeg concat list — loop slides to fill target_duration
+    # Each slide shown ONCE for its own duration (no looping).
     # Use absolute paths so ffmpeg resolves them correctly regardless of cwd
     abs_frames = [os.path.abspath(p) for p in slide_paths]
-    total_clips = math.ceil(target_duration / slide_duration)
     concat_lines: List[str] = []
-    for i in range(total_clips):
-        p = abs_frames[i % len(abs_frames)]
+    for p, d in zip(abs_frames, durations):
         concat_lines.append(f"file '{p}'")
-        concat_lines.append(f"duration {slide_duration}")
+        concat_lines.append(f"duration {d}")
     # ffmpeg concat needs the last file listed once more without duration
-    concat_lines.append(f"file '{abs_frames[(total_clips - 1) % len(abs_frames)]}'")
+    concat_lines.append(f"file '{abs_frames[-1]}'")
 
     concat_file = output_path + "_concat.txt"
     with open(concat_file, "w") as f:
@@ -369,7 +397,7 @@ def generate_reels_video(
         raise RuntimeError(f"ffmpeg video pass failed:\n{r.stderr[-1000:]}")
 
     # Step 2: computed duration (avoids ffprobe dependency)
-    actual_dur = total_clips * slide_duration
+    actual_dur = sum(durations)
     fade_start = max(0.0, actual_dur - 3.0)
 
     # Step 3: mux audio trimmed to exactly actual_dur

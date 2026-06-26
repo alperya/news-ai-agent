@@ -493,34 +493,44 @@ class TestGenerateCarouselSlides:
         from video.event_card import generate_carousel_slides
         with patch("video.event_card.create_cover_slide"), \
              patch("video.event_card.create_event_list_slide"):
-            paths = generate_carousel_slides(self._events(4), "14–21 Jun", "/tmp/test")
+            paths, _ = generate_carousel_slides(self._events(4), "14–21 Jun", "/tmp/test")
         assert len(paths) == 2  # 1 cover + 1 list (4 / EVENTS_PER_SLIDE = 1 chunk)
 
     def test_5_events_produces_3_slides(self):
         from video.event_card import generate_carousel_slides
         with patch("video.event_card.create_cover_slide"), \
              patch("video.event_card.create_event_list_slide"):
-            paths = generate_carousel_slides(self._events(5), "14–21 Jun", "/tmp/test")
+            paths, _ = generate_carousel_slides(self._events(5), "14–21 Jun", "/tmp/test")
         assert len(paths) == 3  # 1 cover + 2 list: [0:4] + [4:5]
 
     def test_8_events_produces_3_slides(self):
         from video.event_card import generate_carousel_slides
         with patch("video.event_card.create_cover_slide"), \
              patch("video.event_card.create_event_list_slide"):
-            paths = generate_carousel_slides(self._events(8), "14–21 Jun", "/tmp/test")
+            paths, _ = generate_carousel_slides(self._events(8), "14–21 Jun", "/tmp/test")
         assert len(paths) == 3  # 1 cover + 2 list: [0:4] + [4:8]
 
     def test_12_events_produces_4_slides(self):
         from video.event_card import generate_carousel_slides
         with patch("video.event_card.create_cover_slide"), \
              patch("video.event_card.create_event_list_slide"):
-            paths = generate_carousel_slides(self._events(12), "14–21 Jun", "/tmp/test")
+            paths, _ = generate_carousel_slides(self._events(12), "14–21 Jun", "/tmp/test")
         assert len(paths) == 4  # 1 cover + 3 list: [0:4] + [4:8] + [8:12]
 
     def test_paths_have_expected_prefixes(self):
         from video.event_card import generate_carousel_slides
         with patch("video.event_card.create_cover_slide"), \
              patch("video.event_card.create_event_list_slide"):
-            paths = generate_carousel_slides(self._events(4), "14–21 Jun", "/tmp/myslide")
+            paths, _ = generate_carousel_slides(self._events(4), "14–21 Jun", "/tmp/myslide")
         assert paths[0] == "/tmp/myslide_cover.jpg"
         assert "/tmp/myslide_list" in paths[1]
+
+    def test_returns_content_scaled_durations(self):
+        from video.event_card import generate_carousel_slides
+        with patch("video.event_card.create_cover_slide"), \
+             patch("video.event_card.create_event_list_slide"):
+            paths, durations = generate_carousel_slides(self._events(6), "x", "/tmp/test")
+        assert len(durations) == len(paths) == 3   # cover + [4 events] + [2 events]
+        assert durations[0] == 4.0                 # cover is light
+        assert durations[1] > durations[2]         # denser slide gets more time
+        assert sum(durations) < 60                 # no 60s padding (read-once)

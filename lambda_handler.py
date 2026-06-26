@@ -477,15 +477,15 @@ def _run_event_pipeline(timestamp: str, bucket_name: str, ai_agent, dry_run: boo
         logger.info("\n🎨 STAGE 4: Generating Reels video...")
         s3_client = boto3.client("s3")
 
-        local_slides = generate_carousel_slides(
+        local_slides, slide_durations = generate_carousel_slides(
             events=selected_events,
             date_range=date_range,
             tmp_prefix=f"/tmp/event_{timestamp}",
         )
-        logger.info(f"✅ {len(local_slides)} slides generated")
+        logger.info(f"✅ {len(local_slides)} slides generated ({sum(slide_durations):.0f}s read-once)")
 
         reel_path = f"/tmp/event_{timestamp}_reel.mp4"
-        generate_reels_video(local_slides, reel_path)
+        generate_reels_video(local_slides, reel_path, slide_durations=slide_durations)
         logger.info(f"✅ Reels video generated: {reel_path}")
 
         # Upload video to S3 — dry_run uses a separate prefix so it's easy to find
