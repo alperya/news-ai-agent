@@ -489,48 +489,34 @@ class TestGenerateCarouselSlides:
         return [{"title": f"Event {i}", "date_label": "Sat 20 Jun", "location": "Amsterdam",
                  "venue": "Venue", "price": "Free", "emoji": "🎉"} for i in range(n)]
 
-    def test_4_events_produces_2_slides(self):
+    def _gen(self, n, prefix="/tmp/test"):
         from video.event_card import generate_carousel_slides
-        with patch("video.event_card.create_cover_slide"), \
-             patch("video.event_card.create_event_list_slide"):
-            paths, _ = generate_carousel_slides(self._events(4), "14–21 Jun", "/tmp/test")
-        assert len(paths) == 2  # 1 cover + 1 list (4 / EVENTS_PER_SLIDE = 1 chunk)
+        with patch("video.event_card.create_event_list_slide"):
+            return generate_carousel_slides(self._events(n), "14–21 Jun", prefix)
 
-    def test_5_events_produces_3_slides(self):
-        from video.event_card import generate_carousel_slides
-        with patch("video.event_card.create_cover_slide"), \
-             patch("video.event_card.create_event_list_slide"):
-            paths, _ = generate_carousel_slides(self._events(5), "14–21 Jun", "/tmp/test")
-        assert len(paths) == 3  # 1 cover + 2 list: [0:4] + [4:5]
+    def test_4_events_single_slide(self):
+        paths, _ = self._gen(4)
+        assert len(paths) == 1  # no cover; ≤4 events fit one slide
 
-    def test_8_events_produces_3_slides(self):
-        from video.event_card import generate_carousel_slides
-        with patch("video.event_card.create_cover_slide"), \
-             patch("video.event_card.create_event_list_slide"):
-            paths, _ = generate_carousel_slides(self._events(8), "14–21 Jun", "/tmp/test")
-        assert len(paths) == 3  # 1 cover + 2 list: [0:4] + [4:8]
+    def test_5_events_two_balanced_slides(self):
+        paths, _ = self._gen(5)
+        assert len(paths) == 2  # split 3 + 2 (no orphan)
 
-    def test_12_events_produces_4_slides(self):
-        from video.event_card import generate_carousel_slides
-        with patch("video.event_card.create_cover_slide"), \
-             patch("video.event_card.create_event_list_slide"):
-            paths, _ = generate_carousel_slides(self._events(12), "14–21 Jun", "/tmp/test")
-        assert len(paths) == 4  # 1 cover + 3 list: [0:4] + [4:8] + [8:12]
+    def test_8_events_two_slides(self):
+        paths, _ = self._gen(8)
+        assert len(paths) == 2  # 4 + 4
 
-    def test_paths_have_expected_prefixes(self):
-        from video.event_card import generate_carousel_slides
-        with patch("video.event_card.create_cover_slide"), \
-             patch("video.event_card.create_event_list_slide"):
-            paths, _ = generate_carousel_slides(self._events(4), "14–21 Jun", "/tmp/myslide")
-        assert paths[0] == "/tmp/myslide_cover.jpg"
-        assert "/tmp/myslide_list" in paths[1]
+    def test_more_than_8_caps_to_two_slides(self):
+        paths, _ = self._gen(12)
+        assert len(paths) == 2  # video caps at MAX_EVENTS_IN_VIDEO (8) → 4 + 4
 
-    def test_returns_content_scaled_durations(self):
-        from video.event_card import generate_carousel_slides
-        with patch("video.event_card.create_cover_slide"), \
-             patch("video.event_card.create_event_list_slide"):
-            paths, durations = generate_carousel_slides(self._events(6), "x", "/tmp/test")
-        assert len(durations) == len(paths) == 3   # cover + [4 events] + [2 events]
-        assert durations[0] == 4.0                 # cover is light
-        assert durations[1] > durations[2]         # denser slide gets more time
-        assert sum(durations) < 60                 # no 60s padding (read-once)
+    def test_no_cover_paths_are_list_slides(self):
+        paths, _ = self._gen(4, "/tmp/myslide")
+        assert paths[0] == "/tmp/myslide_list1.jpg"
+        assert all("cover" not in p for p in paths)
+
+    def test_durations_content_scaled_and_short(self):
+        paths, durations = self._gen(7)  # split 4 + 3
+        assert len(durations) == len(paths) == 2
+        assert durations[0] > durations[1]  # denser slide gets more time
+        assert sum(durations) < 30          # snappy read-once (no 60s padding)

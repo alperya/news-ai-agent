@@ -49,7 +49,8 @@ CARD_W           = 1080   # Instagram Reels width
 CARD_H           = 1920   # Instagram Reels height (9:16)
 PAD_H            = 52
 FOOTER_H         = 70
-EVENTS_PER_SLIDE = 4
+EVENTS_PER_SLIDE = 4    # readable max per slide
+MAX_EVENTS_IN_VIDEO = 8 # video shows the top N across ≤2 balanced slides (caption lists all)
 
 _BG_QUERIES = [
     "dutch windmill landscape blue sky",
@@ -86,70 +87,6 @@ def _portrait_bg() -> "Image.Image":
 
 # ── Public API ──────────────────────────────────────────────────────────────────
 
-def create_cover_slide(
-    event_count: int,
-    date_range: str,
-    output_path: str,
-) -> str:
-    """Slide 1 — native 1080×1920 portrait NL photo, centered text block, branding."""
-    img = _portrait_bg()
-
-    f_label   = _font(FONT_SEMIBOLD_PATH, 46)
-    f_country = _font(FONT_PATH, 90)
-    f_count   = _font(FONT_PATH, 112)
-    f_date    = _font(FONT_SEMIBOLD_PATH, 42)
-    f_handle  = _font(FONT_REGULAR_PATH, 32)
-
-    label_text   = "THIS WEEK IN"
-    country_text = "THE NETHERLANDS"
-    count_text   = f"{event_count} EVENTS"
-
-    lines = [
-        (label_text,   f_label,   CREAM),
-        (country_text, f_country, WHITE),
-        (count_text,   f_count,   BRAND_ORANGE),
-        (date_range,   f_date,    CREAM),
-    ]
-
-    gap        = 22
-    pill_pad_x = 28
-    pill_pad_y = 12
-
-    line_heights = [_lh(f, t) for (t, f, _) in lines]
-    total_h = sum(line_heights) + gap * (len(lines) - 1)
-    start_y = (CARD_H - total_h) // 2  # true vertical centre of portrait frame
-
-    overlay = Image.new("RGBA", (CARD_W, CARD_H), (0, 0, 0, 0))
-    od = ImageDraw.Draw(overlay)
-
-    y = start_y
-    for text, font, color in lines:
-        tw = _tw(font, text)
-        th = _lh(font, text)
-        cx = (CARD_W - tw) // 2
-        od.rounded_rectangle(
-            [(cx - pill_pad_x, y - pill_pad_y),
-             (cx + tw + pill_pad_x, y + th + pill_pad_y)],
-            radius=12,
-            fill=PILL_TEXT,
-        )
-        od.text((cx, y), text, font=font, fill=color)
-        y += th + gap
-
-    footer_top = CARD_H - FOOTER_H
-    od.rectangle([(0, footer_top), (CARD_W, CARD_H)], fill=FOOTER_BAR)
-    fw = _tw(f_handle, ACCOUNT_HANDLE)
-    fh = _lh(f_handle, ACCOUNT_HANDLE)
-    od.text(((CARD_W - fw) // 2, footer_top + (FOOTER_H - fh) // 2),
-            ACCOUNT_HANDLE, font=f_handle, fill=HANDLE_COLOR)
-
-    od.rectangle([(0, 0), (CARD_W, 8)], fill=BRAND_ORANGE)
-
-    img = Image.alpha_composite(img, overlay).convert("RGB")
-    img.save(output_path, "JPEG", quality=94, optimize=True)
-    return output_path
-
-
 def create_event_list_slide(
     events: List[dict],
     date_range: str,
@@ -165,16 +102,37 @@ def create_event_list_slide(
     od = ImageDraw.Draw(overlay)
 
     f_date_badge = _font(FONT_SEMIBOLD_PATH, 30)
+    f_header     = _font(FONT_SEMIBOLD_PATH, 38)
     f_title      = _font(FONT_PATH, 50)
     f_meta       = _font(FONT_SEMIBOLD_PATH, 34)
     f_handle     = _font(FONT_REGULAR_PATH, 30)
 
-    # Date range badge — top right corner
+    # Thin brand accent bar at the very top
+    od.rectangle([(0, 0), (CARD_W, 8)], fill=BRAND_ORANGE)
+
+    # ── Header: title (left) + date badge (right) — events visible from frame 1 ──
+    header_top = 42
+    hpad = 16
+    title_text = "THIS WEEK IN THE NETHERLANDS"
+    htw = _tw(f_header, title_text)
     bw = _tw(f_date_badge, date_range)
+    # Shorten the title if it would crowd the date badge on the same row
+    if PAD_H + htw + 24 > CARD_W - PAD_H - bw - 60:
+        title_text = "THIS WEEK IN NL"
+        htw = _tw(f_header, title_text)
+    hth = _lh(f_header, title_text)
+    od.rounded_rectangle(
+        [(PAD_H - 12, header_top - hpad // 2),
+         (PAD_H + htw + 12, header_top + hth + hpad // 2)],
+        radius=10, fill=PILL_TEXT,
+    )
+    od.text((PAD_H, header_top), title_text, font=f_header, fill=WHITE)
+
+    # Date range badge — top right, vertically aligned with the title row
     bh = _lh(f_date_badge, date_range)
     badge_pad   = 14
     badge_right = CARD_W - PAD_H
-    badge_top   = 36
+    badge_top   = header_top + (hth - bh) // 2 - badge_pad // 2
     od.rounded_rectangle(
         [(badge_right - bw - badge_pad * 2, badge_top),
          (badge_right, badge_top + bh + badge_pad)],
@@ -183,6 +141,8 @@ def create_event_list_slide(
     )
     od.text((badge_right - bw - badge_pad, badge_top + badge_pad // 2),
             date_range, font=f_date_badge, fill=CREAM)
+
+    header_bottom = header_top + hth + hpad + 26
 
     pill_margin_x = PAD_H - 12
     pill_v_pad    = 16
@@ -222,9 +182,8 @@ def create_event_list_slide(
     pill_heights = [block_h + 2 * pill_v_pad for (_, block_h, *_) in pill_data]
     total_group_h = sum(pill_heights) + pill_gap * (len(pill_data) - 1)
 
-    # Centre the whole group vertically, below the date badge
-    badge_bottom = badge_top + bh + badge_pad + 20
-    group_start  = badge_bottom + (CARD_H - FOOTER_H - badge_bottom - total_group_h) // 2
+    # Centre the whole event group vertically, below the header
+    group_start = header_bottom + (CARD_H - FOOTER_H - header_bottom - total_group_h) // 2
 
     # ── Pass 2: draw ─────────────────────────────────────────────────────────
     y = group_start
@@ -279,15 +238,11 @@ def create_event_list_slide(
     return output_path
 
 
-def _slide_seconds(n_events: int, is_cover: bool = False) -> float:
-    """On-screen time for a slide, sized to its reading load (read-once pacing).
-
-    Cover is light (title + count); a list slide scales with how many events it
-    holds. This drives a content-dynamic total video length instead of padding
-    to a fixed 60 s, which keeps the completion rate high.
+def _slide_seconds(n_events: int) -> float:
+    """On-screen time for a list slide, sized to its reading load (read-once
+    pacing): scales with how many events it holds. Drives a content-dynamic
+    total length instead of padding to 60 s, which keeps the completion rate high.
     """
-    if is_cover:
-        return 4.0
     return round(min(11.0, 3.0 + 1.6 * n_events), 2)
 
 
@@ -296,25 +251,27 @@ def generate_carousel_slides(
     date_range: str,
     tmp_prefix: str,
 ) -> tuple:
-    """Generate all carousel slides: 1 cover + N list slides (4 events each).
+    """Generate the event slides — no cover, at most 2 balanced list slides.
 
-    Returns ``(paths, durations)`` ordered cover → list slides, where each
-    duration is the slide's read-once on-screen time (seconds).
+    The viewer sees events from the first frame (a slim title header lives on
+    each slide instead of a dedicated cover). The video shows the top
+    ``MAX_EVENTS_IN_VIDEO`` events split into ≤ 2 even slides so no slide is left
+    with a lone orphan event. The Instagram caption still lists all selected
+    events. Returns ``(paths, durations)`` with each slide's read-once seconds.
     """
+    import math
+
+    events = events[:MAX_EVENTS_IN_VIDEO]
+    n = len(events)
+    if n <= EVENTS_PER_SLIDE:
+        chunks = [events] if events else []
+    else:
+        half = math.ceil(n / 2)  # balanced split, larger half first (e.g. 7 → 4+3)
+        chunks = [events[:half], events[half:]]
+
     paths: List[str] = []
     durations: List[float] = []
-
-    cover_path = f"{tmp_prefix}_cover.jpg"
-    create_cover_slide(
-        event_count=len(events),
-        date_range=date_range,
-        output_path=cover_path,
-    )
-    paths.append(cover_path)
-    durations.append(_slide_seconds(0, is_cover=True))
-
-    chunks = [events[i:i + EVENTS_PER_SLIDE] for i in range(0, len(events), EVENTS_PER_SLIDE)]
-    for slide_idx, chunk in enumerate(chunks, start=2):
+    for slide_idx, chunk in enumerate(chunks, start=1):
         list_path = f"{tmp_prefix}_list{slide_idx}.jpg"
         create_event_list_slide(
             events=chunk,
