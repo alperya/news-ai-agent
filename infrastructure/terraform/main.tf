@@ -293,6 +293,43 @@ resource "aws_cloudwatch_metric_alarm" "lambda_duration" {
   }
 }
 
+# ===== Guaranteed failure alerting — async on-failure destinations =====
+# CloudWatch metric alarms (above) proved unreliable for these functions: the
+# main Lambda can run up to 15 min, so its Errors/Duration datapoints arrive
+# long after the period starts, and with a sparse metric + notBreaching the
+# alarm can miss the breach entirely (a real 15-min timeout went un-alerted).
+# Every function here is invoked ASYNCHRONOUSLY (EventBridge → Lambda, or
+# main → worker with InvocationType=Event), so an on-failure *destination* is
+# the timing-independent guarantee: Lambda delivers the failed invocation
+# (including timeouts/OOM) to the SNS alerts topic → email. The shared
+# execution role already holds sns:Publish to news-ai-agent-* topics.
+#
+# maximum_retry_attempts: the heavy main render function retries are set to 0 —
+# a timeout simply re-times-out (we observed two wasted 15-min runs) and the
+# next scheduled slot recovers, so we alert immediately instead of after 3×.
+locals {
+  failure_alert_lambdas = var.alert_email != "" ? {
+    main              = { name = aws_lambda_function.news_agent.function_name, retries = 0 }
+    reels_publish     = { name = aws_lambda_function.reels_publish.function_name, retries = 2 }
+    youtube_publish   = { name = aws_lambda_function.youtube_publish.function_name, retries = 2 }
+    token_refresh     = { name = aws_lambda_function.token_refresh.function_name, retries = 2 }
+    metrics_collector = { name = aws_lambda_function.metrics_collector.function_name, retries = 2 }
+    analytics_engine  = { name = aws_lambda_function.analytics_engine.function_name, retries = 2 }
+  } : {}
+}
+
+resource "aws_lambda_function_event_invoke_config" "failure_alert" {
+  for_each               = local.failure_alert_lambdas
+  function_name          = each.value.name
+  maximum_retry_attempts = each.value.retries
+
+  destination_config {
+    on_failure {
+      destination = aws_sns_topic.alerts[0].arn
+    }
+  }
+}
+
 # ===== Lambda Deployment Package =====
 # Uploads the locally-built ZIP to S3 so all Lambda functions can reference it.
 # Terraform detects changes via etag (MD5) and re-uploads only when the ZIP changes.

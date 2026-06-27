@@ -125,6 +125,7 @@ For local development, copy `.env.example` to `.env` and run `src/main.py`.
 
 ## Known Gotchas
 
+- **Failure emails come from Lambda async on-failure destinations** (`failure_alert` in terraform → SNS): every function routes any failed invocation (including timeouts) to the alert email.
 - **Lambda import path**: `sys.path` inserts both `.` and `./src` at top of `lambda_handler.py` — necessary because local and Lambda ZIP have different structures.
 - **Reels container polling**: Can take 8–10 minutes. Always happens in `reels_worker`, never in the main handler.
 - **EventBridge cron times are UTC**: All schedules in Terraform are UTC. Amsterdam = UTC+1 (winter) / UTC+2 (summer, CEST). The current crons assume CEST (+2) — may be off by 1 hour in winter.
