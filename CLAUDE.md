@@ -19,6 +19,12 @@ Dutch-language social media automation: scrapes NOS/RTL news + 8 NL event source
 
 ---
 
+## Deployment (CI/CD)
+
+**Every push to `main` auto-deploys to AWS.** `.github/workflows/deploy.yml` runs on push: it first runs the test job (`pytest tests/`), then — only on push to `main` — builds the ZIP (`scripts/build_lambda.sh`) and runs `terraform apply -auto-approve` (AWS auth via OIDC). There is no separate manual deploy step; merging/pushing **is** the deploy. A deploy typically lands a few minutes after push — confirm via the function's `LastModified` (`aws lambda get-function-configuration --function-name news-ai-agent --query LastModified`). Pull requests run the tests only (no deploy). So: never push to `main` expecting code not to ship, and if a change breaks a scheduled run, the fix must be pushed (and the deploy confirmed) before re-triggering the Lambda.
+
+---
+
 ## Key Architectural Decisions
 
 **Reels publishes via separate Lambda (`reels_worker`)**

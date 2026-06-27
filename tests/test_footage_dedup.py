@@ -105,6 +105,79 @@ def test_render_ken_burns_mp4_produces_file(tmp_path):
     assert out.exists() and out.stat().st_size > 0
 
 
+# ── 2c. Hybrid _build_background: cover-first ordering + cover_meta correctness ─
+
+def _patch_build_background(monkeypatch, *, cover_render, body_clips):
+    """Stub creator._build_background's heavy deps; capture compose_stock_scenes."""
+    import video.creator as C
+    captured = {}
+    monkeypatch.setattr(C, "download_image", lambda url, d: "/tmp/news.jpg")
+    monkeypatch.setattr(C, "compute_dhash", lambda p: 42)
+    monkeypatch.setattr(C, "prepare_image_for_portrait", lambda p, d: "/tmp/prep.jpg")
+    monkeypatch.setattr(C, "render_ken_burns_mp4",
+                        lambda img, dur, out: cover_render)
+
+    def _fake_fetch(*a, used_ids_out=None, **k):
+        if used_ids_out is not None:
+            used_ids_out.extend([1001, 1002])
+        return list(body_clips)
+
+    monkeypatch.setattr(C, "fetch_stock_clips", _fake_fetch)
+    monkeypatch.setattr(C, "compose_stock_scenes",
+                        lambda paths, dur: captured.update(paths=paths) or "CLIP")
+    monkeypatch.setattr(C, "make_ken_burns_clip", lambda p, d: "KB")
+    return C, captured
+
+
+def test_hybrid_cover_is_first_and_meta_recorded(monkeypatch):
+    """Fresh photo → cover mp4 prepended before stock clips; cover_meta recorded."""
+    C, captured = _patch_build_background(
+        monkeypatch, cover_render="/tmp/cover_kb.mp4",
+        body_clips=["/tmp/b0.mp4", "/tmp/b1.mp4"],
+    )
+    meta = {}
+    result = C._build_background(
+        "t", "c", "https://img/fresh.jpg", "/tmp", 30.0,
+        recent_image_urls=set(), recent_cover_hashes=[], cover_meta_out=meta,
+    )
+    assert result == "CLIP"
+    assert captured["paths"] == ["/tmp/cover_kb.mp4", "/tmp/b0.mp4", "/tmp/b1.mp4"]
+    assert meta == {"cover_image_url": "https://img/fresh.jpg", "cover_image_hash": 42}
+
+
+def test_cover_render_failure_falls_back_to_stock_without_meta(monkeypatch):
+    """If the cover mp4 render fails, use stock alone and do NOT record the photo."""
+    C, captured = _patch_build_background(
+        monkeypatch, cover_render=None,  # ffmpeg failed
+        body_clips=["/tmp/b0.mp4", "/tmp/b1.mp4"],
+    )
+    meta = {}
+    result = C._build_background(
+        "t", "c", "https://img/fresh.jpg", "/tmp", 30.0,
+        recent_image_urls=set(), recent_cover_hashes=[], cover_meta_out=meta,
+    )
+    assert result == "CLIP"
+    assert captured["paths"] == ["/tmp/b0.mp4", "/tmp/b1.mp4"]  # no cover prepended
+    assert meta == {}  # photo wasn't the cover → not recorded
+
+
+def test_recently_used_photo_skipped_as_cover(monkeypatch):
+    """A photo whose URL was used recently is skipped → stock cover, no meta."""
+    C, captured = _patch_build_background(
+        monkeypatch, cover_render="/tmp/cover_kb.mp4",
+        body_clips=["/tmp/b0.mp4"],
+    )
+    meta = {}
+    result = C._build_background(
+        "t", "c", "https://img/seen.jpg", "/tmp", 30.0,
+        recent_image_urls={"https://img/seen.jpg"}, recent_cover_hashes=[],
+        cover_meta_out=meta,
+    )
+    assert result == "CLIP"
+    assert captured["paths"] == ["/tmp/b0.mp4"]  # stock only, no cover render
+    assert meta == {}
+
+
 # ── 3. Signatures wire the dedup params through ───────────────────────────────
 
 def test_create_news_video_has_dedup_params():
