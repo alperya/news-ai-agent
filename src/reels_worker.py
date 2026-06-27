@@ -53,6 +53,9 @@ def _load_secrets():
         os.environ['ENABLE_INSTAGRAM_STORIES'] = secret['ENABLE_INSTAGRAM_STORIES']
     if 'FACEBOOK_PAGE_ID' in secret:
         os.environ['FACEBOOK_PAGE_ID'] = secret['FACEBOOK_PAGE_ID']
+    for key in ('ENABLE_LINKEDIN', 'LINKEDIN_ACCESS_TOKEN', 'LINKEDIN_ORG_ID'):
+        if key in secret:
+            os.environ[key] = secret[key]
     logger.info("✅ Secrets loaded")
 
 

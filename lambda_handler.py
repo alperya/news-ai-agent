@@ -120,6 +120,10 @@ def get_secrets():
     # Connected Facebook Page — when set, the Story is cross-posted to FB
     if 'FACEBOOK_PAGE_ID' in secret:
         os.environ['FACEBOOK_PAGE_ID'] = secret['FACEBOOK_PAGE_ID']
+    # LinkedIn Company Page — news Reels cross-posting (feature-flagged, default off)
+    for key in ('ENABLE_LINKEDIN', 'LINKEDIN_ACCESS_TOKEN', 'LINKEDIN_ORG_ID'):
+        if key in secret:
+            os.environ[key] = secret[key]
 
     # Set AI prompts if available
     if 'AI_PROMPT_BATCH_SELECTION' in secret:
@@ -502,9 +506,10 @@ def _run_event_pipeline(timestamp: str, bucket_name: str, ai_agent, dry_run: boo
         logger.info(f"✅ Reels video uploaded to S3: s3://{bucket_name}/{reel_s3_key}")
         logger.info(f"🔗 Pre-signed URL (1h): {video_url[:120]}…")
 
-        # ── Stage 5: Publish as Reels (Instagram primary + Facebook best-effort) ─
+        # ── Stage 5: Publish as Reels (Instagram primary + Facebook best-effort;
+        #    LinkedIn excluded — it takes news Reels only) ─
         logger.info(f"\n📱 STAGE 5: Publishing REELS...")
-        outcome = build_crossposter().publish(
+        outcome = build_crossposter(content_source="event").publish(
             REEL, media_url=video_url, caption=caption, dry_run=dry_run,
         )
         if outcome['primary_error']:

@@ -1,9 +1,10 @@
-"""Social Media Publisher — Instagram + Facebook channel adapters."""
+"""Social Media Publisher — Instagram + Facebook + LinkedIn channel adapters."""
 import json
 import os
 import logging
 import requests
 import time
+from urllib.parse import quote
 from typing import Optional
 
 from publishing import ChannelPublisher, REEL, PHOTO, STORY
@@ -591,4 +592,188 @@ class FacebookPublisher(ChannelPublisher):
             raise ValueError(error_msg)
         except Exception as e:
             logger.error(f"❌ Error posting Facebook photo: {str(e)}")
+            raise
+
+
+class LinkedInPublisher(ChannelPublisher):
+    """Publish news Reels (video) to a LinkedIn Company Page.
+
+    Unlike Meta (which fetches a hosted file_url), LinkedIn's Videos API requires
+    uploading the actual video bytes: initializeUpload → PUT bytes → finalizeUpload
+    → create Post. The video is therefore downloaded from the presigned S3 URL into
+    memory first (our Reels are short, < ~50 MB).
+
+    Authenticated as the Company Page (`urn:li:organization:<id>`); the access token
+    must hold the `w_organization_social` scope. Only Reels are supported — Stories
+    and photos are intentionally not cross-posted here.
+    """
+
+    name = "linkedin"
+
+    # (connect, read) timeout (s) for every HTTP call — a hung LinkedIn endpoint
+    # must never eat the async Lambda's execution budget. The read timeout is an
+    # inactivity guard (not a hard cap), so it won't kill a slow-but-active upload.
+    REQUEST_TIMEOUT = (10, 120)
+
+    def __init__(self):
+        self.access_token = os.getenv('LINKEDIN_ACCESS_TOKEN')
+        org_id = os.getenv('LINKEDIN_ORG_ID')
+        if not self.access_token:
+            raise ValueError("LINKEDIN_ACCESS_TOKEN not found in environment")
+        if not org_id:
+            raise ValueError("LINKEDIN_ORG_ID not found in environment")
+        self.author_urn = f"urn:li:organization:{org_id}"
+        self.api = "https://api.linkedin.com/rest"
+        self.version = "202506"  # LinkedIn-Version header (YYYYMM)
+
+    def supports(self, kind: str) -> bool:
+        return kind == REEL
+
+    def publish(self, kind: str, *, media_url: str, caption: str = "",
+                dry_run: bool = False) -> dict:
+        if kind == REEL:
+            return self.publish_reel(video_url=media_url, caption=caption, dry_run=dry_run)
+        raise ValueError(f"LinkedIn does not support kind '{kind}'")
+
+    def _headers(self, extra: Optional[dict] = None) -> dict:
+        headers = {
+            'Authorization': f'Bearer {self.access_token}',
+            'LinkedIn-Version': self.version,
+            'X-Restli-Protocol-Version': '2.0.0',
+        }
+        if extra:
+            headers.update(extra)
+        return headers
+
+    def _wait_video_available(self, video_urn: str,
+                              max_attempts: int = 60, delay: int = 5) -> None:
+        """Poll until LinkedIn finishes processing the uploaded video."""
+        status_url = f"{self.api}/videos/{quote(video_urn, safe='')}"
+        for attempt in range(max_attempts):
+            resp = requests.get(status_url, headers=self._headers(),
+                                timeout=self.REQUEST_TIMEOUT)
+            resp.raise_for_status()
+            status = resp.json().get('status')
+            if status == 'AVAILABLE':
+                logger.info(f"✅ LinkedIn video ready (attempt {attempt + 1})")
+                return
+            if status == 'PROCESSING_FAILED':
+                raise ValueError(f"LinkedIn video processing failed: {video_urn}")
+            logger.info(f"⏳ LinkedIn video processing... "
+                        f"(attempt {attempt + 1}/{max_attempts}, status={status})")
+            time.sleep(delay)
+        raise ValueError("LinkedIn video not ready after maximum attempts")
+
+    def publish_reel(self, video_url: str, caption: str = "", dry_run: bool = False):
+        """Publish a video to the LinkedIn Company Page feed.
+
+        Args:
+            video_url: Public URL to the video (downloaded into memory and uploaded).
+            caption:   Post commentary.
+            dry_run:   If True, skip actual API calls.
+        """
+        if dry_run:
+            logger.info("[DRY RUN] Would post LinkedIn Reel")
+            logger.info(f"[DRY RUN] Video URL: {video_url}")
+            return {'id': 'dry_run', 'type': 'linkedin_reel'}
+
+        try:
+            # Step 1: Download the video bytes (LinkedIn needs the raw bytes)
+            logger.info("📥 Downloading video for LinkedIn upload...")
+            dl = requests.get(video_url, timeout=self.REQUEST_TIMEOUT)
+            dl.raise_for_status()
+            data = dl.content
+            size = len(data)
+            logger.info(f"✅ Downloaded {size} bytes")
+
+            # Step 2: Initialize the upload
+            logger.info("📦 Initializing LinkedIn video upload...")
+            init = requests.post(
+                f"{self.api}/videos?action=initializeUpload",
+                headers=self._headers({'Content-Type': 'application/json'}),
+                json={'initializeUploadRequest': {
+                    'owner': self.author_urn,
+                    'fileSizeBytes': size,
+                    'uploadCaptions': False,
+                    'uploadThumbnail': False,
+                }},
+                timeout=self.REQUEST_TIMEOUT,
+            )
+            init.raise_for_status()
+            value = init.json()['value']
+            video_urn = value['video']
+            instructions = value['uploadInstructions']
+            logger.info(f"✅ Upload session: video={video_urn}, parts={len(instructions)}")
+
+            # Step 3: Upload each byte range, collecting ETags
+            uploaded_part_ids = []
+            for idx, ins in enumerate(instructions):
+                first, last = ins['firstByte'], ins['lastByte']
+                logger.info(f"📤 Uploading part {idx + 1}/{len(instructions)} "
+                            f"(bytes {first}-{last})...")
+                put = requests.put(
+                    ins['uploadUrl'],
+                    headers={'Content-Type': 'application/octet-stream'},
+                    data=data[first:last + 1],
+                    timeout=self.REQUEST_TIMEOUT,
+                )
+                put.raise_for_status()
+                uploaded_part_ids.append(put.headers['ETag'])
+
+            # Step 4: Finalize the upload
+            logger.info("📤 Finalizing LinkedIn upload...")
+            fin = requests.post(
+                f"{self.api}/videos?action=finalizeUpload",
+                headers=self._headers({'Content-Type': 'application/json'}),
+                json={'finalizeUploadRequest': {
+                    'video': video_urn,
+                    'uploadToken': '',
+                    'uploadedPartIds': uploaded_part_ids,
+                }},
+                timeout=self.REQUEST_TIMEOUT,
+            )
+            fin.raise_for_status()
+
+            # Step 5: Wait until LinkedIn finishes processing the video
+            logger.info("⏳ Waiting for LinkedIn to process the video...")
+            self._wait_video_available(video_urn)
+
+            # Step 6: Create the post referencing the video
+            logger.info("📤 Publishing LinkedIn post...")
+            post = requests.post(
+                f"{self.api}/posts",
+                headers=self._headers({'Content-Type': 'application/json'}),
+                json={
+                    'author': self.author_urn,
+                    'commentary': caption,
+                    'visibility': 'PUBLIC',
+                    'distribution': {
+                        'feedDistribution': 'MAIN_FEED',
+                        'targetEntities': [],
+                        'thirdPartyDistributionChannels': [],
+                    },
+                    'content': {'media': {'id': video_urn}},
+                    'lifecycleState': 'PUBLISHED',
+                    'isReshareDisabledByAuthor': False,
+                },
+                timeout=self.REQUEST_TIMEOUT,
+            )
+            post.raise_for_status()
+            post_id = post.headers.get('x-restli-id') or post.headers.get('x-linkedin-id')
+            logger.info(f"✅ LinkedIn Reel published: {post_id}")
+            logger.info(json.dumps({
+                "event": "post_published",
+                "post_id": post_id,
+                "post_type": "linkedin_reel",
+            }))
+            return {'id': post_id, 'video_urn': video_urn, 'type': 'linkedin_reel'}
+
+        except requests.exceptions.HTTPError as e:
+            error_msg = f"LinkedIn Reel API error: {str(e)}"
+            if hasattr(e.response, 'text'):
+                error_msg += f" - {e.response.text}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        except Exception as e:
+            logger.error(f"❌ Error posting LinkedIn Reel: {str(e)}")
             raise

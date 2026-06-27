@@ -87,20 +87,31 @@ class CrossPoster:
         return {"results": results, "primary_error": primary_error}
 
 
-def build_crossposter() -> CrossPoster:
+def build_crossposter(*, content_source: str = "news") -> CrossPoster:
     """Construct the CrossPoster for the currently-configured channels.
 
     Instagram is always the primary. Each secondary is added only when its
     credentials are present, so enabling a channel is purely configuration.
+
+    *content_source* lets a channel opt out of a content type without the call
+    sites knowing channel names: LinkedIn takes **news** Reels only (event
+    slideshows underperform there — same rationale as the YouTube exclusion), so
+    the event pipeline passes ``content_source="event"``.
     """
     # Lazy import avoids a circular import (social_publisher imports this module)
-    from social_publisher import InstagramPublisher, FacebookPublisher
+    from social_publisher import InstagramPublisher, FacebookPublisher, LinkedInPublisher
 
     primary = InstagramPublisher()
     secondaries: list = []
     if os.environ.get("FACEBOOK_PAGE_ID"):
         secondaries.append(FacebookPublisher())
-    # Future channels register here, each gated by its own credentials, e.g.:
-    #   if os.environ.get("LINKEDIN_PAGE_ID"): secondaries.append(LinkedInPublisher())
-    # (LinkedIn / TikTok / X adapters are added the same way — one line each.)
+    # LinkedIn: news Reels only, gated by an explicit feature flag (default off)
+    # *and* its own credentials — so the code can ship dark; nothing publishes
+    # until ENABLE_LINKEDIN=true is set in Secrets Manager.
+    linkedin_enabled = os.environ.get("ENABLE_LINKEDIN", "false").lower() == "true"
+    if content_source != "event" and linkedin_enabled \
+            and os.environ.get("LINKEDIN_ACCESS_TOKEN") \
+            and os.environ.get("LINKEDIN_ORG_ID"):
+        secondaries.append(LinkedInPublisher())
+    # Future channels register here, each gated by its own credentials — one line each.
     return CrossPoster(primary, secondaries)

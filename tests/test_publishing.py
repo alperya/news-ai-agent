@@ -70,6 +70,8 @@ def test_build_crossposter_adds_facebook_when_page_id_set(monkeypatch):
     monkeypatch.setenv("INSTAGRAM_ACCESS_TOKEN", "t")
     monkeypatch.setenv("INSTAGRAM_ACCOUNT_ID", "a")
     monkeypatch.setenv("FACEBOOK_PAGE_ID", "p")
+    monkeypatch.delenv("LINKEDIN_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("LINKEDIN_ORG_ID", raising=False)
     cp = build_crossposter()
     assert cp.primary.name == "instagram"
     assert [s.name for s in cp.secondaries] == ["facebook"]
@@ -79,5 +81,41 @@ def test_build_crossposter_instagram_only_without_page_id(monkeypatch):
     monkeypatch.setenv("INSTAGRAM_ACCESS_TOKEN", "t")
     monkeypatch.setenv("INSTAGRAM_ACCOUNT_ID", "a")
     monkeypatch.delenv("FACEBOOK_PAGE_ID", raising=False)
+    monkeypatch.delenv("LINKEDIN_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("LINKEDIN_ORG_ID", raising=False)
     cp = build_crossposter()
+    assert cp.secondaries == []
+
+
+def test_build_crossposter_adds_linkedin_for_news_when_enabled(monkeypatch):
+    monkeypatch.setenv("INSTAGRAM_ACCESS_TOKEN", "t")
+    monkeypatch.setenv("INSTAGRAM_ACCOUNT_ID", "a")
+    monkeypatch.delenv("FACEBOOK_PAGE_ID", raising=False)
+    monkeypatch.setenv("ENABLE_LINKEDIN", "true")
+    monkeypatch.setenv("LINKEDIN_ACCESS_TOKEN", "li-token")
+    monkeypatch.setenv("LINKEDIN_ORG_ID", "123")
+    cp = build_crossposter()  # default content_source="news"
+    assert [s.name for s in cp.secondaries] == ["linkedin"]
+
+
+def test_build_crossposter_omits_linkedin_when_flag_off(monkeypatch):
+    # Creds present but feature flag off (default) → LinkedIn stays dark.
+    monkeypatch.setenv("INSTAGRAM_ACCESS_TOKEN", "t")
+    monkeypatch.setenv("INSTAGRAM_ACCOUNT_ID", "a")
+    monkeypatch.delenv("FACEBOOK_PAGE_ID", raising=False)
+    monkeypatch.delenv("ENABLE_LINKEDIN", raising=False)
+    monkeypatch.setenv("LINKEDIN_ACCESS_TOKEN", "li-token")
+    monkeypatch.setenv("LINKEDIN_ORG_ID", "123")
+    cp = build_crossposter()
+    assert cp.secondaries == []
+
+
+def test_build_crossposter_excludes_linkedin_for_events(monkeypatch):
+    monkeypatch.setenv("INSTAGRAM_ACCESS_TOKEN", "t")
+    monkeypatch.setenv("INSTAGRAM_ACCOUNT_ID", "a")
+    monkeypatch.delenv("FACEBOOK_PAGE_ID", raising=False)
+    monkeypatch.setenv("ENABLE_LINKEDIN", "true")
+    monkeypatch.setenv("LINKEDIN_ACCESS_TOKEN", "li-token")
+    monkeypatch.setenv("LINKEDIN_ORG_ID", "123")
+    cp = build_crossposter(content_source="event")
     assert cp.secondaries == []
