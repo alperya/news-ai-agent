@@ -15,7 +15,7 @@ import tempfile
 from pathlib import Path
 from typing import List, Optional, Set
 
-from moviepy import AudioFileClip, CompositeVideoClip, concatenate_videoclips
+from moviepy import AudioFileClip, CompositeVideoClip
 
 from .config import FPS, VIDEO_WIDTH, VIDEO_HEIGHT, BG_MUSIC_VOLUME, reading_seconds
 from .tts import generate_tts, clean_for_narration
@@ -30,6 +30,7 @@ from .effects import (
     make_fallback_background,
     make_subtitle_clip,
     prepare_image_for_portrait,
+    render_ken_burns_mp4,
 )
 from .audio import mix_audio
 
@@ -392,33 +393,43 @@ def _build_background(
 
     # Priority 1 — Real news photo as cover (only when fresh)
     cover_img_path = None
+    cover_dhash = None
     if image_url and image_url not in recent_image_urls:
         candidate = download_image(image_url, tmp_dir)
         if candidate:
             try:
-                dhash = compute_dhash(candidate)
+                cover_dhash = compute_dhash(candidate)
                 is_near_dup = any(
-                    hamming(dhash, h) <= COVER_HASH_THRESHOLD
+                    hamming(cover_dhash, h) <= COVER_HASH_THRESHOLD
                     for h in recent_cover_hashes
                 )
             except Exception as e:
                 logger.warning(f"⚠️  Could not hash article image: {e}")
-                dhash, is_near_dup = None, False
+                cover_dhash, is_near_dup = None, False
             if is_near_dup:
                 logger.info("   ♻️  Article image is a recent near-duplicate — using stock cover")
             else:
                 cover_img_path = candidate
-                if cover_meta_out is not None:
-                    cover_meta_out["cover_image_url"] = image_url
-                    if dhash is not None:
-                        cover_meta_out["cover_image_hash"] = dhash
     elif image_url:
         logger.info("   ♻️  Article image URL used recently — using stock cover")
+
+    def _record_cover_meta():
+        """Persist the real photo as the cover only when it actually is one."""
+        if cover_meta_out is not None:
+            cover_meta_out["cover_image_url"] = image_url
+            if cover_dhash is not None:
+                cover_meta_out["cover_image_hash"] = cover_dhash
 
     if cover_img_path:
         cover_dur = min(COVER_SCENE_DURATION, duration * 0.4)
         prepared = prepare_image_for_portrait(cover_img_path, tmp_dir)
-        cover_clip = make_ken_burns_clip(prepared, cover_dur)
+        # Pre-render the cover to an MP4 with ffmpeg (fast) so it joins the stock
+        # clips as a file-backed scene. Doing the Ken Burns in moviepy's final
+        # composite (pure-Python per-frame) is too slow and blows the Lambda
+        # 15-min timeout — that regression is why this path exists.
+        cover_mp4 = render_ken_burns_mp4(
+            prepared, cover_dur, os.path.join(tmp_dir, "cover_kb.mp4"),
+        )
         body_paths = fetch_stock_clips(
             title, content, tmp_dir,
             footage_queries=footage_queries,
@@ -428,11 +439,18 @@ def _build_background(
             exclude_ids=exclude_ids,
             used_ids_out=used_ids_out,
         )
-        if body_paths:
+        if cover_mp4 and body_paths:
             logger.info(f"   🎬 Hybrid: real-photo cover + {len(body_paths)} stock scenes")
-            body = compose_stock_scenes(body_paths, duration - cover_dur)
-            return concatenate_videoclips([cover_clip, body], method="compose")
+            _record_cover_meta()
+            return compose_stock_scenes([cover_mp4] + body_paths, duration)
+        if body_paths:
+            # Cover render failed — use stock clips alone (still id-deduped).
+            # Cover is now a stock clip, so do NOT record the photo as the cover.
+            logger.info(f"   🎬 Cover render failed; using {len(body_paths)} stock clips")
+            return compose_stock_scenes(body_paths, duration)
+        # No stock body available — fall back to a (slow) full Ken Burns cover.
         logger.info("   🖼️  Real-photo cover only (no stock body available)")
+        _record_cover_meta()
         return make_ken_burns_clip(prepared, duration)
 
     # Priority 2 — Stock footage from Pexels (cover from stock, id-deduped)

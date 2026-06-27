@@ -92,6 +92,19 @@ def test_fetch_clips_all_stale_still_returns_clips():
     assert set(used) == {10, 11}
 
 
+# ── 2b. Cover render is a fast file-backed MP4 (not slow per-frame moviepy) ───
+
+def test_render_ken_burns_mp4_produces_file(tmp_path):
+    """render_ken_burns_mp4 should emit a non-empty mp4 via ffmpeg."""
+    from video.effects import render_ken_burns_mp4
+    img = tmp_path / "cover.jpg"
+    Image.new("RGB", (1458, 2592), (40, 80, 160)).save(img)
+    out = tmp_path / "cover.mp4"
+    result = render_ken_burns_mp4(str(img), 3.0, str(out))
+    assert result == str(out)
+    assert out.exists() and out.stat().st_size > 0
+
+
 # ── 3. Signatures wire the dedup params through ───────────────────────────────
 
 def test_create_news_video_has_dedup_params():

@@ -9,7 +9,7 @@ import os
 import shutil
 import subprocess
 import tempfile
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 from PIL import Image, ImageEnhance, ImageFilter
@@ -261,6 +261,44 @@ def make_ken_burns_clip(
     return CompositeVideoClip(
         [kb, gradient], size=(VIDEO_WIDTH, VIDEO_HEIGHT),
     )
+
+
+def render_ken_burns_mp4(img_path: str, duration: float, out_path: str) -> Optional[str]:
+    """Render a Ken Burns (slow zoom) clip of a still image to an MP4 via ffmpeg.
+
+    Used for the hybrid Reel cover: the moviepy `make_ken_burns_clip` generates
+    frames in pure Python (PIL resize per frame), which is far too slow inside
+    the final composite render on Lambda. Pre-rendering to a file with ffmpeg's
+    native `zoompan` (~0.4 s) lets the cover join the stock clips in
+    `compose_stock_scenes` as a fast file-backed scene. Returns the path, or
+    None if ffmpeg fails (caller falls back to a stock-only cover).
+    """
+    from imageio_ffmpeg import get_ffmpeg_exe
+    ffmpeg_bin = get_ffmpeg_exe()
+    frames = max(1, int(duration * FPS))
+    # Scale up 2× before zoompan to avoid quality loss / jitter on the zoom.
+    vf = (
+        f"scale={VIDEO_WIDTH * 2}:{VIDEO_HEIGHT * 2}:force_original_aspect_ratio=increase,"
+        f"crop={VIDEO_WIDTH * 2}:{VIDEO_HEIGHT * 2},"
+        f"zoompan=z='min(zoom+0.0010,1.15)':d={frames}:"
+        f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+        f"s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:fps={FPS}"
+    )
+    cmd = [
+        ffmpeg_bin, "-y", "-loop", "1", "-i", img_path, "-t", str(duration),
+        "-vf", vf, "-c:v", "libx264", "-preset", "ultrafast",
+        "-pix_fmt", "yuv420p", "-an", "-r", str(FPS), out_path,
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=60)
+        if result.returncode == 0 and os.path.exists(out_path):
+            return out_path
+        logger.warning(
+            f"⚠️  ffmpeg cover render failed: {result.stderr.decode(errors='replace')[-300:]}"
+        )
+    except Exception as e:
+        logger.warning(f"⚠️  Could not render Ken Burns cover: {e}")
+    return None
 
 
 # ── Overlays ──────────────────────────────────────────────────────────────────
