@@ -610,18 +610,25 @@ def test_gradient_overlay_has_mask():
     assert clip.mask is not None, "Gradient overlay must have a mask for transparency"
 
 
-# ── 35. Subtitle clip returns [bg, text] list ────────────────────────────────
+# ── 35. Subtitle overlays → full-width RGBA PNG specs ────────────────────────
 
-def test_subtitle_clip_per_line_bg():
-    """make_subtitle_clip should return a masked clip with per-line bg."""
-    from video.effects import make_subtitle_clip
+def test_build_subtitle_overlays(tmp_path):
+    """build_subtitle_overlays should emit full-width RGBA PNG specs with timing."""
+    from video.effects import build_subtitle_overlays, OverlaySpec
     from video.config import VIDEO_WIDTH
-    seg = SubtitleSegment(text="Kısa metin burada", start=0.0, end=2.0)
-    clips = make_subtitle_clip(seg)
-    assert isinstance(clips, list)
-    assert len(clips) == 1
-    clip = clips[0]
-    # Must have transparency mask (per-line bg, not full rectangle)
-    assert clip.mask is not None
-    # Clip is full video width (text is centred inside)
-    assert clip.w == VIDEO_WIDTH
+    from PIL import Image
+    seg = SubtitleSegment(text="Kısa metin burada", start=0.5, end=2.0)
+    specs = build_subtitle_overlays([seg], hook_duration=0.0, tmp_dir=str(tmp_path))
+    assert specs and all(isinstance(s, OverlaySpec) for s in specs)
+    spec = specs[0]
+    assert spec.start == 0.5 and spec.end <= 2.0
+    img = Image.open(spec.png_path)
+    assert img.mode == "RGBA" and img.width == VIDEO_WIDTH  # full-width, transparent
+
+
+def test_build_subtitle_overlays_skips_hook_window(tmp_path):
+    """Segments starting within the hook window are skipped (hook covers them)."""
+    from video.effects import build_subtitle_overlays
+    seg = SubtitleSegment(text="Erken altyazı", start=1.0, end=2.5)
+    specs = build_subtitle_overlays([seg], hook_duration=3.0, tmp_dir=str(tmp_path))
+    assert specs == []

@@ -21,17 +21,22 @@ from .config import FPS, VIDEO_WIDTH, VIDEO_HEIGHT, BG_MUSIC_VOLUME, reading_sec
 from .tts import generate_tts, clean_for_narration
 from .footage import fetch_stock_clips, fetch_stock_image, download_image
 from .effects import (
+    OverlaySpec,
     compose_stock_scenes,
     compute_dhash,
     hamming,
-    make_hook_clip,
+    build_hook_overlays,
+    build_subtitle_overlays,
     make_fact_overlay,
     make_ken_burns_clip,
     make_fallback_background,
-    make_subtitle_clip,
     prepare_image_for_portrait,
+    render_fallback_bg_mp4,
+    render_gradient_png,
     render_ken_burns_mp4,
+    _stitch_clips_to_file,
 )
+from .ffcompose import assemble_reel
 from .audio import mix_audio
 
 logger = logging.getLogger(__name__)
@@ -163,9 +168,9 @@ def create_news_video(
         narration_clip.close()
         total_duration = narration_duration + 1.0
 
-        # ── 2. Background visuals ────────────────────────────────────
+        # ── 2. Background visuals (returns a background mp4 path) ─────
         logger.info("🖼️  Building background visuals...")
-        background = _build_background(
+        bg_path = _build_background(
             title, content, image_url, tmp_dir, total_duration,
             footage_queries=footage_queries,
             avoid_terms=avoid_terms,
@@ -177,50 +182,27 @@ def create_news_video(
             cover_meta_out=cover_meta_out,
         )
 
-        # ── 3. Compose layers ────────────────────────────────────────
-        logger.info("🎨 Composing video layers...")
+        # ── 3. Build static overlays (gradient + subtitles + hook) ───
+        logger.info("🎨 Building overlays...")
         hook_duration = 3.0 if hook else 0.0
-        layers = [background]
-        for seg in subtitle_segments:
-            if seg.start < hook_duration:
-                continue
-            layers.extend(make_subtitle_clip(seg))
+        overlays = [OverlaySpec(render_gradient_png(os.path.join(tmp_dir, "grad.png")),
+                                0, 0.0, total_duration)]
+        overlays += build_subtitle_overlays(subtitle_segments, hook_duration, tmp_dir)
         if hook:
-            layers.extend(make_hook_clip(hook, duration=hook_duration))
+            overlays += build_hook_overlays(hook, tmp_dir, duration=hook_duration)
 
-        video = CompositeVideoClip(layers, size=(VIDEO_WIDTH, VIDEO_HEIGHT))
-        video = video.with_duration(total_duration)
-
-        # ── 4. Mix audio ─────────────────────────────────────────────
+        # ── 4. Mix audio → file (cheap; not per-frame) ───────────────
         logger.info("🎵 Mixing audio...")
         mood = _detect_mood(title, content, emoji)
         logger.info(f"   🎭 Detected mood: {mood}")
         mixed = mix_audio(audio_path, narration_duration, total_duration, mood=mood)
-        video = video.with_audio(mixed)
+        mixed_audio_path = os.path.join(tmp_dir, "mixed.m4a")
+        mixed.write_audiofile(mixed_audio_path, codec="aac", fps=44100, logger=None)
 
-        # ── 5. Render ────────────────────────────────────────────────
+        # ── 5. Final assembly — single ffmpeg pass ───────────────────
         logger.info(f"💾 Rendering to {output_path}...")
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-        temp_audio = os.path.join(
-            tempfile.gettempdir(),
-            Path(output_path).stem + "_TEMP_AUDIO.mp4",
-        )
-        video.write_videofile(
-            output_path,
-            fps=FPS,
-            codec="libx264",
-            audio_codec="aac",
-            preset="ultrafast",
-            bitrate="4000k",
-            threads=4,
-            logger=None,
-            temp_audiofile=temp_audio,
-            ffmpeg_params=[
-                "-profile:v", "high",
-                "-pix_fmt", "yuv420p",
-            ],
-        )
-        video.close()
+        assemble_reel(bg_path, mixed_audio_path, overlays, total_duration, output_path)
 
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -375,18 +357,21 @@ def _build_background(
     recent_cover_hashes: Optional[List[int]] = None,
     used_ids_out: Optional[List[int]] = None,
     cover_meta_out: Optional[dict] = None,
-) -> CompositeVideoClip:
-    """Build visuals with a freshness-aware fallback chain:
-    1. Real news photo (if fresh) → cover, with Pexels stock body (hybrid)
-    2. Pexels stock video clips    → multi-scene composition (id-deduped)
-    3. Pexels stock photo          → Ken Burns
-    4. Animated gradient           → Ken Burns motion
+) -> str:
+    """Build the background and return a single **mp4 file path** (no overlays).
+
+    Freshness-aware fallback chain:
+    1. Real news photo (if fresh) → cover mp4 + Pexels stock body (hybrid)
+    2. Pexels stock video clips    → stitched mp4 (id-deduped)
+    3. Pexels stock photo          → Ken Burns mp4
+    4. Animated gradient           → Ken Burns mp4
 
     A real news photo is preferred as the cover (authentic + naturally distinct
     per article) but only when it is *fresh*: its URL was not used recently and
     it is not a perceptual near-duplicate of a recent cover (catches NOS's
     recurring "weekdienst" template card). Otherwise the cover falls back to a
-    fresh Pexels stock clip.
+    fresh Pexels stock clip. The readability gradient is NOT baked here — it is
+    burned as an overlay in the single ffmpeg assembly pass.
     """
     recent_image_urls = recent_image_urls or set()
     recent_cover_hashes = recent_cover_hashes or []
@@ -440,18 +425,24 @@ def _build_background(
             used_ids_out=used_ids_out,
         )
         if cover_mp4 and body_paths:
-            logger.info(f"   🎬 Hybrid: real-photo cover + {len(body_paths)} stock scenes")
-            _record_cover_meta()
-            return compose_stock_scenes([cover_mp4] + body_paths, duration)
+            merged = _stitch_clips_to_file([cover_mp4] + body_paths, duration)
+            if merged:
+                logger.info(f"   🎬 Hybrid: real-photo cover + {len(body_paths)} stock scenes")
+                _record_cover_meta()
+                return merged
         if body_paths:
-            # Cover render failed — use stock clips alone (still id-deduped).
+            # Cover render failed (or stitch failed) — use stock clips alone.
             # Cover is now a stock clip, so do NOT record the photo as the cover.
-            logger.info(f"   🎬 Cover render failed; using {len(body_paths)} stock clips")
-            return compose_stock_scenes(body_paths, duration)
-        # No stock body available — fall back to a (slow) full Ken Burns cover.
-        logger.info("   🖼️  Real-photo cover only (no stock body available)")
-        _record_cover_meta()
-        return make_ken_burns_clip(prepared, duration)
+            merged = _stitch_clips_to_file(body_paths, duration)
+            if merged:
+                logger.info(f"   🎬 Cover render failed; using {len(body_paths)} stock clips")
+                return merged
+        # No usable stock body — fall back to a full Ken Burns cover (mp4).
+        cover_only = render_ken_burns_mp4(prepared, duration, os.path.join(tmp_dir, "cover_full.mp4"))
+        if cover_only:
+            logger.info("   🖼️  Real-photo cover only (no stock body available)")
+            _record_cover_meta()
+            return cover_only
 
     # Priority 2 — Stock footage from Pexels (cover from stock, id-deduped)
     clip_paths = fetch_stock_clips(
@@ -464,16 +455,20 @@ def _build_background(
         used_ids_out=used_ids_out,
     )
     if clip_paths:
-        logger.info(f"   🎬 Using {len(clip_paths)} stock video clips")
-        return compose_stock_scenes(clip_paths, duration)
+        merged = _stitch_clips_to_file(clip_paths, duration)
+        if merged:
+            logger.info(f"   🎬 Using {len(clip_paths)} stock video clips")
+            return merged
 
     # Priority 3 — Ken Burns on Pexels stock photo
     stock_img = fetch_stock_image(title, content, tmp_dir)
     if stock_img:
         prepared = prepare_image_for_portrait(stock_img, tmp_dir)
-        logger.info("   🖼️  Ken Burns effect on Pexels stock photo")
-        return make_ken_burns_clip(prepared, duration)
+        kb = render_ken_burns_mp4(prepared, duration, os.path.join(tmp_dir, "stockphoto.mp4"))
+        if kb:
+            logger.info("   🖼️  Ken Burns effect on Pexels stock photo")
+            return kb
 
-    # Priority 4 — Animated gradient
+    # Priority 4 — Animated gradient (file-backed)
     logger.info("   🎨 Animated gradient fallback")
-    return make_fallback_background(duration)
+    return render_fallback_bg_mp4(os.path.join(tmp_dir, "fallback_bg.mp4"), duration)

@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from collections import namedtuple
 from typing import List, Optional
 
 import numpy as np
@@ -38,6 +39,12 @@ from .config import (
 from .tts import SubtitleSegment
 
 logger = logging.getLogger(__name__)
+
+# A static overlay image to burn into the final video via ffmpeg:
+#   png_path — full-width (1080px) RGBA image; x is always 0
+#   y        — vertical offset in the frame
+#   start/end — time window in seconds the overlay is visible
+OverlaySpec = namedtuple("OverlaySpec", ["png_path", "y", "start", "end"])
 
 
 # ── Perceptual hashing (near-duplicate cover detection) ───────────────────────
@@ -72,23 +79,25 @@ def hamming(a: int, b: int) -> int:
 
 # ── Stock-footage scene assembly ──────────────────────────────────────────────
 
-def compose_stock_scenes(
+def _stitch_clips_to_file(
     clip_paths: List[str],
     total_duration: float,
-) -> CompositeVideoClip:
-    """Compose multiple stock video clips into a single portrait video.
+) -> Optional[str]:
+    """Stitch stock clips into a single portrait merged.mp4 (pure ffmpeg).
 
     Processes clips **sequentially** via ffmpeg to stay within Lambda's
     3 GB RAM limit:
       1. Each clip → trim + resize to 1080×1920 → temp file (then close)
       2. All temp files → ffmpeg concat demuxer → single merged.mp4
-      3. Open merged.mp4 as one VideoFileClip (1 reader, not 9)
 
     Landscape clips get a blurred-dark background so the full frame is
-    visible instead of being aggressively cropped.
+    visible instead of being aggressively cropped. Returns the merged.mp4
+    path, or None if there is nothing to stitch / ffmpeg fails (callers
+    decide the fallback). The merged file may be shorter than
+    *total_duration*; consumers loop/cut it themselves.
     """
     if not clip_paths:
-        return make_fallback_background(total_duration)
+        return None
 
     from imageio_ffmpeg import get_ffmpeg_exe
     ffmpeg_bin = get_ffmpeg_exe()
@@ -153,7 +162,7 @@ def compose_stock_scenes(
 
     if not trimmed:
         shutil.rmtree(proc_dir, ignore_errors=True)
-        return make_fallback_background(total_duration)
+        return None
 
     # Concatenate all segments — re-encode to guarantee compatibility
     # (segments from different Pexels sources may have incompatible
@@ -176,9 +185,27 @@ def compose_stock_scenes(
         stderr = concat_result.stderr.decode(errors="replace")[-500:]
         logger.error(f"❌ ffmpeg concat failed: {stderr}")
         shutil.rmtree(proc_dir, ignore_errors=True)
-        return make_fallback_background(total_duration)
+        return None
 
     logger.info(f"   🎞️  Merged {len(trimmed)} scenes → merged.mp4")
+    return merged_path
+
+
+def compose_stock_scenes(
+    clip_paths: List[str],
+    total_duration: float,
+) -> CompositeVideoClip:
+    """Stock clips → a single moviepy background clip with gradient overlay.
+
+    Wraps `_stitch_clips_to_file` (ffmpeg) then opens the merged file once
+    (1 reader, not N), looping/cutting to *total_duration* and adding the
+    readability gradient. Used by the daily-fact Story path; the news Reel
+    path consumes `_stitch_clips_to_file` directly and applies the gradient
+    in its single ffmpeg assembly pass.
+    """
+    merged_path = _stitch_clips_to_file(clip_paths, total_duration)
+    if not merged_path:
+        return make_fallback_background(total_duration)
 
     # Open single merged file (1 ffmpeg reader instead of 9)
     combined = VideoFileClip(merged_path)
@@ -329,67 +356,94 @@ def make_gradient_overlay(duration: float) -> ColorClip:
     return clip.with_mask(mask)
 
 
-def make_subtitle_clip(segment: SubtitleSegment) -> list:
-    """Subtitle overlay with per-line fitted orange background.
+def render_gradient_png(out_path: str) -> str:
+    """Write the readability gradient as a full-frame black RGBA PNG.
 
-    Each line of text gets its own rounded-rectangle background
-    sized exactly to that line's width — no wasted orange area.
-
-    When word-wrapping produces more than 2 lines (e.g. a long Dutch
-    compound word fills line 1 entirely, pushing later words into line 3),
-    the segment's duration is split proportionally by word count across
-    2-line chunks so that no words are silently dropped.
+    Same darkening profile as `make_gradient_overlay` (time-invariant), so it can
+    be burned once via ffmpeg overlay instead of composited every frame: black
+    pixels whose alpha follows the top/bottom darkening curve.
     """
-    from PIL import ImageDraw, ImageFont
+    alpha = np.zeros((VIDEO_HEIGHT, VIDEO_WIDTH), dtype=np.uint8)
+    for y in range(VIDEO_HEIGHT):
+        if y < VIDEO_HEIGHT * 0.15:
+            a = 0.70 * (1 - y / (VIDEO_HEIGHT * 0.15))
+        elif y > VIDEO_HEIGHT * 0.65:
+            a = 0.78 * ((y - VIDEO_HEIGHT * 0.65) / (VIDEO_HEIGHT * 0.35))
+        else:
+            a = 0.12
+        alpha[y, :] = int(round(a * 255))
+
+    rgba = np.zeros((VIDEO_HEIGHT, VIDEO_WIDTH, 4), dtype=np.uint8)
+    rgba[:, :, 3] = alpha  # RGB stays black
+    Image.fromarray(rgba).save(out_path)
+    return out_path
+
+
+def build_subtitle_overlays(
+    segments: List[SubtitleSegment],
+    hook_duration: float,
+    tmp_dir: str,
+) -> List[OverlaySpec]:
+    """Render word-timed subtitles as static RGBA PNGs + time windows.
+
+    Each line gets its own rounded-rectangle orange background sized to the
+    line. When word-wrapping yields >2 lines, the segment's duration is split
+    proportionally by word count across 2-line chunks so no words are dropped.
+    Segments starting within the hook window are skipped (the hook covers them).
+
+    Returns a list of OverlaySpec to be burned by the single ffmpeg pass.
+    """
+    from PIL import ImageFont
 
     try:
         font = ImageFont.truetype(FONT_PATH, SUBTITLE_FONT_SIZE)
     except Exception:
         font = ImageFont.load_default(size=SUBTITLE_FONT_SIZE)
 
-    pad_x, pad_y = 28, 12
+    pad_x = 28
     max_text_width = VIDEO_WIDTH - 2 * SUBTITLE_SAFE_MARGIN - 2 * pad_x
-
-    words = segment.text.split()
-    lines: list[str] = []
-    current_line: list[str] = []
-    for word in words:
-        test_line = " ".join(current_line + [word])
-        left, _, right, _ = font.getbbox(test_line)
-        if (right - left) > max_text_width and current_line:
-            lines.append(" ".join(current_line))
-            current_line = [word]
-        else:
-            current_line.append(word)
-    if current_line:
-        lines.append(" ".join(current_line))
-
     y_pos = int(VIDEO_HEIGHT * 0.80)
-    dur = segment.end - segment.start
-    total_words = len(words) or 1
 
-    line_chunks = [lines[i:i + 2] for i in range(0, len(lines), 2)]
-    chunk_word_counts = [sum(len(l.split()) for l in chunk) for chunk in line_chunks]
+    specs: List[OverlaySpec] = []
+    idx = 0
+    for segment in segments:
+        if segment.start < hook_duration:
+            continue
 
-    clips: list = []
-    current_start = segment.start
-    for chunk, wc in zip(line_chunks, chunk_word_counts):
-        fraction = wc / total_words
-        chunk_end = current_start + dur * fraction
-        clips.extend(_render_subtitle_chunk(chunk, font, current_start, chunk_end, y_pos))
-        current_start = chunk_end
+        words = segment.text.split()
+        lines: list[str] = []
+        current_line: list[str] = []
+        for word in words:
+            test_line = " ".join(current_line + [word])
+            left, _, right, _ = font.getbbox(test_line)
+            if (right - left) > max_text_width and current_line:
+                lines.append(" ".join(current_line))
+                current_line = [word]
+            else:
+                current_line.append(word)
+        if current_line:
+            lines.append(" ".join(current_line))
 
-    return clips
+        dur = segment.end - segment.start
+        total_words = len(words) or 1
+        line_chunks = [lines[i:i + 2] for i in range(0, len(lines), 2)]
+        chunk_word_counts = [sum(len(l.split()) for l in chunk) for chunk in line_chunks]
+
+        current_start = segment.start
+        for chunk, wc in zip(line_chunks, chunk_word_counts):
+            chunk_end = current_start + dur * (wc / total_words)
+            canvas = _render_subtitle_chunk_png(chunk, font)
+            png = os.path.join(tmp_dir, f"sub_{idx}.png")
+            canvas.save(png)
+            specs.append(OverlaySpec(png, y_pos, current_start, max(chunk_end, current_start + 0.05)))
+            current_start = chunk_end
+            idx += 1
+
+    return specs
 
 
-def _render_subtitle_chunk(
-    lines: list,
-    font,
-    start: float,
-    end: float,
-    y_pos: int,
-) -> list:
-    """Render 1–2 wrapped text lines as one orange-background subtitle clip."""
+def _render_subtitle_chunk_png(lines: list, font):
+    """Render 1–2 wrapped text lines as one orange-background RGBA image."""
     from PIL import ImageDraw
 
     pad_x, pad_y = 28, 12
@@ -425,25 +479,15 @@ def _render_subtitle_chunk(
         draw.text((text_x, text_y), line, font=font, fill=text_rgba)
         y += row_h + line_gap
 
-    r, g, b, a = canvas.split()
-    rgb_img = np.array(Image.merge("RGB", (r, g, b)))
-    alpha_img = np.array(a).astype(np.float64) / 255.0
-
-    dur = max(end - start, 0.05)
-    clip = ImageClip(rgb_img).with_duration(dur)
-    mask = ImageClip(alpha_img, is_mask=True).with_duration(dur)
-    clip = clip.with_mask(mask)
-    clip = clip.with_position((0, y_pos)).with_start(start)
-    return [clip]
+    return canvas
 
 
-def make_hook_clip(hook_text: str, duration: float = 3.0) -> list:
-    """Large centered hook overlay shown for the first N seconds.
+def build_hook_overlays(hook_text: str, tmp_dir: str, duration: float = 3.0) -> List[OverlaySpec]:
+    """Large centered hook overlay (white text on a dark scrim) for the first N s.
 
-    White bold text on a full-width semi-transparent dark scrim,
-    positioned in the upper half of the frame to avoid colliding
-    with the orange subtitle bar at 80%.
-    Returns ``[scrim_clip, text_clip]``.
+    Positioned in the upper half so it never collides with the orange subtitle
+    bar at 80%. Scrim + text are flattened into one RGBA PNG (white text over a
+    55%-opacity black bar) and returned as a single OverlaySpec.
     """
     from PIL import ImageDraw, ImageFont
 
@@ -485,25 +529,8 @@ def make_hook_clip(hook_text: str, duration: float = 3.0) -> list:
     scrim_top = int(VIDEO_HEIGHT * 0.30)
     scrim_h = total_text_h + 2 * pad_y
 
-    # ── Scrim (full-width semi-transparent dark bar) ──
-    scrim_arr = np.zeros((scrim_h, VIDEO_WIDTH, 4), dtype=np.uint8)
-    scrim_arr[:, :, 3] = int(255 * 0.55)  # 55% opacity black
-
-    r_s, g_s, b_s, a_s = (
-        Image.fromarray(scrim_arr[:, :, 0]),
-        Image.fromarray(scrim_arr[:, :, 1]),
-        Image.fromarray(scrim_arr[:, :, 2]),
-        Image.fromarray(scrim_arr[:, :, 3]),
-    )
-    scrim_rgb = np.array(Image.merge("RGB", (r_s, g_s, b_s)))
-    scrim_alpha = np.array(a_s).astype(np.float64) / 255.0
-
-    scrim_clip = ImageClip(scrim_rgb).with_duration(duration)
-    scrim_mask = ImageClip(scrim_alpha, is_mask=True).with_duration(duration)
-    scrim_clip = scrim_clip.with_mask(scrim_mask).with_position((0, scrim_top))
-
-    # ── Text ──
-    canvas = Image.new("RGBA", (VIDEO_WIDTH, scrim_h), (0, 0, 0, 0))
+    # One canvas: 55%-opacity black scrim, then white text on top.
+    canvas = Image.new("RGBA", (VIDEO_WIDTH, scrim_h), (0, 0, 0, int(255 * 0.55)))
     draw = ImageDraw.Draw(canvas)
     white = (255, 255, 255, 255)
 
@@ -514,15 +541,9 @@ def make_hook_clip(hook_text: str, duration: float = 3.0) -> list:
         draw.text((text_x, text_y), line, font=font, fill=white)
         y += row_h + line_gap
 
-    r_t, g_t, b_t, a_t = canvas.split()
-    text_rgb = np.array(Image.merge("RGB", (r_t, g_t, b_t)))
-    text_alpha = np.array(a_t).astype(np.float64) / 255.0
-
-    text_clip = ImageClip(text_rgb).with_duration(duration)
-    text_mask = ImageClip(text_alpha, is_mask=True).with_duration(duration)
-    text_clip = text_clip.with_mask(text_mask).with_position((0, scrim_top))
-
-    return [scrim_clip, text_clip]
+    png = os.path.join(tmp_dir, "hook.png")
+    canvas.save(png)
+    return [OverlaySpec(png, scrim_top, 0.0, duration)]
 
 
 def make_fact_overlay(
@@ -626,10 +647,8 @@ def make_fact_overlay(
     return [scrim_clip, text_clip]
 
 
-def make_fallback_background(duration: float) -> CompositeVideoClip:
-    """Animated gradient background (dark blue→teal) when no visuals are
-    available.  Uses Ken Burns motion so the screen is never static."""
-    # Build an oversized gradient image (Ken Burns needs room)
+def _gradient_base_image() -> np.ndarray:
+    """Oversized dark blue→teal gradient with grain (Ken Burns needs room)."""
     h = int(VIDEO_HEIGHT * 1.35)
     w = int(VIDEO_WIDTH * 1.35)
     img = np.zeros((h, w, 3), dtype=np.uint8)
@@ -642,11 +661,27 @@ def make_fallback_background(duration: float) -> CompositeVideoClip:
             b = int(55 + 35 * (1 - fy) + 12 * fx)
             img[y, x] = [r, g, b]
 
-    # Add subtle grain for texture
     grain = np.random.randint(0, 6, img.shape, dtype=np.uint8)
-    img = np.clip(img.astype(np.int16) + grain, 0, 255).astype(np.uint8)
+    return np.clip(img.astype(np.int16) + grain, 0, 255).astype(np.uint8)
 
-    prepared = img  # already oversized numpy array
+
+def render_fallback_bg_mp4(out_path: str, duration: float) -> Optional[str]:
+    """File-backed animated-gradient background for the ffmpeg news path.
+
+    Rare fallback (no article photo, no Pexels video, no Pexels photo). Writes
+    the gradient base to a PNG then reuses ffmpeg `render_ken_burns_mp4` so the
+    final assembly always has a real background file to overlay onto.
+    """
+    base_dir = os.path.dirname(out_path) or tempfile.gettempdir()
+    base_png = os.path.join(base_dir, "fallback_base.png")
+    Image.fromarray(_gradient_base_image()).save(base_png)
+    return render_ken_burns_mp4(base_png, duration, out_path)
+
+
+def make_fallback_background(duration: float) -> CompositeVideoClip:
+    """Animated gradient background (dark blue→teal) when no visuals are
+    available.  Uses Ken Burns motion so the screen is never static."""
+    prepared = _gradient_base_image()  # oversized numpy array
 
     def _frame(t):
         progress = t / duration if duration > 0 else 0

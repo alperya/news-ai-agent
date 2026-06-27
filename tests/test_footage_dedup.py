@@ -108,7 +108,7 @@ def test_render_ken_burns_mp4_produces_file(tmp_path):
 # ── 2c. Hybrid _build_background: cover-first ordering + cover_meta correctness ─
 
 def _patch_build_background(monkeypatch, *, cover_render, body_clips):
-    """Stub creator._build_background's heavy deps; capture compose_stock_scenes."""
+    """Stub creator._build_background's heavy deps; capture the stitched clip list."""
     import video.creator as C
     captured = {}
     monkeypatch.setattr(C, "download_image", lambda url, d: "/tmp/news.jpg")
@@ -123,9 +123,8 @@ def _patch_build_background(monkeypatch, *, cover_render, body_clips):
         return list(body_clips)
 
     monkeypatch.setattr(C, "fetch_stock_clips", _fake_fetch)
-    monkeypatch.setattr(C, "compose_stock_scenes",
-                        lambda paths, dur: captured.update(paths=paths) or "CLIP")
-    monkeypatch.setattr(C, "make_ken_burns_clip", lambda p, d: "KB")
+    monkeypatch.setattr(C, "_stitch_clips_to_file",
+                        lambda paths, dur: captured.update(paths=paths) or "MERGED")
     return C, captured
 
 
@@ -140,7 +139,7 @@ def test_hybrid_cover_is_first_and_meta_recorded(monkeypatch):
         "t", "c", "https://img/fresh.jpg", "/tmp", 30.0,
         recent_image_urls=set(), recent_cover_hashes=[], cover_meta_out=meta,
     )
-    assert result == "CLIP"
+    assert result == "MERGED"
     assert captured["paths"] == ["/tmp/cover_kb.mp4", "/tmp/b0.mp4", "/tmp/b1.mp4"]
     assert meta == {"cover_image_url": "https://img/fresh.jpg", "cover_image_hash": 42}
 
@@ -156,7 +155,7 @@ def test_cover_render_failure_falls_back_to_stock_without_meta(monkeypatch):
         "t", "c", "https://img/fresh.jpg", "/tmp", 30.0,
         recent_image_urls=set(), recent_cover_hashes=[], cover_meta_out=meta,
     )
-    assert result == "CLIP"
+    assert result == "MERGED"
     assert captured["paths"] == ["/tmp/b0.mp4", "/tmp/b1.mp4"]  # no cover prepended
     assert meta == {}  # photo wasn't the cover → not recorded
 
@@ -173,9 +172,48 @@ def test_recently_used_photo_skipped_as_cover(monkeypatch):
         recent_image_urls={"https://img/seen.jpg"}, recent_cover_hashes=[],
         cover_meta_out=meta,
     )
-    assert result == "CLIP"
+    assert result == "MERGED"
     assert captured["paths"] == ["/tmp/b0.mp4"]  # stock only, no cover render
     assert meta == {}
+
+
+# ── 2d. Single-pass ffmpeg assembly (render speedup) ─────────────────────────
+
+def test_assemble_reel_produces_video(tmp_path):
+    """assemble_reel burns overlays + audio onto bg in one ffmpeg pass."""
+    import subprocess
+    from imageio_ffmpeg import get_ffmpeg_exe
+    from video.effects import render_gradient_png, build_hook_overlays, OverlaySpec
+    from video.ffcompose import assemble_reel
+
+    ff = get_ffmpeg_exe()
+    bg = tmp_path / "bg.mp4"
+    subprocess.run([ff, "-y", "-f", "lavfi", "-i",
+                    "color=c=navy:s=1080x1920:d=3:r=30",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                    str(bg)], capture_output=True, check=True)
+    audio = tmp_path / "a.m4a"
+    subprocess.run([ff, "-y", "-f", "lavfi", "-i",
+                    "anullsrc=channel_layout=stereo:sample_rate=44100",
+                    "-t", "5", "-c:a", "aac", str(audio)], capture_output=True, check=True)
+
+    overlays = [OverlaySpec(render_gradient_png(str(tmp_path / "grad.png")), 0, 0.0, 5.0)]
+    overlays += build_hook_overlays("Test hook here", str(tmp_path), duration=3.0)
+
+    out = tmp_path / "out.mp4"
+    result = assemble_reel(str(bg), str(audio), overlays, 5.0, str(out))
+    assert result == str(out)
+    assert out.exists() and out.stat().st_size > 0
+
+
+def test_render_gradient_png_is_full_frame_rgba(tmp_path):
+    """render_gradient_png writes a full-frame RGBA image (black, graded alpha)."""
+    from video.effects import render_gradient_png
+    from video.config import VIDEO_WIDTH, VIDEO_HEIGHT
+    from PIL import Image
+    p = render_gradient_png(str(tmp_path / "g.png"))
+    img = Image.open(p)
+    assert img.mode == "RGBA" and img.size == (VIDEO_WIDTH, VIDEO_HEIGHT)
 
 
 # ── 3. Signatures wire the dedup params through ───────────────────────────────
