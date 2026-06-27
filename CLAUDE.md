@@ -46,6 +46,12 @@ Instagram access tokens have a 60-day TTL. A dedicated Lambda runs every 30 days
 **Duplicate detection**
 On every run, main handler reads all `posts_*.json` files from S3 to build a set of published URLs and filters them out before AI processing. No database needed — S3 scan is acceptable at this volume. Additionally, `original_title` values from posts published in the last 3 days are passed to `batch_selection` as context so the AI skips articles covering already-published topics even when they come from different sources (cross-source semantic dedup).
 
+**Cover de-duplication (Reels)**
+Same problem, visual layer: similar news (heatwaves, weather) used to reuse the identical Pexels cover clip. Two defenses, both fed by the same `get_published_urls()` S3 scan (now also returns footage fingerprints from posts in the last `FOOTAGE_REUSE_WINDOW_DAYS`, default 30):
+1. **Real photo preferred as cover.** When the article's own image is *fresh* it becomes the cover (Ken Burns) with Pexels stock filling the body — `creator._build_background` hybrid. Freshness = its URL wasn't used recently **and** it isn't a perceptual near-duplicate of a recent cover (`effects.compute_dhash`/`hamming`, threshold ~10) — this catches NOS's recurring "weekdienst" template card even at a different URL.
+2. **Pexels id fresh-first.** When stock clips are used, ids from the reuse window are moved to the back of the candidate list (not hard-filtered) so the cover is fresh but the body never degrades to a gradient when the pool is small. `footage.fetch_stock_clips` records the ids actually used.
+Each Reel post persists `pexels_media_ids`, `cover_image_url`, `cover_image_hash` into `posts_*.json` for the next run's scan. News Reels only (events/daily-fact opt out).
+
 ---
 
 ## Source Files

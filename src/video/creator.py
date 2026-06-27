@@ -13,15 +13,17 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Set
 
-from moviepy import AudioFileClip, CompositeVideoClip
+from moviepy import AudioFileClip, CompositeVideoClip, concatenate_videoclips
 
 from .config import FPS, VIDEO_WIDTH, VIDEO_HEIGHT, BG_MUSIC_VOLUME, reading_seconds
 from .tts import generate_tts, clean_for_narration
 from .footage import fetch_stock_clips, fetch_stock_image, download_image
 from .effects import (
     compose_stock_scenes,
+    compute_dhash,
+    hamming,
     make_hook_clip,
     make_fact_overlay,
     make_ken_burns_clip,
@@ -32,6 +34,14 @@ from .effects import (
 from .audio import mix_audio
 
 logger = logging.getLogger(__name__)
+
+# Max Hamming distance (out of 64 dHash bits) for two cover images to count as
+# near-duplicates — catches NOS's recurring "weekdienst" template card even at
+# a different URL. Lower = stricter; ~8-10 distinguishes near-dups from distinct.
+COVER_HASH_THRESHOLD = 10
+
+# Length of the real-photo cover scene in the hybrid composition (seconds).
+COVER_SCENE_DURATION = 4.0
 
 # Keywords/emojis that signal positive/happy news
 _POSITIVE_EMOJIS = frozenset(
@@ -96,6 +106,11 @@ def create_news_video(
     hook: str = "",
     avoid_terms: Optional[List[str]] = None,
     ai_agent=None,
+    exclude_media_ids: Optional[Set[int]] = None,
+    recent_image_urls: Optional[Set[str]] = None,
+    recent_cover_hashes: Optional[List[int]] = None,
+    used_media_ids: Optional[List[int]] = None,
+    cover_meta_out: Optional[dict] = None,
 ) -> str:
     """Create a Reels-format news video.
 
@@ -106,9 +121,16 @@ def create_news_video(
         hashtags:        List of hashtag strings.
         output_path:     Where to save the final .mp4.
         emoji:           Emoji for branding (unused in video).
-        image_url:       URL of the news article image (Ken Burns fallback).
+        image_url:       URL of the news article image (preferred as cover).
         footage_queries: AI-generated Pexels queries (specific → generic).
                          Falls back to keyword extraction when empty.
+        exclude_media_ids:   Pexels video ids used within the reuse window
+                             (de-prioritised so the cover is fresh).
+        recent_image_urls:   Article image URLs used recently (skip as cover).
+        recent_cover_hashes: dHashes of recent covers (near-dup detection).
+        used_media_ids:      Out-param — appended with Pexels ids actually used.
+        cover_meta_out:      Out-param dict — populated with cover_image_url /
+                             cover_image_hash when a real photo becomes the cover.
 
     Returns:
         Absolute path to the generated video file.
@@ -147,6 +169,11 @@ def create_news_video(
             footage_queries=footage_queries,
             avoid_terms=avoid_terms,
             ai_agent=ai_agent,
+            exclude_ids=exclude_media_ids,
+            recent_image_urls=recent_image_urls,
+            recent_cover_hashes=recent_cover_hashes,
+            used_ids_out=used_media_ids,
+            cover_meta_out=cover_meta_out,
         )
 
         # ── 3. Compose layers ────────────────────────────────────────
@@ -342,31 +369,85 @@ def _build_background(
     footage_queries: Optional[List[str]] = None,
     avoid_terms: Optional[List[str]] = None,
     ai_agent=None,
+    exclude_ids: Optional[Set[int]] = None,
+    recent_image_urls: Optional[Set[str]] = None,
+    recent_cover_hashes: Optional[List[int]] = None,
+    used_ids_out: Optional[List[int]] = None,
+    cover_meta_out: Optional[dict] = None,
 ) -> CompositeVideoClip:
-    """Build visuals with 4-tier fallback:
-    1. Pexels stock video clips → multi-scene composition
-    2. Article image_url       → Ken Burns
-    3. Pexels stock photo      → Ken Burns
-    4. Animated gradient       → Ken Burns motion
+    """Build visuals with a freshness-aware fallback chain:
+    1. Real news photo (if fresh) → cover, with Pexels stock body (hybrid)
+    2. Pexels stock video clips    → multi-scene composition (id-deduped)
+    3. Pexels stock photo          → Ken Burns
+    4. Animated gradient           → Ken Burns motion
+
+    A real news photo is preferred as the cover (authentic + naturally distinct
+    per article) but only when it is *fresh*: its URL was not used recently and
+    it is not a perceptual near-duplicate of a recent cover (catches NOS's
+    recurring "weekdienst" template card). Otherwise the cover falls back to a
+    fresh Pexels stock clip.
     """
-    # Priority 1 — Stock footage from Pexels
+    recent_image_urls = recent_image_urls or set()
+    recent_cover_hashes = recent_cover_hashes or []
+
+    # Priority 1 — Real news photo as cover (only when fresh)
+    cover_img_path = None
+    if image_url and image_url not in recent_image_urls:
+        candidate = download_image(image_url, tmp_dir)
+        if candidate:
+            try:
+                dhash = compute_dhash(candidate)
+                is_near_dup = any(
+                    hamming(dhash, h) <= COVER_HASH_THRESHOLD
+                    for h in recent_cover_hashes
+                )
+            except Exception as e:
+                logger.warning(f"⚠️  Could not hash article image: {e}")
+                dhash, is_near_dup = None, False
+            if is_near_dup:
+                logger.info("   ♻️  Article image is a recent near-duplicate — using stock cover")
+            else:
+                cover_img_path = candidate
+                if cover_meta_out is not None:
+                    cover_meta_out["cover_image_url"] = image_url
+                    if dhash is not None:
+                        cover_meta_out["cover_image_hash"] = dhash
+    elif image_url:
+        logger.info("   ♻️  Article image URL used recently — using stock cover")
+
+    if cover_img_path:
+        cover_dur = min(COVER_SCENE_DURATION, duration * 0.4)
+        prepared = prepare_image_for_portrait(cover_img_path, tmp_dir)
+        cover_clip = make_ken_burns_clip(prepared, cover_dur)
+        body_paths = fetch_stock_clips(
+            title, content, tmp_dir,
+            footage_queries=footage_queries,
+            avoid_terms=avoid_terms,
+            headline=title,
+            ai_agent=ai_agent,
+            exclude_ids=exclude_ids,
+            used_ids_out=used_ids_out,
+        )
+        if body_paths:
+            logger.info(f"   🎬 Hybrid: real-photo cover + {len(body_paths)} stock scenes")
+            body = compose_stock_scenes(body_paths, duration - cover_dur)
+            return concatenate_videoclips([cover_clip, body], method="compose")
+        logger.info("   🖼️  Real-photo cover only (no stock body available)")
+        return make_ken_burns_clip(prepared, duration)
+
+    # Priority 2 — Stock footage from Pexels (cover from stock, id-deduped)
     clip_paths = fetch_stock_clips(
         title, content, tmp_dir,
         footage_queries=footage_queries,
         avoid_terms=avoid_terms,
         headline=title,
         ai_agent=ai_agent,
+        exclude_ids=exclude_ids,
+        used_ids_out=used_ids_out,
     )
     if clip_paths:
         logger.info(f"   🎬 Using {len(clip_paths)} stock video clips")
         return compose_stock_scenes(clip_paths, duration)
-
-    # Priority 2 — Ken Burns on article image
-    img_path = download_image(image_url, tmp_dir) if image_url else None
-    if img_path:
-        prepared = prepare_image_for_portrait(img_path, tmp_dir)
-        logger.info("   🖼️  Ken Burns effect on news image")
-        return make_ken_burns_clip(prepared, duration)
 
     # Priority 3 — Ken Burns on Pexels stock photo
     stock_img = fetch_stock_image(title, content, tmp_dir)

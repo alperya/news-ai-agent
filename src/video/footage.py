@@ -10,7 +10,7 @@ Cost: $0/month  (Pexels API is free — https://www.pexels.com/api/)
 import logging
 import os
 import re
-from typing import List, Optional
+from typing import List, Optional, Set
 
 import requests as http_requests
 from PIL import Image
@@ -89,6 +89,8 @@ def fetch_stock_clips(
     avoid_terms: Optional[List[str]] = None,
     headline: str = "",
     ai_agent=None,
+    exclude_ids: Optional[Set[int]] = None,
+    used_ids_out: Optional[List[int]] = None,
 ) -> List[str]:
     """Fetch stock video clips from Pexels matching the news topic.
 
@@ -99,6 +101,12 @@ def fetch_stock_clips(
     *avoid_terms* and *ai_agent* enable thumbnail validation: before
     downloading, Haiku vision checks each thumbnail against the headline and
     skips misleading clips (wrong weather, wrong landmark, etc.).
+
+    *exclude_ids* are Pexels video ids used within the reuse window; they are
+    moved to the back of the candidate list (fresh-first) so the cover (first
+    downloaded clip) is fresh, while still allowing reuse if the pool is small.
+    When *used_ids_out* is provided, the ids of the downloaded clips are
+    appended in order (``used_ids_out[0]`` is the cover).
 
     Returns list of local file paths (up to *count*).
     """
@@ -117,6 +125,8 @@ def fetch_stock_clips(
             headline=headline or title,
             avoid_terms=avoid_terms,
             ai_agent=ai_agent,
+            exclude_ids=exclude_ids,
+            used_ids_out=used_ids_out,
         )
         if paths:
             return paths
@@ -133,6 +143,8 @@ def _fetch_clips_for_query(
     headline: str = "",
     avoid_terms: Optional[List[str]] = None,
     ai_agent=None,
+    exclude_ids: Optional[Set[int]] = None,
+    used_ids_out: Optional[List[int]] = None,
 ) -> List[str]:
     """Try a single query and return downloaded clip paths (empty list if insufficient)."""
     logger.info(f"🔍 Searching Pexels videos for: '{query}'")
@@ -148,6 +160,16 @@ def _fetch_clips_for_query(
 
     if not videos:
         return []
+
+    # Fresh-first: de-prioritise clips used within the reuse window so the
+    # cover (first downloaded) is fresh. Stale clips stay available to fill the
+    # body if the pool is small — never degrade to a gradient fallback.
+    if exclude_ids:
+        fresh = [v for v in videos if v.get("id") not in exclude_ids]
+        stale = [v for v in videos if v.get("id") in exclude_ids]
+        if fresh and stale:
+            videos = fresh + stale
+            logger.info(f"   ♻️  Moved {len(stale)} recently-used clip(s) to the back")
 
     # Thumbnail validation: filter out misleading clips before downloading
     if ai_agent and headline and videos:
@@ -171,6 +193,8 @@ def _fetch_clips_for_query(
         clip_path = _download_clip(video, idx, tmp_dir)
         if clip_path:
             paths.append(clip_path)
+            if used_ids_out is not None and video.get("id") is not None:
+                used_ids_out.append(video["id"])
 
     logger.info(f"📥 Downloaded {len(paths)}/{count} clips for '{query}'")
     return paths

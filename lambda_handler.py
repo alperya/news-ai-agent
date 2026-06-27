@@ -171,19 +171,40 @@ def save_to_s3(data, filename, bucket_name):
         logger.error(f"❌ Failed to save to S3: {str(e)}")
 
 
+# Days within which a footage asset (Pexels clip or news cover photo) is
+# considered "recently used" and avoided as a Reel cover. Tunable via env.
+FOOTAGE_REUSE_WINDOW_DAYS = int(os.environ.get('FOOTAGE_REUSE_WINDOW_DAYS', '30'))
+
+
 def get_published_urls(bucket_name):
     """
-    Get set of previously published article URLs from S3, plus titles from the last 3 days.
+    Get previously published article URLs from S3, plus recency-windowed dedup data.
+
+    A single S3 scan of all ``posts_*.json`` files yields, per file, its
+    timestamp (from the filename) used to apply two windows: a 3-day window for
+    semantic title dedup and a FOOTAGE_REUSE_WINDOW_DAYS window for footage dedup.
 
     Returns:
-        tuple[set, list[str]]: (published_urls, recent_titles)
+        tuple[set, list[str], dict]: (published_urls, recent_titles, footage)
             published_urls — all-time URL set for exact-duplicate filtering
             recent_titles  — original_title values from the past 72 h for semantic dedup
+            footage        — {'pexels_ids': set[int], 'image_urls': set[str],
+                              'cover_hashes': list[int]} used within the reuse window
     """
     published_urls = set()
     recent_titles = []
+    recent_pexels_ids = set()
+    recent_image_urls = set()
+    recent_cover_hashes = []
     s3_client = boto3.client('s3')
-    cutoff = datetime.now(timezone.utc) - timedelta(days=3)
+    title_cutoff = datetime.now(timezone.utc) - timedelta(days=3)
+    footage_cutoff = datetime.now(timezone.utc) - timedelta(days=FOOTAGE_REUSE_WINDOW_DAYS)
+
+    footage = {
+        'pexels_ids': recent_pexels_ids,
+        'image_urls': recent_image_urls,
+        'cover_hashes': recent_cover_hashes,
+    }
 
     try:
         # Get all posts_*.json files from S3
@@ -194,7 +215,7 @@ def get_published_urls(bucket_name):
 
         if 'Contents' not in list_response:
             logger.info("📋 No previous posts found in S3")
-            return published_urls, recent_titles
+            return published_urls, recent_titles, footage
 
         logger.info(f"🔍 Checking {len(list_response['Contents'])} posts files for duplicates...")
 
@@ -205,10 +226,12 @@ def get_published_urls(bucket_name):
 
             # Parse timestamp from filename "posts_YYYYMMDD_HHMMSS.json" to detect recency
             is_recent = False
+            within_footage_window = False
             try:
                 ts_str = key[len('posts_'):-len('.json')]  # e.g. "20260619_143200"
                 file_dt = datetime.strptime(ts_str, '%Y%m%d_%H%M%S').replace(tzinfo=timezone.utc)
-                is_recent = file_dt >= cutoff
+                is_recent = file_dt >= title_cutoff
+                within_footage_window = file_dt >= footage_cutoff
             except ValueError:
                 pass
 
@@ -217,7 +240,7 @@ def get_published_urls(bucket_name):
                 obj_response = s3_client.get_object(Bucket=bucket_name, Key=key)
                 posts_data = json.loads(obj_response['Body'].read().decode('utf-8'))
 
-                # Extract URLs (all-time) and titles (recent only)
+                # Extract URLs (all-time), titles (3 days), footage (reuse window)
                 if isinstance(posts_data, list):
                     for post in posts_data:
                         if isinstance(post, dict):
@@ -228,17 +251,31 @@ def get_published_urls(bucket_name):
                                 title = post.get('original_title')
                                 if title:
                                     recent_titles.append(title)
+                            if within_footage_window:
+                                for pid in post.get('pexels_media_ids') or []:
+                                    recent_pexels_ids.add(pid)
+                                cover_url = post.get('cover_image_url') or post.get('image_url')
+                                if cover_url:
+                                    recent_image_urls.add(cover_url)
+                                chash = post.get('cover_image_hash')
+                                if chash is not None:
+                                    recent_cover_hashes.append(chash)
 
             except Exception as e:
                 logger.debug(f"Error reading {key}: {str(e)}")
                 continue
 
-        logger.info(f"📋 Found {len(published_urls)} previously published articles ({len(recent_titles)} in last 3 days)")
-        return published_urls, recent_titles
+        logger.info(
+            f"📋 Found {len(published_urls)} published articles "
+            f"({len(recent_titles)} in last 3 days; "
+            f"{len(recent_pexels_ids)} Pexels ids / {len(recent_cover_hashes)} covers "
+            f"in last {FOOTAGE_REUSE_WINDOW_DAYS} days)"
+        )
+        return published_urls, recent_titles, footage
 
     except Exception as e:
         logger.error(f"❌ Error getting published URLs: {str(e)}")
-        return published_urls, recent_titles
+        return published_urls, recent_titles, footage
 
 
 def _invoke_youtube_async(lambda_client, s3_video_key, post_content, hook, hashtags, bucket_name, timestamp, context=''):
@@ -595,7 +632,7 @@ def lambda_handler(event, context):
         
         # Filter out already published articles
         logger.info("\n🔍 DUPLICATE CHECK: Checking for previously published articles...")
-        published_urls, recent_titles = get_published_urls(bucket_name)
+        published_urls, recent_titles, recent_footage = get_published_urls(bucket_name)
         original_count = len(articles_data)
 
         if published_urls:
@@ -738,7 +775,11 @@ def lambda_handler(event, context):
                         description=post.get('content', ''),
                     )
 
-                    # Generate video and upload to S3
+                    # Generate video and upload to S3.
+                    # Capture which footage was used so future runs avoid reusing
+                    # the same cover (Pexels clip or news photo) within the window.
+                    used_media_ids = []
+                    cover_meta = {}
                     video_path = f'/tmp/reels_{timestamp}.mp4'
                     create_news_video(
                         title=post.get('original_title', ''),
@@ -752,7 +793,16 @@ def lambda_handler(event, context):
                         hook=post.get('hook', ''),
                         avoid_terms=avoid_terms,
                         ai_agent=ai_agent,
+                        exclude_media_ids=recent_footage['pexels_ids'],
+                        recent_image_urls=recent_footage['image_urls'],
+                        recent_cover_hashes=recent_footage['cover_hashes'],
+                        used_media_ids=used_media_ids,
+                        cover_meta_out=cover_meta,
                     )
+                    # Persist footage fingerprints onto the post record (saved to
+                    # posts_*.json below) for the next run's dedup scan.
+                    post['pexels_media_ids'] = used_media_ids
+                    post.update(cover_meta)
 
                     s3_video_key = f'reels/reels_{timestamp}.mp4'
                     s3_client = boto3.client('s3')

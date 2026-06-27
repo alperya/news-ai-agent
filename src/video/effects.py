@@ -40,6 +40,36 @@ from .tts import SubtitleSegment
 logger = logging.getLogger(__name__)
 
 
+# ── Perceptual hashing (near-duplicate cover detection) ───────────────────────
+
+def compute_dhash(img_path: str, hash_size: int = 8) -> int:
+    """Perceptual difference-hash (dHash) of an image → 64-bit int.
+
+    Resizes to (hash_size+1)×hash_size grayscale and compares horizontally
+    adjacent pixels. Visually similar images yield small Hamming distances
+    even when served at different URLs / resolutions (e.g. NOS's recurring
+    "weekdienst" template card). Pure-Pillow — no extra dependency.
+    """
+    with Image.open(img_path) as img:
+        small = img.convert("L").resize(
+            (hash_size + 1, hash_size), Image.Resampling.LANCZOS,
+        )
+        pixels = list(small.getdata())
+
+    bits = 0
+    for row in range(hash_size):
+        for col in range(hash_size):
+            left = pixels[row * (hash_size + 1) + col]
+            right = pixels[row * (hash_size + 1) + col + 1]
+            bits = (bits << 1) | (1 if left > right else 0)
+    return bits
+
+
+def hamming(a: int, b: int) -> int:
+    """Number of differing bits between two integer hashes."""
+    return bin(a ^ b).count("1")
+
+
 # ── Stock-footage scene assembly ──────────────────────────────────────────────
 
 def compose_stock_scenes(

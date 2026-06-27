@@ -30,10 +30,11 @@ The afternoon posting slot automatically generates an Instagram Reels video:
 
 1. **Hook overlay** — AI-generated attention sentence displayed in large white text for the first 3 seconds
 2. **TTS Narration** — ElevenLabs Multilingual v2 (natural voice) with edge-tts fallback (free); 75–95 word target (~30–40 s)
-3. **Stock Footage** — Pexels API auto-selects relevant HD clips based on AI-generated queries; Haiku vision validates thumbnails against the headline before download to filter out misleading visuals
-4. **Subtitles** — Word-timed orange subtitle overlay (62px Montserrat Bold, lower-third TikTok placement)
-5. **Background Music** — Mood-based: upbeat (`news_music.mp3`) for positive news, calm/alternative (60/40) for neutral
-6. **4-tier Visual Fallback** — Pexels video → article image → Pexels photo → animated gradient
+3. **Cover & Footage** — when the article's own photo is *fresh* it becomes the cover (Ken Burns) with Pexels stock clips filling the body (hybrid); otherwise Pexels clips are used throughout. AI-generated queries + Haiku thumbnail validation pick relevant clips
+4. **Cover de-duplication** — the same cover (Pexels clip *or* news photo) is never reused within `FOOTAGE_REUSE_WINDOW_DAYS` (default 30); near-duplicate photos are caught by a perceptual hash so a recurring source template card can't repeat
+5. **Subtitles** — Word-timed orange subtitle overlay (62px Montserrat Bold, lower-third TikTok placement)
+6. **Background Music** — Mood-based: upbeat (`news_music.mp3`) for positive news, calm/alternative (60/40) for neutral
+7. **Visual Fallback** — fresh news photo cover → Pexels stock video → Pexels photo → animated gradient
 
 Video specs: 1080×1920 (9:16), 30 FPS, H.264 High, 4000 kbps, AAC audio, 9 stock clips per video, target duration 30–45 s.
 
@@ -134,7 +135,7 @@ python3 scripts/update_secrets.py
 │   └── lambda.txt                 # Lambda runtime dependencies
 ├── infrastructure/
 │   └── terraform/                 # AWS infrastructure (Lambda, S3, EventBridge)
-├── tests/                         # Test suite (166 tests)
+├── tests/                         # Test suite (252 tests)
 ├── output/                        # Generated articles & posts (gitignored)
 └── errors/                        # Rejected/corrected posts log (gitignored)
 ```
@@ -235,7 +236,7 @@ make test
 # or
 pytest tests/ -v
 
-# 174 tests covering scraper, AI agent, quality gate, video pipeline,
+# 252 tests covering scraper, AI agent, quality gate, video pipeline,
 # social publisher, YouTube publisher/worker, event scraper, event card,
 # notifier, token refresher, lambda handler (incl. YouTube isolation test)
 ```
