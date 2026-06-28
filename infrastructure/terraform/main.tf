@@ -313,8 +313,9 @@ locals {
     reels_publish     = { name = aws_lambda_function.reels_publish.function_name, retries = 2 }
     youtube_publish   = { name = aws_lambda_function.youtube_publish.function_name, retries = 2 }
     token_refresh     = { name = aws_lambda_function.token_refresh.function_name, retries = 2 }
-    metrics_collector = { name = aws_lambda_function.metrics_collector.function_name, retries = 2 }
-    analytics_engine  = { name = aws_lambda_function.analytics_engine.function_name, retries = 2 }
+    metrics_collector  = { name = aws_lambda_function.metrics_collector.function_name, retries = 2 }
+    analytics_engine   = { name = aws_lambda_function.analytics_engine.function_name, retries = 2 }
+    selection_reviewer = { name = aws_lambda_function.selection_reviewer.function_name, retries = 2 }
   } : {}
 }
 

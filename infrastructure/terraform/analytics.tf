@@ -374,6 +374,80 @@ resource "aws_lambda_permission" "allow_analytics_engine_eventbridge" {
 }
 
 # ──────────────────────────────────────────────────────────
+# Lambda — Selection Reviewer (weekly Sunday 19:00 AMS = 17:00 UTC)
+# Reviews the week's editorial picks and emails an AI growth/commercial review.
+# Reuses the analytics IAM role (S3 read + DynamoDB read + SNS publish + Secrets).
+# ──────────────────────────────────────────────────────────
+resource "aws_lambda_function" "selection_reviewer" {
+  s3_bucket        = aws_s3_bucket.results.id
+  s3_key           = aws_s3_object.lambda_zip.key
+  function_name    = "${var.project_name}-selection-reviewer"
+  role             = aws_iam_role.lambda_role.arn
+  handler          = "lambda_handler.handler_selection_review"
+  runtime          = "python3.12"
+  timeout          = 300  # 5 min — Claude Opus review can take ~30-90s
+  memory_size      = 512
+
+  source_code_hash = filebase64sha256("../../lambda_deployment.zip")
+
+  environment {
+    variables = {
+      RESULTS_BUCKET        = aws_s3_bucket.results.id
+      SECRET_NAME           = aws_secretsmanager_secret.credentials.name
+      METRICS_TABLE         = aws_dynamodb_table.post_metrics.name
+      SNS_ALERT_TOPIC_ARN   = var.alert_email != "" ? aws_sns_topic.alerts[0].arn : ""
+    }
+  }
+
+  tags = {
+    Name        = "${var.project_name}-selection-reviewer"
+    Environment = "production"
+    ManagedBy   = "terraform"
+  }
+
+  depends_on = [
+    aws_iam_role_policy.analytics_policy,
+    aws_dynamodb_table.post_metrics,
+    aws_s3_object.lambda_zip,
+  ]
+}
+
+resource "aws_cloudwatch_log_group" "selection_reviewer_logs" {
+  name              = "/aws/lambda/${var.project_name}-selection-reviewer"
+  retention_in_days = 30
+
+  tags = {
+    Name      = "${var.project_name}-selection-reviewer-logs"
+    ManagedBy = "terraform"
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "selection_reviewer_schedule" {
+  name                = "${var.project_name}-selection-reviewer"
+  description         = "Weekly selection review — Sunday 19:00 Amsterdam (17:00 UTC)"
+  schedule_expression = "cron(0 17 ? * SUN *)"
+
+  tags = {
+    Name      = "${var.project_name}-selection-reviewer-schedule"
+    ManagedBy = "terraform"
+  }
+}
+
+resource "aws_cloudwatch_event_target" "selection_reviewer_target" {
+  rule      = aws_cloudwatch_event_rule.selection_reviewer_schedule.name
+  target_id = "selection-reviewer-lambda"
+  arn       = aws_lambda_function.selection_reviewer.arn
+}
+
+resource "aws_lambda_permission" "allow_selection_reviewer_eventbridge" {
+  statement_id  = "AllowExecutionFromEventBridgeSelectionReviewer"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.selection_reviewer.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.selection_reviewer_schedule.arn
+}
+
+# ──────────────────────────────────────────────────────────
 # Outputs
 # ──────────────────────────────────────────────────────────
 output "post_metrics_table_name" {

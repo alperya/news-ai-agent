@@ -14,6 +14,7 @@ Dutch-language social media automation: scrapes NOS/RTL news + 8 NL event source
 | `token_refresher` | `token_refresher.py` | EventBridge every 30 days | Refreshes Instagram 60-day token before expiry |
 | `handler_metrics_collector` | `lambda_handler.py` | EventBridge daily 02:00 AMS | Fetches Instagram Insights, writes to DynamoDB |
 | `handler_analytics_engine` | `lambda_handler.py` | EventBridge Sunday 22:00 AMS | Claude analytics + prompt auto-update + SNS email |
+| `handler_selection_review` | `lambda_handler.py` | EventBridge Sunday 19:00 AMS | Weekly editorial review: digests the week's article picks + top-7 runner-ups + engagement, emails an Opus growth/commercial review |
 
 **Run mode detection** in `lambda_handler`: `event.get('format') == 'event_post'` → events pipeline; `event.get('format') == 'daily_fact'` → daily Dutch-fact Story pipeline; `event.get('format') == 'reels'` → Reels mode; otherwise → photo post.
 
@@ -53,7 +54,10 @@ All four prompts (`AI_PROMPT_BATCH_SELECTION`, `AI_PROMPT_SINGLE_ARTICLE`, `AI_P
 Instagram access tokens have a 60-day TTL. A dedicated Lambda runs every 30 days to exchange the token via Meta Graph API and write the new token back to Secrets Manager.
 
 **Duplicate detection**
-On every run, main handler reads all `posts_*.json` files from S3 to build a set of published URLs and filters them out before AI processing. No database needed — S3 scan is acceptable at this volume. Additionally, `original_title` values from posts published in the last 3 days are passed to `batch_selection` as context so the AI skips articles covering already-published topics even when they come from different sources (cross-source semantic dedup).
+On every run, main handler reads all `posts_*.json` files from S3 to build a set of published URLs and filters them out before AI processing. No database needed — S3 scan is acceptable at this volume. Additionally, `original_title` values from posts published in the last 3 days are passed to `batch_selection` as context so the AI skips articles covering already-published topics even when they come from different sources (cross-source semantic dedup). This is a **soft prompt instruction**, not a hard filter. The instruction targets the **same specific event** (the same match result/accident/announcement re-reported), and explicitly **permits follow-ups on an escalating situation** — new damage, casualties, a distinct phenomenon — so e.g. an already-covered heatwave does not suppress the storms/lightning damage that end it (those are separate, newsworthy events). Refined after a storm/windmill story was wrongly skipped as "same as" a prior heat story.
+
+**Editorial selection transparency + weekly review**
+`batch_selection` returns, alongside the chosen article, a `selection_reason` and a `runner_ups` array — together the **top-7** pool candidates with their Tier and why-not — persisted into `posts_*.json` and emitted as a structured `selection_decision` CloudWatch log (survives S3 pruning; back-compat: absent on pre-update runs). A separate weekly Lambda (`handler_selection_review` → `src/selection_reviewer.py`, Sunday 19:00 AMS) pairs each week's pool (`articles_*.json`) with its pick, joins Instagram engagement (DynamoDB `post-metrics`, best-effort caption/time match), and emails the most advanced Claude (`SELECTION_REVIEW_MODEL`, default `claude-opus-4-8`) acting as a growth/content/platform/commercial panel — surfacing weak picks, missed high-engagement candidates, and concrete prompt/dedup/schedule revisions to drive follower growth toward monetization. Reports only; never mutates prompts.
 
 **Cover de-duplication (Reels)**
 Same problem, visual layer: similar news (heatwaves, weather) used to reuse the identical Pexels cover clip. Two defenses, both fed by the same `get_published_urls()` S3 scan (now also returns footage fingerprints from posts in the last `FOOTAGE_REUSE_WINDOW_DAYS`, default 30):
@@ -77,6 +81,7 @@ Each Reel post persists `pexels_media_ids`, `cover_image_url`, `cover_image_hash
 | `src/youtube_worker.py` | Async YouTube Shorts Lambda handler (mirrored pattern from `reels_worker`) |
 | `src/event_scraper.py` | 8-source NL event scraping (Ticketmaster, RSS, HTML) → `EventItem` objects |
 | `src/notifier.py` | AWS SNS email alerts — `send_alert()`, `send_event_summary()` |
+| `src/selection_reviewer.py` | Weekly editorial review: pairs `articles_*.json` pools with `posts_*.json` picks, joins engagement (DynamoDB), emails an Opus growth/content/platform/commercial review |
 | `src/reels_worker.py` | Async Instagram Reels publishing + container status polling |
 | `src/video/creator.py` | Reels orchestrator: TTS → footage → effects → audio → 1080×1920 MP4 |
 | `src/video/tts.py` | ElevenLabs TTS (premium) with edge-tts fallback (free) |

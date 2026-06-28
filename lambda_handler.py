@@ -69,6 +69,29 @@ def handler_analytics_engine(event, context):
         return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
 
 
+def handler_selection_review(event, context):
+    """Weekly editorial selection review — EventBridge Sunday 17:00 UTC (19:00 Amsterdam).
+
+    Summarises the week's article picks (chosen + top-7 runner-ups + engagement)
+    and emails an AI review (growth/content/platform/commercial lenses) so the
+    operator can tune the selection prompt, dedup rule, or schedule.
+    """
+    logger.info("="*60)
+    logger.info("📋 Selection Reviewer — Starting")
+    logger.info("="*60)
+    try:
+        get_secrets()
+        from selection_reviewer import SelectionReviewer
+        dry_run = isinstance(event, dict) and bool(event.get("dry_run", False))
+        result = SelectionReviewer().run(dry_run=dry_run)
+        logger.info(f"✅ Selection review complete: {result.get('status')}")
+        return {"statusCode": 200, "body": json.dumps(result, default=str)}
+    except Exception as e:
+        logger.error(f"❌ Selection reviewer failed: {e}", exc_info=True)
+        send_alert("Selection reviewer failed", str(e), "GENERAL")
+        return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
+
+
 def get_secrets():
     """
     Load secrets from AWS Secrets Manager

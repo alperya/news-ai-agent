@@ -82,8 +82,12 @@ class SocialMediaPost:
     hook: str = ""
     platform: str = "twitter"
     image_url: Optional[str] = None
+    # Editorial-transparency fields (filled from the batch-selection response).
+    # Why the AI chose this article and the strongest candidates it passed over.
+    selection_reason: str = ""
+    runner_ups: List[Dict] = field(default_factory=list)
     _corrected: bool = field(default=False, init=False, repr=False)
-    
+
     def to_dict(self) -> Dict:
         return {
             'original_title': self.original_title,
@@ -95,7 +99,9 @@ class SocialMediaPost:
             'hook': self.hook,
             'platform': self.platform,
             'image_url': self.image_url,
-            'full_post': self.format_post()
+            'full_post': self.format_post(),
+            'selection_reason': self.selection_reason,
+            'runner_ups': self.runner_ups,
         }
     
     def format_post(self) -> str:
@@ -731,9 +737,17 @@ ARTICLE {i}:
         if recently_published:
             titles_list = "\n".join(f"- {t}" for t in recently_published)
             recent_publications = (
-                "RECENT PUBLICATIONS (last 3 days) — do NOT select an article that covers the "
-                "same story or event as any of these, even if it comes from a different source:\n"
+                "RECENT PUBLICATIONS (last 3 days) — avoid re-posting the SAME SPECIFIC EVENT "
+                "as any of these, even if it comes from a different source (e.g. the same match "
+                "result, the same accident, the same announcement re-reported elsewhere):\n"
                 f"{titles_list}\n\n"
+                "IMPORTANT — this is NOT a ban on a broad theme. A developing or escalating "
+                "situation may be selected when there is a materially new stage: new damage, "
+                "casualties, a distinct phenomenon, or a clear escalation. Example: a heatwave "
+                "already covered does NOT block a follow-up about the storms that end it, new "
+                "storm/lightning damage, or casualties — those are SEPARATE, newsworthy events. "
+                "Only skip a candidate when it is essentially the same incident already published, "
+                "not merely the same topic.\n\n"
             )
         else:
             recent_publications = ""
@@ -762,22 +776,28 @@ ARTICLE {i}:
             
             if 'selected_articles' not in result:
                 raise ValueError("Missing 'selected_articles' field in response")
-            
+
+            # Editorial-transparency: top runner-up candidates the AI passed over.
+            # Optional — older prompts / responses omit it, so default to [].
+            runner_ups = result.get('runner_ups') or []
+            if not isinstance(runner_ups, list):
+                runner_ups = []
+
             posts = []
             for selected in result['selected_articles']:
                 article_index = selected.get('article_index')
                 if article_index is None:
                     logger.warning("Missing article_index in selected article, skipping")
                     continue
-                
+
                 # Convert to 0-based index
                 idx = article_index - 1
                 if idx < 0 or idx >= len(articles):
                     logger.warning(f"Invalid article_index {article_index}, skipping")
                     continue
-                
+
                 article = articles[idx]
-                
+
                 post = SocialMediaPost(
                     original_title=article['title'],
                     original_url=article['url'],
@@ -787,13 +807,34 @@ ARTICLE {i}:
                     emoji=selected.get('emoji', '📰'),
                     hook=selected.get('hook', ''),
                     platform=platform,
-                    image_url=article.get('image_url')
+                    image_url=article.get('image_url'),
+                    selection_reason=selected.get('selection_reason', ''),
+                    runner_ups=runner_ups,
                 )
                 posts.append(post)
-            
+
             if not posts:
                 logger.warning("No valid posts created from batch response")
-            
+
+            # Structured, machine-parseable record of the editorial decision so it
+            # survives in CloudWatch even if posts_*.json is later pruned. Consumed
+            # by the weekly selection-review email.
+            try:
+                logger.info(json.dumps({
+                    "event": "selection_decision",
+                    "pool_size": len(articles),
+                    "chosen": [
+                        {
+                            "title": p.original_title,
+                            "selection_reason": p.selection_reason,
+                        }
+                        for p in posts
+                    ],
+                    "runner_ups": runner_ups,
+                }, ensure_ascii=False))
+            except Exception:
+                pass
+
             return posts
             
         except json.JSONDecodeError as e:
