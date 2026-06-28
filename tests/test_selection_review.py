@@ -95,7 +95,17 @@ def test_parse_tolerates_bad_runner_ups_type(agent):
 
 # ── 4. Dedup instruction distinguishes specific event vs broad theme ──────────
 
-def test_dedup_prompt_allows_escalating_followups(agent):
+def test_dedup_prompt_allows_escalating_followups(agent, monkeypatch):
+    # The dedup wording is built in CODE (recent_publications), not the prompt
+    # template — so inject a minimal template to stay independent of the
+    # gitignored prompts/batch_selection.txt (absent in CI).
+    template = (
+        "{recent_publications}ARTICLES:{articles_text}\n"
+        "count={article_count} max={max_posts} platform={platform} "
+        "len={max_length} {hashtag_instruction}"
+    )
+    monkeypatch.setattr(NewsAIAgent, "_load_prompt",
+                        staticmethod(lambda *a, **k: template))
     prompt = agent._create_batch_selection_prompt(
         _ARTICLES, max_posts=1, platform="instagram",
         recently_published=["Code red heat in eight provinces"],
