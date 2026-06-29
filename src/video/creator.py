@@ -18,7 +18,7 @@ from typing import List, Optional, Set
 from moviepy import AudioFileClip, CompositeVideoClip
 
 from .config import FPS, VIDEO_WIDTH, VIDEO_HEIGHT, BG_MUSIC_VOLUME, reading_seconds
-from .tts import generate_tts, clean_for_narration
+from .tts import generate_tts, clean_for_narration, cap_narration
 from .footage import fetch_stock_clips, fetch_stock_image, download_image
 from .effects import (
     OverlaySpec,
@@ -48,6 +48,13 @@ COVER_HASH_THRESHOLD = 10
 
 # Length of the real-photo cover scene in the hybrid composition (seconds).
 COVER_SCENE_DURATION = 4.0
+
+# Narration word budget = hook (~8-12 words) + content (prompt-capped 75-95
+# words) + slack. ~120 words ≈ 48 s of speech. Capping happens on sentence
+# boundaries (cap_narration) so the final sentence is never clipped — the old
+# raw 100-word cut dropped the tail of the last sentence (hook + 96-word content
+# = 107 words → lost "...in 1928 during the Amsterdam Summer Games.").
+MAX_NARRATION_WORDS = 120
 
 # Keywords/emojis that signal positive/happy news
 _POSITIVE_EMOJIS = frozenset(
@@ -155,11 +162,16 @@ def create_news_video(
         logger.info("🔊 Generating TTS narration...")
         raw_text = (hook + ". " + content) if hook else content
         narration_text = clean_for_narration(raw_text)
-        # Hard cap: truncate to 100 words to stay within 30-45 s
-        words = narration_text.split()
-        if len(words) > 100:
-            logger.warning(f"⚠️  Narration too long ({len(words)} words), truncating to 100")
-            narration_text = " ".join(words[:100])
+        # Cap narration length, but only on SENTENCE boundaries so the final
+        # sentence is never clipped mid-thought. Budget fits a ~12-word hook +
+        # a 95-word content (prompt-enforced max) with slack (~48 s narration).
+        original_words = len(narration_text.split())
+        narration_text = cap_narration(narration_text, MAX_NARRATION_WORDS)
+        if len(narration_text.split()) < original_words:
+            logger.warning(
+                f"⚠️  Narration too long ({original_words} words), capped to "
+                f"{len(narration_text.split())} on a sentence boundary"
+            )
         subtitle_segments = generate_tts(narration_text, audio_path, subs_path)
         logger.info(f"   {len(subtitle_segments)} subtitle segments")
 

@@ -161,6 +161,37 @@ def clean_for_narration(text: str) -> str:
     return result.strip()
 
 
+def cap_narration(text: str, max_words: int) -> str:
+    """Cap narration length WITHOUT cutting a sentence in half.
+
+    The narration is hook + content, so it can run a little over the word
+    budget. Truncating on a raw word count (the old behaviour) lopped off the
+    tail of the final sentence mid-thought (e.g. "...last hosted Olympic
+    competitions" instead of "...in 1928 during the Amsterdam Summer Games").
+
+    Strategy: if over budget, keep whole sentences greedily until the next one
+    would exceed it. If even the first sentence is over budget, fall back to a
+    hard word cut (better a clipped long sentence than a multi-minute clip).
+    """
+    words = text.split()
+    if len(words) <= max_words:
+        return text
+
+    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+    kept: list[str] = []
+    count = 0
+    for sentence in sentences:
+        n = len(sentence.split())
+        if count + n > max_words:
+            break
+        kept.append(sentence)
+        count += n
+
+    if kept:
+        return " ".join(kept).strip()
+    return " ".join(words[:max_words]).strip()
+
+
 def parse_srt(srt_text: str) -> List[SubtitleSegment]:
     """Parse SRT content into SubtitleSegment list."""
     segments: List[SubtitleSegment] = []

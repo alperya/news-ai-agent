@@ -135,7 +135,7 @@ python3 scripts/update_secrets.py
 │   └── lambda.txt                 # Lambda runtime dependencies
 ├── infrastructure/
 │   └── terraform/                 # AWS infrastructure (Lambda, S3, EventBridge)
-├── tests/                         # Test suite (268 tests)
+├── tests/                         # Test suite (272 tests)
 ├── output/                        # Generated articles & posts (gitignored)
 └── errors/                        # Rejected/corrected posts log (gitignored)
 ```
@@ -236,7 +236,7 @@ make test
 # or
 pytest tests/ -v
 
-# 268 tests covering scraper, AI agent, quality gate, video pipeline,
+# 272 tests covering scraper, AI agent, quality gate, video pipeline,
 # social publisher, YouTube publisher/worker, event scraper, event card,
 # notifier, token refresher, lambda handler (incl. YouTube isolation test),
 # selection transparency + weekly selection review

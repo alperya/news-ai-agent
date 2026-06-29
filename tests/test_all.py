@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 from news_scraper import DutchNewsScraper, NewsArticle
 from ai_agent import NewsAIAgent, SocialMediaPost
 from video import SubtitleSegment
-from video.tts import clean_for_narration, group_subtitle_segments, _chars_to_words
+from video.tts import clean_for_narration, group_subtitle_segments, _chars_to_words, cap_narration
 from video.audio import find_music_file
 from video.footage import download_image, fetch_stock_image
 from video.effects import make_gradient_overlay
@@ -145,6 +145,49 @@ def test_post_format_contains_required_parts(sample_post):
     assert "Hollanda'da yeni bisiklet yasası" in formatted
     assert "📰 Source: https://nos.nl/artikel/test-123" in formatted
     assert "#Hollanda" in formatted
+
+
+# ── 6b. Narration cap is sentence-aware (never clips mid-sentence) ───────────
+
+def test_cap_narration_no_truncation_under_budget():
+    text = "First sentence here. Second sentence too."
+    assert cap_narration(text, 120) == text
+
+
+def test_cap_narration_keeps_whole_sentences():
+    """Over budget → drop WHOLE trailing sentences, never cut one in half."""
+    # 11-word hook + 96-word content = 107 words (the real bug case).
+    hook = "Olympic Games return to the Netherlands after more than a century"
+    content = (
+        "The International Olympic Committee and the French organizing committee "
+        "have confirmed that ice stadium Thialf in Heerenveen will host the speed "
+        "skating tournament during the 2030 French Alps Winter Olympics. This marks "
+        "the first time Olympic events take place on Dutch soil in over a century. "
+        "The decision was approved at a members meeting of the Games organizers on "
+        "Monday. Thialf, widely regarded as one of the world's premier speed skating "
+        "venues, has long been a stronghold of Dutch dominance in the sport. The "
+        "Netherlands last hosted Olympic competitions in 1928 during the Amsterdam "
+        "Summer Games."
+    )
+    narration = hook + ". " + content
+    capped = cap_narration(narration, 120)
+    # Full text fits within 120 → the final sentence must be intact.
+    assert capped.rstrip().endswith("Amsterdam Summer Games.")
+    assert "in 1928" in capped
+
+
+def test_cap_narration_drops_trailing_sentence_when_over_budget():
+    text = "Aaa bbb ccc ddd. Eee fff ggg hhh. Iii jjj kkk lll."  # 3 sentences, 4 words each
+    capped = cap_narration(text, 8)  # only first two sentences fit
+    assert capped == "Aaa bbb ccc ddd. Eee fff ggg hhh."
+    # never a partial sentence
+    assert not capped.endswith("Iii")
+
+
+def test_cap_narration_hard_cut_when_first_sentence_too_long():
+    text = "one two three four five six seven eight nine ten eleven twelve"  # one long sentence
+    capped = cap_narration(text, 5)
+    assert capped == "one two three four five"
 
 
 # ── 7. SocialMediaPost to_dict includes full_post ────────────────────────────
