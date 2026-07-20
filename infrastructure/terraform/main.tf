@@ -468,11 +468,12 @@ resource "aws_cloudwatch_log_group" "youtube_publish_logs" {
 # ===== EventBridge Rules (Amsterdam Time CEST = UTC+2, CET = UTC+1) =====
 # Note: cron expressions are UTC. In winter (CET) these fire 1 hour later AMS time.
 #
-# Reel 1: 11:00 Amsterdam CEST = 09:00 UTC  (data-backed: highest reach amplification)
+# Reel 1: 09:00 Amsterdam CEST = 07:00 UTC  (moved earlier from 11:00 — testing whether
+# an earlier morning slot lifts the low engagement on this post)
 resource "aws_cloudwatch_event_rule" "morning_schedule" {
   name                = "${var.project_name}-morning"
-  description         = "Reel 1 — 11:00 Amsterdam (09:00 UTC / CEST)"
-  schedule_expression = "cron(0 9 * * ? *)"
+  description         = "Reel 1 — 09:00 Amsterdam (07:00 UTC / CEST)"
+  schedule_expression = "cron(0 7 * * ? *)"
 
   tags = {
     Name        = "${var.project_name}-morning-schedule"
@@ -488,7 +489,7 @@ resource "aws_cloudwatch_event_target" "morning_target" {
 
   input = jsonencode({
     schedule = "morning"
-    time     = "11:00"
+    time     = "09:00"
     format   = "reels"
   })
 }

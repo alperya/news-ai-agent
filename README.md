@@ -147,11 +147,13 @@ AWS Lambda runs via EventBridge (UTC → Amsterdam CEST = UTC+2):
 | Schedule                | UTC   | Amsterdam | Instagram              | YouTube Shorts         |
 |-------------------------|-------|-----------|------------------------|------------------------|
 | Daily fact (daily)      | 06:00 | 08:00     | 💡 Story (Dutch fact)  | ✗ (Story only)         |
-| Morning (daily)         | 09:00 | 11:00     | 🎬 Reels (news)        | ▶️ Short (same video)  |
+| Morning (daily)         | 07:00 | 09:00     | 🎬 Reels (news)        | ▶️ Short (same video)  |
 | Afternoon (daily)       | 17:00 | 19:00     | 🎬 Reels (news)        | ▶️ Short (same video)  |
-| Events (Thursday)       | 16:00 | 18:00     | 📅 Events Reels (IG + FB) | ✗ (no YouTube)         |
+| Events (Thursday)       | 16:00 | 18:00     | 📅 Events Reels (IG + FB) — **disabled** | ✗ (no YouTube)         |
 
 > The daily fact Story is gated by `ENABLE_INSTAGRAM_STORIES` (Secrets Manager). When off, nothing is generated or published.
+
+> The weekly events post is disabled (EventBridge rule off + `ENABLE_EVENT_POSTS` flag, default off) — deprecated for low engagement.
 
 > Note: cron times assume CEST (UTC+2). In winter (CET, UTC+1) posts run 1 hour later Amsterdam time.
 
