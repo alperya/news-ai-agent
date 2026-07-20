@@ -149,9 +149,12 @@ AWS Lambda runs via EventBridge (UTC → Amsterdam CEST = UTC+2):
 | Daily fact (daily)      | 06:00 | 08:00     | 💡 Story (Dutch fact)  | ✗ (Story only)         |
 | Morning (daily)         | 07:00 | 09:00     | 🎬 Reels (news)        | ▶️ Short (same video)  |
 | Afternoon (daily)       | 17:00 | 19:00     | 🎬 Reels (news)        | ▶️ Short (same video)  |
+| Fact carousel (Sunday)  | 10:00 | 12:00     | 🗂️ Carousel (week's facts) | ✗ (IG only)            |
 | Events (Thursday)       | 16:00 | 18:00     | 📅 Events Reels (IG + FB) — **disabled** | ✗ (no YouTube)         |
 
 > The daily fact Story is gated by `ENABLE_INSTAGRAM_STORIES` (Secrets Manager). When off, nothing is generated or published.
+
+> The weekly fact carousel is **enabled by default** (`ENABLE_FACT_CAROUSEL`, set to `false` in Secrets Manager to disable) — it collects the week's Story facts into one save-friendly Instagram feed carousel (a discovery/save surface the Story can't reach).
 
 > The weekly events post is disabled (EventBridge rule off + `ENABLE_EVENT_POSTS` flag, default off) — deprecated for low engagement.
 

@@ -1,5 +1,6 @@
 """Unit tests for the daily Dutch-fact pool + S3-backed LRU rotation."""
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -80,3 +81,56 @@ class TestRotation:
         fact = dutch_facts.get_fact_for_today("bkt")
         assert fact["id"] == "bikes-outnumber-people"
         assert "removed-fact" not in s3_store["facts/_rotation.json"]["used"]
+
+
+class TestWeeklyFacts:
+    def _ids(self, facts):
+        return [f["id"] for f in facts]
+
+    def test_empty_when_no_rotation(self, s3_store):
+        assert dutch_facts.get_weekly_facts("bkt") == []
+
+    def test_returns_recent_window_only(self, s3_store):
+        today = date.today()
+        pool = dutch_facts.DEFAULT_FACTS
+        s3_store["facts/_rotation.json"] = {"used": {
+            pool[0]["id"]: (today - timedelta(days=1)).isoformat(),   # in window
+            pool[1]["id"]: (today - timedelta(days=6)).isoformat(),   # in window
+            pool[2]["id"]: (today - timedelta(days=20)).isoformat(),  # too old
+        }}
+        got = self._ids(dutch_facts.get_weekly_facts("bkt", days=7))
+        assert pool[0]["id"] in got and pool[1]["id"] in got
+        assert pool[2]["id"] not in got
+
+    def test_ordered_oldest_to_newest(self, s3_store):
+        today = date.today()
+        pool = dutch_facts.DEFAULT_FACTS
+        s3_store["facts/_rotation.json"] = {"used": {
+            pool[0]["id"]: (today - timedelta(days=2)).isoformat(),
+            pool[1]["id"]: (today - timedelta(days=5)).isoformat(),
+            pool[2]["id"]: today.isoformat(),
+        }}
+        got = self._ids(dutch_facts.get_weekly_facts("bkt", days=7))
+        assert got == [pool[1]["id"], pool[0]["id"], pool[2]["id"]]
+
+    def test_skips_ids_not_in_pool(self, s3_store):
+        today = date.today()
+        pool = dutch_facts.DEFAULT_FACTS
+        s3_store["facts/_rotation.json"] = {"used": {
+            "removed-fact": today.isoformat(),
+            pool[0]["id"]: today.isoformat(),
+        }}
+        got = self._ids(dutch_facts.get_weekly_facts("bkt"))
+        assert got == [pool[0]["id"]]
+
+    def test_ignores_malformed_dates(self, s3_store):
+        pool = dutch_facts.DEFAULT_FACTS
+        s3_store["facts/_rotation.json"] = {"used": {
+            pool[0]["id"]: "not-a-date",
+            pool[1]["id"]: date.today().isoformat(),
+        }}
+        got = self._ids(dutch_facts.get_weekly_facts("bkt"))
+        assert got == [pool[1]["id"]]
+
+    def test_min_threshold_constant_sane(self):
+        assert dutch_facts.MIN_CAROUSEL_FACTS >= 2

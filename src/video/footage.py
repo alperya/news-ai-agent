@@ -253,6 +253,43 @@ def download_image(url: Optional[str], tmp_dir: str) -> Optional[str]:
         return None
 
 
+def fetch_pexels_photo(
+    query: str, dest_path: str, orientation: str = "portrait",
+) -> Optional[str]:
+    """Fetch a single Pexels PHOTO for an explicit *query* → save to *dest_path*.
+
+    Unlike :func:`fetch_stock_image` (which derives its own query from a
+    headline), this takes the query verbatim — used by the weekly fact carousel,
+    which already has curated ``footage_queries`` per fact. Returns the saved
+    path, or None on any miss/error (caller falls back to a solid background).
+    """
+    api_key = PEXELS_API_KEY or os.environ.get("PEXELS_API_KEY", "")
+    if not api_key or not query:
+        return None
+    try:
+        resp = http_requests.get(
+            PEXELS_IMAGE_SEARCH_URL,
+            headers={"Authorization": api_key},
+            params={"query": query, "per_page": 1, "orientation": orientation},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        photos = resp.json().get("photos", [])
+        if not photos:
+            return None
+        img_url = photos[0]["src"].get("large2x") or photos[0]["src"].get("large")
+        img_resp = http_requests.get(img_url, timeout=15)
+        img_resp.raise_for_status()
+        with open(dest_path, "wb") as f:
+            f.write(img_resp.content)
+        with Image.open(dest_path) as img:
+            img.verify()
+        return dest_path
+    except Exception as e:
+        logger.warning(f"⚠️  Pexels photo fetch failed for '{query}': {e}")
+        return None
+
+
 def fetch_stock_image(
     title: str, content: str, tmp_dir: str,
 ) -> Optional[str]:

@@ -169,6 +169,106 @@ class InstagramPublisher(ChannelPublisher):
             logger.error(f"❌ Error posting to Instagram: {str(e)}")
             raise
 
+    def publish_carousel(self, image_urls: list, caption: str = "", dry_run: bool = False):
+        """Publish a multi-image carousel (album) feed post to Instagram.
+
+        Graph API three-step flow:
+          1. create one child container per image (``is_carousel_item=true``),
+          2. create a ``CAROUSEL`` parent container referencing the children,
+          3. publish the parent.
+
+        Args:
+            image_urls: Public URLs (S3 presigned) for each slide, in order.
+                        2–10 images (Instagram's carousel limits).
+            caption: Caption text for the post.
+            dry_run: If True, skip actual API calls.
+        """
+        if not image_urls or len(image_urls) < 2:
+            raise ValueError("A carousel needs at least 2 images")
+        image_urls = image_urls[:10]  # Instagram hard limit
+
+        if dry_run:
+            logger.info(f"[DRY RUN] Would post {len(image_urls)}-image carousel to Instagram:\n{caption}")
+            for u in image_urls:
+                logger.info(f"[DRY RUN]   slide: {u}")
+            return {'id': 'dry_run', 'text': caption, 'type': 'carousel', 'slides': len(image_urls)}
+
+        try:
+            logger.info("🔐 Validating Instagram token...")
+            self._ensure_valid_token()
+
+            media_url = f"{self.graph_api_url}/{self.instagram_account_id}/media"
+
+            # Step 1: one child container per image
+            logger.info(f"📦 Creating {len(image_urls)} carousel child containers...")
+            child_ids = []
+            for idx, url in enumerate(image_urls):
+                child_resp = requests.post(media_url, params={
+                    'image_url': url,
+                    'is_carousel_item': 'true',
+                    'access_token': self.access_token,
+                })
+                child_resp.raise_for_status()
+                child_id = child_resp.json().get('id')
+                if not child_id:
+                    raise ValueError(f"No child id returned for slide {idx + 1}")
+                # Children are images → ready quickly, but confirm before parenting
+                if not self._check_container_status(child_id):
+                    raise ValueError(f"Carousel child {idx + 1} not ready")
+                child_ids.append(child_id)
+                logger.info(f"   ✅ child {idx + 1}/{len(image_urls)}: {child_id}")
+
+            # Step 2: parent CAROUSEL container
+            logger.info("📦 Creating carousel parent container...")
+            parent_resp = requests.post(media_url, params={
+                'media_type': 'CAROUSEL',
+                'children': ','.join(child_ids),
+                'caption': caption,
+                'access_token': self.access_token,
+            })
+            parent_resp.raise_for_status()
+            creation_id = parent_resp.json().get('id')
+            if not creation_id:
+                raise ValueError("No creation_id returned for carousel parent")
+            if not self._check_container_status(creation_id):
+                raise ValueError("Carousel parent container not ready")
+            logger.info(f"✅ Carousel container created: {creation_id}")
+
+            # Step 3: publish
+            logger.info("📤 Publishing carousel...")
+            self._ensure_valid_token()
+            publish_resp = requests.post(
+                f"{self.graph_api_url}/{self.instagram_account_id}/media_publish",
+                params={'creation_id': creation_id, 'access_token': self.access_token},
+            )
+            publish_resp.raise_for_status()
+            media_id = publish_resp.json().get('id')
+            logger.info(f"✅ Carousel published: {media_id}")
+            logger.info(json.dumps({
+                "event": "post_published",
+                "post_id": media_id,
+                "post_type": "carousel",
+                "slides": len(image_urls),
+            }))
+
+            return {
+                'id': media_id,
+                'creation_id': creation_id,
+                'type': 'carousel',
+                'slides': len(image_urls),
+                'url': f"https://www.instagram.com/p/{media_id}/",
+            }
+
+        except requests.exceptions.HTTPError as e:
+            error_msg = f"Instagram carousel API error: {str(e)}"
+            if hasattr(e.response, 'text'):
+                error_msg += f" - {e.response.text}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        except Exception as e:
+            logger.error(f"❌ Error posting carousel: {str(e)}")
+            raise
+
     def publish_reels(self, content: str, video_url: str, dry_run: bool = False):
         """Publish a Reels video to Instagram.
 

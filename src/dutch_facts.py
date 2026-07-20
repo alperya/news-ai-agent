@@ -19,7 +19,7 @@ facts can be appended to ``pool.json``.
 
 import json
 import logging
-from datetime import date
+from datetime import date, timedelta
 
 import boto3
 from botocore.exceptions import ClientError
@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 _POOL_KEY = "facts/pool.json"
 _ROTATION_KEY = "facts/_rotation.json"
 _REFILL_THRESHOLD = 7  # warn when fewer than this many unused facts remain
+MIN_CAROUSEL_FACTS = 3  # fewest facts worth assembling into a weekly carousel
 
 
 # ── Seed pool (English, ≤~20 words, shareable) ────────────────────────────────
@@ -173,6 +174,40 @@ def _load_pool(bucket: str) -> list:
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
+
+def get_weekly_facts(bucket: str, days: int = 7) -> list:
+    """Return the facts shown in Stories over the last ``days``, oldest→newest.
+
+    Reads the same ``facts/_rotation.json`` the daily Story pipeline writes
+    (``{"used": {id: "YYYY-MM-DD"}}``) and resolves each recently-used id back to
+    its pool entry (``{"id", "text", ...}``). Because the Story publishes a fresh
+    fact daily, the 7-day window normally holds 7 distinct facts. Facts no longer
+    in the pool (removed) are skipped. Ordered chronologically so the carousel
+    reads as the week unfolded. Never mutates rotation state.
+    """
+    pool = _load_pool(bucket)
+    by_id = {f["id"]: f for f in pool}
+
+    rotation = _read_json(bucket, _ROTATION_KEY, {}) or {}
+    used = rotation.get("used", {}) or {}
+
+    cutoff = date.today() - timedelta(days=days)
+    recent = []
+    for fact_id, iso in used.items():
+        if fact_id not in by_id:
+            continue  # fact was removed from the pool
+        try:
+            shown = date.fromisoformat(iso)
+        except (TypeError, ValueError):
+            continue
+        if shown >= cutoff:
+            recent.append((shown, by_id[fact_id]))
+
+    recent.sort(key=lambda pair: pair[0])  # oldest → newest
+    facts = [fact for _, fact in recent]
+    logger.info(f"🗂️  Weekly facts (last {days}d): {len(facts)} found")
+    return facts
+
 
 def get_fact_for_today(bucket: str) -> dict:
     """Pick today's fact via least-recently-used rotation (state in S3).

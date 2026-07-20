@@ -23,6 +23,9 @@ logger = logging.getLogger(__name__)
 REEL = "reel"
 PHOTO = "photo"
 STORY = "story"
+# Note: multi-image carousels (weekly fact post) don't fit the single-``media_url``
+# fan-out contract below, so they're published directly via
+# ``InstagramPublisher.publish_carousel`` (Instagram-only) rather than CrossPoster.
 
 
 class ChannelPublisher(ABC):

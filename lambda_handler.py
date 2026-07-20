@@ -143,6 +143,9 @@ def get_secrets():
     # Feature flag: weekly NL events post (default off — deprecated for low engagement)
     if 'ENABLE_EVENT_POSTS' in secret:
         os.environ['ENABLE_EVENT_POSTS'] = secret['ENABLE_EVENT_POSTS']
+    # Feature flag: weekly Dutch-fact carousel feed post (default off)
+    if 'ENABLE_FACT_CAROUSEL' in secret:
+        os.environ['ENABLE_FACT_CAROUSEL'] = secret['ENABLE_FACT_CAROUSEL']
     # Connected Facebook Page — when set, the Story is cross-posted to FB
     if 'FACEBOOK_PAGE_ID' in secret:
         os.environ['FACEBOOK_PAGE_ID'] = secret['FACEBOOK_PAGE_ID']
@@ -160,6 +163,8 @@ def get_secrets():
         os.environ['AI_PROMPT_QUALITY_CHECK'] = secret['AI_PROMPT_QUALITY_CHECK']
     if 'AI_PROMPT_EVENT_SELECTION' in secret:
         os.environ['AI_PROMPT_EVENT_SELECTION'] = secret['AI_PROMPT_EVENT_SELECTION']
+    if 'AI_PROMPT_CAROUSEL_CAPTION' in secret:
+        os.environ['AI_PROMPT_CAROUSEL_CAPTION'] = secret['AI_PROMPT_CAROUSEL_CAPTION']
 
     # LangSmith observability (optional)
     for key in ('LANGCHAIN_API_KEY', 'LANGCHAIN_PROJECT', 'LANGCHAIN_TRACING_V2'):
@@ -423,6 +428,98 @@ def _run_daily_fact_pipeline(timestamp: str, bucket_name: str, dry_run: bool = F
                 'body': json.dumps({'status': 'error', 'error': str(e), 'timestamp': timestamp})}
 
 
+def _run_fact_carousel_pipeline(timestamp: str, bucket_name: str, dry_run: bool = False) -> dict:
+    """Weekly Dutch-fact carousel — runs Sunday 12:00 Amsterdam (format: fact_carousel).
+
+    Collects the facts shown in Stories over the last 7 days and publishes them
+    as one Instagram carousel (album) feed post — a discovery + save surface the
+    Story cannot reach (non-followers see the feed/Explore). Gated by
+    ENABLE_FACT_CAROUSEL — when off, returns immediately without generating
+    anything. Instagram-only (no cross-post, no YouTube).
+    """
+    logger.info("\n" + "=" * 60)
+    logger.info("🗂️  FACT CAROUSEL PIPELINE: Weekly Dutch-fact feed post")
+    logger.info("=" * 60)
+
+    if os.environ.get('ENABLE_FACT_CAROUSEL', 'true').lower() != 'true':
+        logger.info("⏸️  ENABLE_FACT_CAROUSEL disabled — skipping (no content generated)")
+        return {'statusCode': 200,
+                'body': json.dumps({'status': 'skipped', 'reason': 'flag_disabled', 'timestamp': timestamp})}
+
+    try:
+        from dutch_facts import get_weekly_facts, MIN_CAROUSEL_FACTS
+        from video import render_fact_carousel
+        from video.footage import fetch_pexels_photo
+        from social_publisher import InstagramPublisher
+
+        facts = get_weekly_facts(bucket_name)
+        if len(facts) < MIN_CAROUSEL_FACTS:
+            logger.info(f"⏭️  Only {len(facts)} facts in the last 7 days "
+                        f"(need ≥{MIN_CAROUSEL_FACTS}) — skipping this week's carousel")
+            return {'statusCode': 200,
+                    'body': json.dumps({'status': 'skipped', 'reason': 'not_enough_facts',
+                                        'count': len(facts), 'timestamp': timestamp})}
+
+        out_dir = f"/tmp/carousel_{timestamp}"
+        os.makedirs(out_dir, exist_ok=True)
+
+        # Fetch a relevant Pexels photo per fact (same footage_queries the Story
+        # video uses) to use as the card background. None → solid-colour fallback.
+        bg_paths = []
+        for i, fact in enumerate(facts):
+            path = None
+            for query in (fact.get('footage_queries') or []):
+                path = fetch_pexels_photo(query, os.path.join(out_dir, f"bg_{i:02d}.jpg"))
+                if path:
+                    break
+            bg_paths.append(path)
+
+        # Special closing image for the follow slide + brand logo (bundled or env).
+        from video.config import brand_logo_path
+        cta_bg = fetch_pexels_photo(
+            "amsterdam canal houses evening", os.path.join(out_dir, "cta_bg.jpg"))
+        logo_path = brand_logo_path()
+
+        # Render 4:5 cards → local PNGs
+        card_paths = render_fact_carousel(
+            facts, out_dir, bg_paths=bg_paths, cta_bg_path=cta_bg, logo_path=logo_path)
+
+        # Upload each card to S3 and presign for Instagram to fetch
+        s3_client = boto3.client('s3')
+        prefix = f"facts/carousel/{'test' if dry_run else 'post'}_{timestamp}"
+        image_urls = []
+        for i, path in enumerate(card_paths):
+            key = f"{prefix}/card_{i + 1:02d}.png"
+            with open(path, 'rb') as fh:
+                s3_client.put_object(Bucket=bucket_name, Key=key, Body=fh, ContentType='image/png')
+            image_urls.append(s3_client.generate_presigned_url(
+                'get_object', Params={'Bucket': bucket_name, 'Key': key}, ExpiresIn=3600,
+            ))
+        logger.info(f"✅ Uploaded {len(image_urls)} carousel cards → s3://{bucket_name}/{prefix}/")
+
+        # Caption (AI with template fallback)
+        caption = NewsAIAgent().generate_carousel_caption([f['text'] for f in facts])
+
+        if dry_run:
+            logger.info("[DRY RUN] Skipping carousel publish; cards kept in S3 for inspection")
+            return {'statusCode': 200,
+                    'body': json.dumps({'status': 'dry_run', 'slides': len(image_urls),
+                                        's3_prefix': prefix, 'timestamp': timestamp})}
+
+        result = InstagramPublisher().publish_carousel(image_urls, caption=caption, dry_run=False)
+        logger.info(f"✅ Carousel published: {result.get('url')}")
+        return {'statusCode': 200,
+                'body': json.dumps({'status': 'success', 'slides': len(image_urls),
+                                    'media_id': result.get('id'), 'timestamp': timestamp})}
+
+    except Exception as e:
+        logger.error(f"❌ Fact carousel pipeline failed: {e}", exc_info=True)
+        error_type = detect_error_type(e)
+        alert_on_exception("Weekly fact carousel failed", e, error_type)
+        return {'statusCode': 500,
+                'body': json.dumps({'status': 'error', 'error': str(e), 'timestamp': timestamp})}
+
+
 def _run_event_pipeline(timestamp: str, bucket_name: str, ai_agent, dry_run: bool = False) -> dict:
     """Weekly events pipeline — runs on Wednesday 18:00 (format: event_post).
 
@@ -640,6 +737,12 @@ def lambda_handler(event, context):
         if is_daily_fact:
             dry_run = bool(event.get('dry_run', False))
             return _run_daily_fact_pipeline(timestamp, bucket_name, dry_run=dry_run)
+
+        # Weekly Dutch-fact carousel feed post — bypasses the news pipeline entirely
+        is_fact_carousel = isinstance(event, dict) and event.get('format') == 'fact_carousel'
+        if is_fact_carousel:
+            dry_run = bool(event.get('dry_run', False))
+            return _run_fact_carousel_pipeline(timestamp, bucket_name, dry_run=dry_run)
 
         # STAGE 1: Scrape news
         logger.info("\n📰 STAGE 1: Scraping news articles...")

@@ -95,6 +95,41 @@ SAD_MUSIC_FILE = _SRC_DIR / "music" / "sad_music.mp3"
 # Daily "Did you know?" Dutch-fact story — upbeat lifestyle background track
 FACT_STORY_MUSIC = _SRC_DIR / "music" / "story_dutch_lifestyle_30sec.mp3"
 
+# Brand logo — used on the weekly fact-carousel closing slide.
+_LOGO_DIR = _SRC_DIR / "logo"
+
+
+def brand_logo_path() -> str:
+    """Resolve the brand logo: ``BRAND_LOGO_PATH`` env wins, else the
+    highest-resolution PNG bundled under ``src/logo/`` (so dropping in a
+    higher-res version is picked up automatically). Returns ``""`` if none
+    (renderer draws a text wordmark instead). Resolved at call time so env set at
+    startup is honoured.
+    """
+    env = os.environ.get("BRAND_LOGO_PATH")
+    if env and Path(env).exists():
+        return env
+    if not _LOGO_DIR.exists():
+        return ""
+    pngs = sorted(_LOGO_DIR.glob("*.[pP][nN][gG]"))
+    if not pngs:
+        return ""
+
+    # Prefer a purpose-made badge (transparent corners: squircle/round) over the
+    # raw square source when present.
+    badges = [p for p in pngs if any(k in p.stem.lower() for k in ("squircle", "round"))]
+    candidates = badges or pngs
+
+    def _width(p: Path) -> int:
+        try:
+            from PIL import Image
+            with Image.open(p) as im:
+                return im.width
+        except Exception:
+            return 0
+
+    return str(max(candidates, key=_width))
+
 
 def reading_seconds(
     text: str,

@@ -21,6 +21,7 @@ echo "📦 Copying Python files..."
 cp src/*.py $BUILD_DIR/
 cp -r src/video $BUILD_DIR/video
 cp -r src/music $BUILD_DIR/music
+[ -d src/logo ] && cp -r src/logo $BUILD_DIR/logo  # brand logo for fact-carousel CTA slide
 cp src/fonts/Montserrat-Bold.ttf $BUILD_DIR/Montserrat-Bold.ttf
 cp src/fonts/Poppins-Bold.ttf $BUILD_DIR/Poppins-Bold.ttf
 cp src/fonts/Poppins-SemiBold.ttf $BUILD_DIR/Poppins-SemiBold.ttf

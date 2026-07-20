@@ -108,6 +108,23 @@ resource "aws_s3_bucket_lifecycle_configuration" "results_lifecycle" {
       storage_class = "GLACIER"
     }
   }
+
+  # Weekly fact-carousel source images: only needed during the minutes of
+  # publishing (Instagram hosts its own copy after). Archive to Glacier after
+  # 90 days so they don't accumulate in Standard storage indefinitely.
+  rule {
+    id     = "archive-fact-carousel-after-90-days"
+    status = "Enabled"
+
+    filter {
+      prefix = "facts/carousel/"
+    }
+
+    transition {
+      days          = 90
+      storage_class = "GLACIER"
+    }
+  }
 }
 
 # ===== Secrets Manager for Credentials =====
@@ -594,6 +611,32 @@ resource "aws_cloudwatch_event_target" "daily_fact_target" {
   })
 }
 
+# Weekly Dutch-fact carousel: 12:00 Amsterdam Sunday (10:00 UTC / CEST). End-of-week
+# recap of the week's Story facts as a save-friendly feed carousel — a discovery
+# surface the Story can't reach. Clear of all other jobs. Gated by ENABLE_FACT_CAROUSEL.
+resource "aws_cloudwatch_event_rule" "fact_carousel_sunday" {
+  name                = "${var.project_name}-fact-carousel"
+  description         = "Weekly Dutch-fact carousel — Sunday 12:00 Amsterdam (10:00 UTC / CEST)"
+  schedule_expression = "cron(0 10 ? * SUN *)"
+  state               = "ENABLED"
+
+  tags = {
+    Name        = "${var.project_name}-fact-carousel"
+    Environment = "production"
+    ManagedBy   = "terraform"
+  }
+}
+
+resource "aws_cloudwatch_event_target" "fact_carousel_target" {
+  rule      = aws_cloudwatch_event_rule.fact_carousel_sunday.name
+  target_id = "fact-carousel-lambda"
+  arn       = aws_lambda_function.news_agent.arn
+
+  input = jsonencode({
+    format = "fact_carousel"
+  })
+}
+
 # ===== Lambda Permissions for EventBridge =====
 resource "aws_lambda_permission" "allow_morning_eventbridge" {
   statement_id  = "AllowExecutionFromEventBridgeMorning"
@@ -633,6 +676,14 @@ resource "aws_lambda_permission" "allow_daily_fact_eventbridge" {
   function_name = aws_lambda_function.news_agent.function_name
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.daily_fact_schedule.arn
+}
+
+resource "aws_lambda_permission" "allow_fact_carousel_eventbridge" {
+  statement_id  = "AllowExecutionFromEventBridgeFactCarousel"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.news_agent.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.fact_carousel_sunday.arn
 }
 
 # ===== Token Refresh Lambda =====

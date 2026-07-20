@@ -382,6 +382,41 @@ class NewsAIAgent:
             logger.warning(f"⚠️  Footage query generation failed, falling back to keyword extraction: {e}")
         return [], []
 
+    # Fixed caption suffix (not a prompt) — kept stable across posts.
+    _CAROUSEL_HASHTAGS = (
+        "\n\n#Netherlands #DutchNews #Holland #Amsterdam #Dutch "
+        "#ExpatsNL #LivingInTheNetherlands #DidYouKnow #DutchFacts #NLtrivia"
+    )
+
+    def generate_carousel_caption(self, fact_texts: List[str]) -> str:
+        """Caption for the weekly Dutch-fact carousel (hook + save/follow CTA + tags).
+
+        The AI writes only the short caption body (prompt in
+        ``prompts/carousel_caption.txt`` → ``AI_PROMPT_CAROUSEL_CAPTION``); a
+        curated hashtag block is appended in code so tags stay stable. Falls back
+        to a template if the API call fails — the carousel is never blocked by
+        caption generation.
+        """
+        preview = "\n".join(f"- {t}" for t in fact_texts[:7])
+        try:
+            prompt = self._load_prompt('carousel_caption.txt', 'AI_PROMPT_CAROUSEL_CAPTION').format(facts=preview)
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=220,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            text = getattr(response.content[0], 'text', '').strip()
+            if text:
+                logger.info("📝 Carousel caption generated")
+                return text + self._CAROUSEL_HASHTAGS
+        except Exception as e:
+            logger.warning(f"⚠️  Carousel caption generation failed, using template: {e}")
+        template = (
+            "Your weekly dose of Netherlands trivia is here. "
+            "Swipe through, save it for later, and follow for a new Dutch fact every day."
+        )
+        return template + self._CAROUSEL_HASHTAGS
+
     def validate_footage_thumbnails(
         self,
         headline: str,
