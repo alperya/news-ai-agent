@@ -309,10 +309,10 @@ resource "aws_cloudwatch_metric_alarm" "lambda_duration" {
 # next scheduled slot recovers, so we alert immediately instead of after 3×.
 locals {
   failure_alert_lambdas = var.alert_email != "" ? {
-    main              = { name = aws_lambda_function.news_agent.function_name, retries = 0 }
-    reels_publish     = { name = aws_lambda_function.reels_publish.function_name, retries = 2 }
-    youtube_publish   = { name = aws_lambda_function.youtube_publish.function_name, retries = 2 }
-    token_refresh     = { name = aws_lambda_function.token_refresh.function_name, retries = 2 }
+    main               = { name = aws_lambda_function.news_agent.function_name, retries = 0 }
+    reels_publish      = { name = aws_lambda_function.reels_publish.function_name, retries = 2 }
+    youtube_publish    = { name = aws_lambda_function.youtube_publish.function_name, retries = 2 }
+    token_refresh      = { name = aws_lambda_function.token_refresh.function_name, retries = 2 }
     metrics_collector  = { name = aws_lambda_function.metrics_collector.function_name, retries = 2 }
     analytics_engine   = { name = aws_lambda_function.analytics_engine.function_name, retries = 2 }
     selection_reviewer = { name = aws_lambda_function.selection_reviewer.function_name, retries = 2 }
@@ -548,7 +548,10 @@ resource "aws_cloudwatch_event_rule" "events_thursday_schedule" {
   name                = "${var.project_name}-events-thursday"
   description         = "NL events post — Thursday 18:00 Amsterdam (16:00 UTC / CEST). Thursday captures weekend + week-ahead planning intent with ticket lead time (utility content)."
   schedule_expression = "cron(0 16 ? * THU *)"
-  state               = "ENABLED"
+  # DISABLED — events are deprecated for low engagement (see ENABLE_EVENT_POSTS
+  # feature flag). No point firing a weekly cron the pipeline would only skip.
+  # To re-enable: set state = "ENABLED" here AND ENABLE_EVENT_POSTS=true in Secrets Manager.
+  state = "DISABLED"
 
   tags = {
     Name        = "${var.project_name}-events-thursday"

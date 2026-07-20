@@ -140,6 +140,9 @@ def get_secrets():
     # Feature flag: daily Dutch-fact Instagram Story (default off)
     if 'ENABLE_INSTAGRAM_STORIES' in secret:
         os.environ['ENABLE_INSTAGRAM_STORIES'] = secret['ENABLE_INSTAGRAM_STORIES']
+    # Feature flag: weekly NL events post (default off — deprecated for low engagement)
+    if 'ENABLE_EVENT_POSTS' in secret:
+        os.environ['ENABLE_EVENT_POSTS'] = secret['ENABLE_EVENT_POSTS']
     # Connected Facebook Page — when set, the Story is cross-posted to FB
     if 'FACEBOOK_PAGE_ID' in secret:
         os.environ['FACEBOOK_PAGE_ID'] = secret['FACEBOOK_PAGE_ID']
@@ -430,6 +433,14 @@ def _run_event_pipeline(timestamp: str, bucket_name: str, ai_agent, dry_run: boo
     logger.info("📅 EVENT PIPELINE: Weekly NL Events Post")
     logger.info("="*60)
 
+    # Feature flag (default off) — events are deprecated for low engagement. When
+    # disabled, return immediately WITHOUT scraping, scoring, or generating
+    # anything, so the weekly cron firing costs nothing.
+    if os.environ.get('ENABLE_EVENT_POSTS', 'false').lower() != 'true':
+        logger.info("⏸️  ENABLE_EVENT_POSTS disabled — skipping (no content generated)")
+        return {'statusCode': 200,
+                'body': json.dumps({'status': 'skipped', 'reason': 'flag_disabled', 'timestamp': timestamp})}
+
     ts_human = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     log_key = f"events/pipeline_{timestamp}.json"
 
@@ -614,6 +625,12 @@ def lambda_handler(event, context):
         # Detect run mode early — event_post bypasses the news pipeline entirely
         is_event_post = isinstance(event, dict) and event.get('format') == 'event_post'
         if is_event_post:
+            # Feature flag (default off) — deprecated for low engagement. Short-circuit
+            # before building the AI agent so a flag-off cron firing costs nothing.
+            if os.environ.get('ENABLE_EVENT_POSTS', 'false').lower() != 'true':
+                logger.info("⏸️  ENABLE_EVENT_POSTS disabled — skipping event pipeline")
+                return {'statusCode': 200,
+                        'body': json.dumps({'status': 'skipped', 'reason': 'flag_disabled', 'timestamp': timestamp})}
             ai_agent = NewsAIAgent()
             dry_run = bool(event.get('dry_run', False))
             return _run_event_pipeline(timestamp, bucket_name, ai_agent, dry_run=dry_run)

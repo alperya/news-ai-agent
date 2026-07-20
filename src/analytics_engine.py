@@ -557,8 +557,16 @@ Rules:
         if not dry_run:
             secret = self._load_secret()
 
+        events_enabled = os.environ.get("ENABLE_EVENT_POSTS", "false").lower() == "true"
+
         for rec in analysis.get("recommendations", []):
             category = rec.get("category", "")
+            # Events are deprecated (feature-flagged off) — never auto-tune the
+            # event prompt, otherwise the engine keeps appending instructions to a
+            # prompt that no longer runs (the weekly cron is gated off in code).
+            if category == "event_curation" and not events_enabled:
+                logger.info("Skipping event_curation recommendation — event posts are disabled")
+                continue
             confidence = float(rec.get("confidence", 0))
             data_points = int(rec.get("data_points_used", 0))
             threshold = _THRESHOLDS.get(category, {})
