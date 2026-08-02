@@ -29,7 +29,10 @@ ELEVENLABS_SPEED = 1.0  # 0.7–1.2; 1.0 = normal, lower = slower/calmer narrati
 
 # ── TTS — edge-tts fallback (free, $0) ───────────────────────────────────────
 
-EDGE_TTS_VOICE = "tr-TR-AhmetNeural"
+# English voice — the narration is English. This was "tr-TR-AhmetNeural" (a
+# leftover from the project's early Turkish-content phase), which meant any
+# ElevenLabs outage published English news read by a Turkish voice.
+EDGE_TTS_VOICE = "en-US-ChristopherNeural"
 EDGE_TTS_RATE = "-15%"
 EDGE_TTS_PITCH = "+2Hz"
 
