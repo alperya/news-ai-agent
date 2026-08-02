@@ -126,6 +126,7 @@ def create_news_video(
     image_url: Optional[str] = None,
     footage_queries: Optional[List[str]] = None,
     hook: str = "",
+    cta_question: str = "",
     avoid_terms: Optional[List[str]] = None,
     ai_agent=None,
     exclude_media_ids: Optional[Set[int]] = None,
@@ -148,6 +149,9 @@ def create_news_video(
         image_url:       URL of the news article image (preferred as cover).
         footage_queries: AI-generated Pexels queries (specific → generic).
                          Falls back to keyword extraction when empty.
+        cta_question:    Engagement question spoken as the closing line. Added
+                         AFTER the narration cap so it is never the sentence
+                         that gets truncated away.
         exclude_media_ids:   Pexels video ids used within the reuse window
                              (de-prioritised so the cover is fresh).
         recent_image_urls:   Article image URLs used recently (skip as cover).
@@ -187,6 +191,11 @@ def create_news_video(
                 f"⚠️  Narration too long ({original_words} words), capped to "
                 f"{len(narration_text.split())} on a sentence boundary"
             )
+        # The engagement question closes the Reel — the last seconds are where
+        # a comment is won. Appended AFTER the cap on purpose: cap_narration
+        # drops trailing sentences, so a pre-cap CTA would be the first casualty.
+        if cta_question:
+            narration_text = f"{narration_text.rstrip()} {clean_for_narration(cta_question).strip()}"
         subtitle_segments = generate_tts(narration_text, audio_path, subs_path)
         logger.info(f"   {len(subtitle_segments)} subtitle segments")
 

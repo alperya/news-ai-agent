@@ -32,6 +32,120 @@ class NewsArticle:
         return asdict(self)
 
 
+# ── Editorial pool filters ────────────────────────────────────────────────────
+# The RSS feeds carry recurring NOS/RTL *formats* alongside real stories:
+# the weekly agenda card, photo galleries, rolling liveblogs, podcast episodes.
+# They read like news to the selection prompt but make terrible standalone
+# posts — three of one review week's engagement-floor posts were exactly these.
+# The blacklist is enforced in code because a soft prompt rule can be ignored.
+_NON_STORY_PATTERNS = [
+    r'^we{1,2}kdienst\b',       # NOS spells it "Weekdienst"; the review wrote "Wekdienst"
+    r'^in beeld\s*[|:]',
+    r'^live\s*[|:]',
+    r'^liveblog\b',
+    r'^podcast\b',
+    r'\bpodcast de dag\b',
+    r'^explainer\s*[|:]',
+    r'\bin nieuwsuur\b',
+]
+
+_NON_STORY_RE = re.compile('|'.join(_NON_STORY_PATTERNS), re.IGNORECASE)
+
+# Titles below this similarity are treated as separate stories. Calibrated on a
+# live 27-article pool: same-event pairs scored 0.44–1.00 ("AZ verplettert PSV
+# in Johan Cruijff Schaal" / "AZ wint tweede Johan Cruijff Schaal"), while the
+# closest genuinely-different pair scored 0.29 ("Madonna at Pride" / "Pride
+# security stepped up"). 0.40 sits in that gap.
+NEAR_DUPLICATE_THRESHOLD = 0.40
+
+# A single shared token can reach similarity 1.0 on a very short headline;
+# require at least this many shared content words before collapsing.
+_MIN_SHARED_TOKENS = 2
+
+# Dutch + English function words carry no topical signal; leaving them in
+# inflates the overlap between any two headlines.
+_STOPWORDS = {
+    'de', 'het', 'een', 'en', 'van', 'in', 'op', 'te', 'voor', 'met', 'aan',
+    'is', 'zijn', 'bij', 'door', 'naar', 'dat', 'die', 'niet', 'om', 'ook',
+    'na', 'uit', 'over', 'als', 'maar', 'meer', 'nog', 'weer', 'wordt', 'werd',
+    'the', 'a', 'an', 'and', 'of', 'to', 'for', 'with', 'on', 'in', 'at',
+    'is', 'are', 'was', 'were', 'be', 'by', 'from', 'as', 'that', 'this',
+}
+
+
+def is_non_story_title(title: str) -> bool:
+    """True when the title is a recurring non-story format, not a news event."""
+    if not title:
+        return False
+    return bool(_NON_STORY_RE.search(title.strip()))
+
+
+def _title_tokens(title: str) -> set:
+    """Lowercased content words of a title, for similarity comparison."""
+    words = re.findall(r'\w+', (title or '').lower())
+    return {w for w in words if len(w) > 2 and w not in _STOPWORDS}
+
+
+def title_similarity(a: str, b: str) -> float:
+    """Overlap coefficient of two titles' content words (0.0–1.0).
+
+    Deliberately NOT Jaccard: headlines for the same event differ wildly in
+    length ("AZ verplettert PSV in Johan Cruijff Schaal na vroege rode kaart
+    Veerman" vs "AZ wint tweede Johan Cruijff Schaal na ruime zege op tiental
+    PSV"), and Jaccard punishes that difference through the union term — the
+    pair scores 0.29 there but 0.44 here. The overlap coefficient asks the
+    question that matters: how much of the SHORTER headline is contained in
+    the longer one.
+    """
+    ta, tb = _title_tokens(a), _title_tokens(b)
+    if not ta or not tb:
+        return 0.0
+    shared = ta & tb
+    if len(shared) < _MIN_SHARED_TOKENS:
+        return 0.0
+    return len(shared) / min(len(ta), len(tb))
+
+
+def collapse_near_duplicates(articles: List[Dict],
+                             threshold: float = NEAR_DUPLICATE_THRESHOLD):
+    """Cluster articles reporting the same story and keep one per cluster.
+
+    Five sources covering one event turn a 27-article pool into ~14 real
+    options — but the selection prompt sees 27 and reads the pool as deeper
+    than it is. Keeps the cluster member with the longest description (the
+    most material for the AI to write from) and tags the rest.
+
+    Returns:
+        tuple[list[dict], list[dict]]: (kept, dropped). Each dropped article
+        gets ``excluded_reason='near_duplicate'`` and ``duplicate_of``.
+    """
+    kept: List[Dict] = []
+    dropped: List[Dict] = []
+
+    for article in articles:
+        title = article.get('title', '')
+        match = next(
+            (k for k in kept if title_similarity(title, k.get('title', '')) >= threshold),
+            None,
+        )
+        if match is None:
+            kept.append(article)
+            continue
+
+        # Same story — keep whichever has more to write from.
+        if len(article.get('description') or '') > len(match.get('description') or ''):
+            kept[kept.index(match)] = article
+            loser, winner = match, article
+        else:
+            loser, winner = article, match
+
+        loser['excluded_reason'] = 'near_duplicate'
+        loser['duplicate_of'] = winner.get('title', '')
+        dropped.append(loser)
+
+    return kept, dropped
+
+
 class DutchNewsScraper:
     """Scraper for Dutch news sources using RSS feeds"""
     

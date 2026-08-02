@@ -101,7 +101,7 @@ def _run_news_pipeline(articles, posts=None, reviewed=None):
     with patch("lambda_handler.get_secrets"), \
          patch("lambda_handler.should_skip_next_post", return_value=(False, {})), \
          patch("lambda_handler.DutchNewsScraper", return_value=scraper), \
-         patch("lambda_handler.get_published_urls", return_value=(set(), [], {})), \
+         patch("lambda_handler.get_published_urls", return_value=(set(), [], {}, [])), \
          patch("lambda_handler.NewsAIAgent", return_value=agent), \
          patch("lambda_handler.save_to_s3"), \
          patch("lambda_handler.send_alert") as alert:
@@ -118,7 +118,7 @@ def test_all_duplicates_alerts():
          patch("lambda_handler.should_skip_next_post", return_value=(False, {})), \
          patch("lambda_handler.DutchNewsScraper", return_value=scraper), \
          patch("lambda_handler.get_published_urls",
-               return_value=({"https://nos.nl/1"}, [], {})), \
+               return_value=({"https://nos.nl/1"}, [], {}, [])), \
          patch("lambda_handler.save_to_s3"), \
          patch("lambda_handler.send_alert") as alert:
         resp = lh.lambda_handler({"format": "reels"}, _Ctx())

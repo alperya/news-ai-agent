@@ -16,7 +16,10 @@ _dir = os.path.dirname(__file__)
 sys.path.insert(0, os.path.join(_dir, 'src'))
 sys.path.insert(0, _dir)
 
-from news_scraper import DutchNewsScraper
+from news_scraper import (
+    DutchNewsScraper, collapse_near_duplicates, is_non_story_title,
+)
+from metrics_collector import classify_topic, VIOLENCE_TOPICS
 from ai_agent import NewsAIAgent
 from publishing import build_crossposter, REEL, PHOTO
 from video import create_news_video
@@ -157,6 +160,11 @@ def get_secrets():
     # Publishing drought watchdog threshold (hours) — same call-time read as above
     if 'PUBLISH_DROUGHT_HOURS' in secret:
         os.environ['PUBLISH_DROUGHT_HOURS'] = secret['PUBLISH_DROUGHT_HOURS']
+    # Rolling content-mix window + crime cap — also read at call time, so the
+    # editorial balance can be retuned from the secret without a redeploy.
+    for key in ('CONTENT_MIX_WINDOW_DAYS', 'VIOLENCE_SHARE_CAP'):
+        if key in secret:
+            os.environ[key] = secret[key]
     # Connected Facebook Page — when set, the Story is cross-posted to FB
     if 'FACEBOOK_PAGE_ID' in secret:
         os.environ['FACEBOOK_PAGE_ID'] = secret['FACEBOOK_PAGE_ID']
@@ -219,29 +227,121 @@ def save_to_s3(data, filename, bucket_name):
 # considered "recently used" and avoided as a Reel cover. Tunable via env.
 FOOTAGE_REUSE_WINDOW_DAYS = int(os.environ.get('FOOTAGE_REUSE_WINDOW_DAYS', '30'))
 
+# Content-mix tunables, read at CALL time rather than import time. A
+# module-level os.environ.get (the FOOTAGE_REUSE_WINDOW_DAYS pattern above)
+# evaluates at container init — before get_secrets() copies values out of
+# Secrets Manager — so a retune there would silently never apply.
+#   CONTENT_MIX_WINDOW_DAYS — rolling window the mix is measured over.
+#   VIOLENCE_SHARE_CAP      — max share of that window that may be crime.
+#     Above it the prompt stands down unless the story is national in scale:
+#     YouTube ad suitability degrades on a heavy violence diet, and a
+#     sponsorable account needs a category mix, not a crime feed.
+_CONTENT_MIX_DEFAULTS = {'CONTENT_MIX_WINDOW_DAYS': '7', 'VIOLENCE_SHARE_CAP': '0.40'}
+
+
+def _mix_tunable(name, cast):
+    return cast(os.environ.get(name, _CONTENT_MIX_DEFAULTS[name]))
+
+# Editorial brief per slot. The EventBridge payload already carries
+# `schedule`; each slot is optimised for a different engagement action.
+_SLOT_BRIEFS = {
+    'morning': (
+        "SLOT BRIEF — MORNING (09:00 Amsterdam): \"what changes for you today\".\n"
+        "Prefer stories the viewer can ACT on: prices, strikes, weather warnings,\n"
+        "travel and commute disruption, rules or fees taking effect. This slot is\n"
+        "optimised for SAVES — the viewer should want to keep the post for later."
+    ),
+    'evening': (
+        "SLOT BRIEF — EVENING (19:00 Amsterdam): the biggest national story of the day.\n"
+        "Prefer the story most people in the Netherlands are already talking about.\n"
+        "This slot is optimised for SHARES and COMMENTS — the viewer should want to\n"
+        "send it to someone or argue about it."
+    ),
+}
+
+
+def build_content_mix_brief(recent_topics, now=None):
+    """Turn the rolling 7-day topic history into a prompt constraint.
+
+    The arithmetic is done here rather than left to the model: asking Claude to
+    remember a week of its own output is exactly the kind of rule an LLM drops
+    silently. The code states the fact; the model decides the exception.
+    """
+    now = now or datetime.now(timezone.utc)
+    window_days = _mix_tunable('CONTENT_MIX_WINDOW_DAYS', int)
+    cap = _mix_tunable('VIOLENCE_SHARE_CAP', float)
+    total = len(recent_topics)
+    if not total:
+        return ""
+
+    counts = {}
+    for topic, _ in recent_topics:
+        counts[topic] = counts.get(topic, 0) + 1
+
+    distribution = ', '.join(
+        f"{topic} {n} ({n / total:.0%})"
+        for topic, n in sorted(counts.items(), key=lambda kv: -kv[1])
+    )
+
+    violence_count = sum(counts.get(t, 0) for t in VIOLENCE_TOPICS)
+    violence_share = violence_count / total
+    violence_today = any(
+        topic in VIOLENCE_TOPICS and dt.date() == now.date()
+        for topic, dt in recent_topics
+    )
+
+    lines = [
+        f"CONTENT MIX (last {window_days} days, {total} post(s)): {distribution}",
+        f"TARGET MIX: ~40% impact-on-you (prices, travel, rules), ~30% national "
+        f"security/crime, ~20% Netherlands identity / human interest, ~10% money & business.",
+    ]
+
+    if violence_share >= cap:
+        lines.append(
+            f"⛔ CRIME CAP REACHED: crime/security is {violence_share:.0%} of the last "
+            f"{window_days} days (cap {cap:.0%}). Do NOT select "
+            f"another crime/security story unless it is national in scale (multi-province, "
+            f"terror, explosives) AND no Tier 1 alternative exists in the pool."
+        )
+    if violence_today:
+        lines.append(
+            "⛔ A crime/security story was already published TODAY. Never publish two "
+            "violence stories in one day — select a different category."
+        )
+
+    return '\n'.join(lines)
+
 
 def get_published_urls(bucket_name):
     """
     Get previously published article URLs from S3, plus recency-windowed dedup data.
 
     A single S3 scan of all ``posts_*.json`` files yields, per file, its
-    timestamp (from the filename) used to apply two windows: a 3-day window for
-    semantic title dedup and a FOOTAGE_REUSE_WINDOW_DAYS window for footage dedup.
+    timestamp (from the filename) used to apply three windows: a 3-day window
+    for semantic title dedup, a 7-day window for the rolling content mix, and a
+    FOOTAGE_REUSE_WINDOW_DAYS window for footage dedup. One scan, not three —
+    adding a second listing for the mix would double the S3 cost of every run.
 
     Returns:
-        tuple[set, list[str], dict]: (published_urls, recent_titles, footage)
+        tuple[set, list[str], dict, list]: (published_urls, recent_titles,
+        footage, recent_topics)
             published_urls — all-time URL set for exact-duplicate filtering
             recent_titles  — original_title values from the past 72 h for semantic dedup
             footage        — {'pexels_ids': set[int], 'image_urls': set[str],
                               'cover_hashes': list[int]} used within the reuse window
+            recent_topics  — [(topic, published_datetime)] over the past 7 days,
+                             used to hold the rolling content mix / violence cap
     """
     published_urls = set()
     recent_titles = []
+    recent_topics = []
     recent_pexels_ids = set()
     recent_image_urls = set()
     recent_cover_hashes = []
     s3_client = boto3.client('s3')
     title_cutoff = datetime.now(timezone.utc) - timedelta(days=3)
+    mix_window_days = _mix_tunable('CONTENT_MIX_WINDOW_DAYS', int)
+    topic_cutoff = datetime.now(timezone.utc) - timedelta(days=mix_window_days)
     footage_cutoff = datetime.now(timezone.utc) - timedelta(days=FOOTAGE_REUSE_WINDOW_DAYS)
 
     footage = {
@@ -259,7 +359,7 @@ def get_published_urls(bucket_name):
 
         if 'Contents' not in list_response:
             logger.info("📋 No previous posts found in S3")
-            return published_urls, recent_titles, footage
+            return published_urls, recent_titles, footage, recent_topics
 
         logger.info(f"🔍 Checking {len(list_response['Contents'])} posts files for duplicates...")
 
@@ -270,11 +370,14 @@ def get_published_urls(bucket_name):
 
             # Parse timestamp from filename "posts_YYYYMMDD_HHMMSS.json" to detect recency
             is_recent = False
+            within_topic_window = False
             within_footage_window = False
+            file_dt = None
             try:
                 ts_str = key[len('posts_'):-len('.json')]  # e.g. "20260619_143200"
                 file_dt = datetime.strptime(ts_str, '%Y%m%d_%H%M%S').replace(tzinfo=timezone.utc)
                 is_recent = file_dt >= title_cutoff
+                within_topic_window = file_dt >= topic_cutoff
                 within_footage_window = file_dt >= footage_cutoff
             except ValueError:
                 pass
@@ -295,6 +398,14 @@ def get_published_urls(bucket_name):
                                 title = post.get('original_title')
                                 if title:
                                     recent_titles.append(title)
+                            if within_topic_window and file_dt:
+                                # Prefer the topic stored at publish time; fall
+                                # back to classifying the caption so posts
+                                # written before this field existed still count.
+                                topic = post.get('topic') or classify_topic(
+                                    post.get('full_post') or post.get('content') or ''
+                                )
+                                recent_topics.append((topic, file_dt))
                             if within_footage_window:
                                 for pid in post.get('pexels_media_ids') or []:
                                     recent_pexels_ids.add(pid)
@@ -312,14 +423,15 @@ def get_published_urls(bucket_name):
         logger.info(
             f"📋 Found {len(published_urls)} published articles "
             f"({len(recent_titles)} in last 3 days; "
+            f"{len(recent_topics)} in last {mix_window_days} days; "
             f"{len(recent_pexels_ids)} Pexels ids / {len(recent_cover_hashes)} covers "
             f"in last {FOOTAGE_REUSE_WINDOW_DAYS} days)"
         )
-        return published_urls, recent_titles, footage
+        return published_urls, recent_titles, footage, recent_topics
 
     except Exception as e:
         logger.error(f"❌ Error getting published URLs: {str(e)}")
-        return published_urls, recent_titles, footage
+        return published_urls, recent_titles, footage, recent_topics
 
 
 def _invoke_youtube_async(lambda_client, s3_video_key, post_content, hook, hashtags, bucket_name, timestamp, context=''):
@@ -820,7 +932,7 @@ def lambda_handler(event, context):
         
         # Filter out already published articles
         logger.info("\n🔍 DUPLICATE CHECK: Checking for previously published articles...")
-        published_urls, recent_titles, recent_footage = get_published_urls(bucket_name)
+        published_urls, recent_titles, recent_footage, recent_topics = get_published_urls(bucket_name)
         original_count = len(articles_data)
 
         if published_urls:
@@ -832,7 +944,40 @@ def lambda_handler(event, context):
                 logger.info(f"📰 Remaining NEW articles: {filtered_count}")
             else:
                 logger.info(f"✅ All {filtered_count} articles are NEW (no duplicates found)")
-        
+
+        # Editorial pool cleanup. Both filters FAIL OPEN: an over-eager filter
+        # must never be the reason a slot publishes nothing, because that exit
+        # now alerts and the missed slot is unrecoverable.
+        excluded_articles = []
+
+        kept, non_stories = [], []
+        for a in articles_data:
+            (non_stories if is_non_story_title(a.get('title', '')) else kept).append(a)
+        if kept:
+            for a in non_stories:
+                a['excluded_reason'] = 'non_story_format'
+                logger.info(f"🚫 Dropped non-story format: {a.get('title', '')[:80]}")
+            excluded_articles.extend(non_stories)
+            articles_data = kept
+        elif non_stories:
+            logger.warning("⚠️  Non-story filter would empty the pool — keeping all articles")
+
+        kept, near_dupes = collapse_near_duplicates(articles_data)
+        if kept:
+            for a in near_dupes:
+                logger.info(
+                    f"🔁 Collapsed near-duplicate: {a.get('title', '')[:60]} "
+                    f"→ {a.get('duplicate_of', '')[:60]}"
+                )
+            excluded_articles.extend(near_dupes)
+            articles_data = kept
+
+        if excluded_articles:
+            logger.info(
+                f"📰 Pool: {len(articles_data)} real options "
+                f"({len(excluded_articles)} excluded)"
+            )
+
         if not articles_data:
             logger.warning("⚠️  All articles have already been posted!")
             save_to_s3({
@@ -862,12 +1007,23 @@ def lambda_handler(event, context):
         
         # STAGE 2: Process with AI
         logger.info("\n🤖 STAGE 2: Processing with AI...")
+        # The EventBridge payload carries which slot this is; each slot has a
+        # different editorial brief (morning = act-on-it/saves, evening =
+        # biggest national story/shares). Manual invokes default to evening.
+        slot = (event.get('schedule') or '').strip().lower() if isinstance(event, dict) else ''
+        slot_brief = _SLOT_BRIEFS.get(slot, _SLOT_BRIEFS['evening'])
+        content_mix = build_content_mix_brief(recent_topics)
+        if content_mix:
+            logger.info(f"📊 Content mix constraint:\n{content_mix}")
+
         ai_agent = NewsAIAgent()
         posts = ai_agent.process_batch(
             articles=articles_data,
             max_posts=1,
             platform='instagram',
             recently_published=recent_titles,
+            slot_brief=slot_brief,
+            content_mix=content_mix,
         )
         
         if not posts:
@@ -941,6 +1097,13 @@ def lambda_handler(event, context):
 
         posts_data = [post.to_dict() for post in posts]
 
+        # Classify and store the topic at publish time so the rolling content
+        # mix is stable — re-deriving it from the caption on every later read
+        # would silently shift as the keyword map evolves.
+        for post_data in posts_data:
+            post_data['topic'] = classify_topic(post_data.get('full_post', ''))
+            post_data['slot'] = slot or 'manual'
+
         # Detect if this is a Reels run (afternoon schedule or manual trigger)
         is_reels = False
         if isinstance(event, dict):
@@ -1005,6 +1168,7 @@ def lambda_handler(event, context):
                         image_url=post.get('image_url'),
                         footage_queries=footage_queries,
                         hook=post.get('hook', ''),
+                        cta_question=post.get('cta_question', ''),
                         avoid_terms=avoid_terms,
                         ai_agent=ai_agent,
                         exclude_media_ids=recent_footage['pexels_ids'],
@@ -1115,7 +1279,10 @@ def lambda_handler(event, context):
             'posts': posts_data
         }
         save_to_s3(results, f'pipeline_results_{timestamp}.json', bucket_name)
-        save_to_s3(articles_data, f'articles_{timestamp}.json', bucket_name)
+        # The pool file keeps the EXCLUDED articles too (tagged with
+        # excluded_reason). Without them the weekly review cannot tell whether
+        # the blacklist or the near-duplicate collapse over-fired.
+        save_to_s3(articles_data + excluded_articles, f'articles_{timestamp}.json', bucket_name)
         save_to_s3(posts_data, f'posts_{timestamp}.json', bucket_name)
         
         return {

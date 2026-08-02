@@ -144,17 +144,35 @@ class SelectionReviewer:
                 continue
             post = posts[0]  # news pipeline publishes exactly one post per run
 
+            # articles_*.json holds the whole scraped pool: the ones the AI
+            # actually chose from, plus the ones filtered out (blacklisted
+            # formats, collapsed near-duplicates) tagged with excluded_reason.
+            # They are reported separately so the review can audit the filters
+            # without them inflating the apparent pool depth.
             pool_titles: list[str] = []
+            excluded: list[dict] = []
             article_key = article_files.get(ts)
             if article_key:
                 articles = self._read_json(article_key) or []
-                pool_titles = [a.get("title", "") for a in articles if a.get("title")]
+                for a in articles:
+                    title = a.get("title", "")
+                    if not title:
+                        continue
+                    if a.get("excluded_reason"):
+                        excluded.append({"title": title, "reason": a["excluded_reason"]})
+                    else:
+                        pool_titles.append(title)
 
             runs.append({
                 "timestamp": ts,
                 "when": datetime.strptime(ts, "%Y%m%d_%H%M%S").replace(tzinfo=timezone.utc),
                 "pool_size": len(pool_titles),
                 "pool_titles": pool_titles,
+                "excluded": excluded,
+                "slot": post.get("slot", ""),
+                "topic": post.get("topic", ""),
+                "personal_stake": post.get("personal_stake"),
+                "series": post.get("series", ""),
                 "chosen_title": post.get("original_title", ""),
                 "selection_reason": post.get("selection_reason", ""),
                 "runner_ups": post.get("runner_ups", []) or [],
@@ -234,12 +252,17 @@ class SelectionReviewer:
         digest = [
             {
                 "date": r["when"].strftime("%Y-%m-%d %H:%M UTC"),
+                "slot": r.get("slot", ""),
                 "pool_size": r["pool_size"],
                 "chosen": r["chosen_title"],
+                "topic": r.get("topic", ""),
+                "personal_stake": r.get("personal_stake"),
+                "series": r.get("series", ""),
                 "selection_reason": r["selection_reason"],
                 "runner_ups": r["runner_ups"],
                 "engagement": r["engagement"],
                 "candidate_pool": r["pool_titles"],
+                "excluded_from_pool": r.get("excluded", []),
             }
             for r in runs
         ]
@@ -250,7 +273,14 @@ class SelectionReviewer:
             "candidate pool; `runner_ups` are the strongest candidates the AI "
             "passed over; `engagement.normalized_engagement_rate` is engagement / "
             "followers × 100 (null = metrics not yet mature, ignore those for "
-            "performance judgement).\n\n"
+            "performance judgement). `slot` is morning (09:00 AMS, optimised for "
+            "saves — 'what changes for you today') or evening (19:00 AMS, optimised "
+            "for shares/comments — biggest national story). `personal_stake` is the "
+            "0-3 score for how directly the story affects the viewer's money, "
+            "commute, safety or calendar. `excluded_from_pool` lists articles a "
+            "code-level filter removed before the AI saw them (recurring non-story "
+            "formats, collapsed near-duplicates) — flag any that look wrongly "
+            "excluded.\n\n"
             f"{json.dumps(digest, ensure_ascii=False, indent=2)}\n\n"
             "Write a concise review (plain text, no markdown headers) covering:\n"
             "1. OVERALL: how strong were this week's picks for FAST follower growth "

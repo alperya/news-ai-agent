@@ -110,9 +110,12 @@ def test_dedup_prompt_allows_escalating_followups(agent, monkeypatch):
         _ARTICLES, max_posts=1, platform="instagram",
         recently_published=["Code red heat in eight provinces"],
     )
-    # New wording must permit follow-ups on an escalating situation
-    assert "SAME SPECIFIC EVENT" in prompt
-    assert "SEPARATE, newsworthy events" in prompt
+    # Topic-arc dedup: same event + same angle is blocked, escalation is allowed
+    assert "SAME EVENT + SAME ANGLE ONLY" in prompt
+    assert "EXPLICITLY ALLOWED" in prompt
+    assert "NEW HARD NUMBER" in prompt
+    # A continuation must be framed as an escalation, not a re-report
+    assert "escalation frame" in prompt
 
 
 # ── 5. SelectionReviewer: caption-prefix engagement join ──────────────────────

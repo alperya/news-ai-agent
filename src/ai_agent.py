@@ -125,6 +125,14 @@ Return ONLY valid JSON:
 """
 
 
+def _as_int(value, default: int = 0) -> int:
+    """Coerce a model-supplied score to int; models return "2" as often as 2."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 @dataclass
 class SocialMediaPost:
     """Processed social media post"""
@@ -137,9 +145,16 @@ class SocialMediaPost:
     hook: str = ""
     platform: str = "twitter"
     image_url: Optional[str] = None
+    # Engagement fields. Deliberately kept OUT of `content`: the quality gate
+    # only ever sees `content`, which must stay in neutral news-agency register,
+    # and the "no calls to action" ban applies to the news body alone.
+    cta_question: str = ""
+    save_prompt: str = ""
+    series: str = ""
     # Editorial-transparency fields (filled from the batch-selection response).
     # Why the AI chose this article and the strongest candidates it passed over.
     selection_reason: str = ""
+    personal_stake: int = 0
     runner_ups: List[Dict] = field(default_factory=list)
     _corrected: bool = field(default=False, init=False, repr=False)
 
@@ -155,21 +170,46 @@ class SocialMediaPost:
             'platform': self.platform,
             'image_url': self.image_url,
             'full_post': self.format_post(),
+            'cta_question': self.cta_question,
+            'save_prompt': self.save_prompt,
+            'series': self.series,
             'selection_reason': self.selection_reason,
+            'personal_stake': self.personal_stake,
             'runner_ups': self.runner_ups,
         }
-    
+
+    # Named recurring series. A fixed list, not free text: open-ended names
+    # fragment into one-offs, and a series only converts viewers into followers
+    # (and becomes sponsorable) once it is recognisable across weeks.
+    SERIES_HASHTAGS = {
+        "Wat Verandert Er Vandaag": "#WatVerandertErVandaag",
+        "Nederland Droogt Uit": "#NederlandDroogtUit",
+    }
+
     def format_post(self) -> str:
         """Format complete social media post with source"""
-        hashtags_str = ' '.join(self.hashtags)
+        hashtags = list(self.hashtags)
+        series_tag = self.SERIES_HASHTAGS.get(self.series)
+        if series_tag and series_tag not in hashtags:
+            hashtags.append(series_tag)
+        hashtags_str = ' '.join(hashtags)
+
         source_line = f"\n📰 Source: {self.original_url}"
         # Only prepend emoji if content doesn't already start with one
         content = self.content
         if not content or not self._starts_with_emoji(content):
             content = f"{self.emoji} {content}"
+        # A named series leads the caption so it is recognisable in the feed.
+        if self.series:
+            content = f"📌 {self.series}\n\n{content}"
+
+        # The engagement ask lives after the news body, never inside it.
+        cta_lines = [line for line in (self.cta_question, self.save_prompt) if line]
+        cta_block = ("\n\n" + "\n".join(cta_lines)) if cta_lines else ""
+
         # Add dot separator before hashtags if content was corrected by quality gate
         separator = "\n.\n" if self._corrected else "\n\n"
-        return f"{content}{source_line}{separator}{hashtags_str}"
+        return f"{content}{cta_block}{source_line}{separator}{hashtags_str}"
 
     @staticmethod
     def _starts_with_emoji(text: str) -> bool:
@@ -283,7 +323,11 @@ class NewsAIAgent:
                 emoji=result['emoji'],
                 hook=result.get('hook', ''),
                 platform=target_platform,
-                image_url=article.get('image_url')
+                image_url=article.get('image_url'),
+                # Optional on this fallback path — the single-article prompt may
+                # predate these fields, and an empty CTA is better than a crash.
+                cta_question=(result.get('cta_question') or '').strip(),
+                save_prompt=(result.get('save_prompt') or '').strip(),
             )
             
         except Exception as e:
@@ -830,7 +874,9 @@ class NewsAIAgent:
             json.dump(data, f, ensure_ascii=False, indent=2)
         logger.info(f"📝 Saved locally: {local_path}")
     
-    def process_batch(self, articles: List[Dict], max_posts: int = 10, platform: str = "twitter", recently_published: Optional[List[str]] = None) -> List[SocialMediaPost]:
+    def process_batch(self, articles: List[Dict], max_posts: int = 10, platform: str = "twitter",
+                      recently_published: Optional[List[str]] = None,
+                      slot_brief: str = "", content_mix: str = "") -> List[SocialMediaPost]:
         """Process multiple articles - selects which articles to post in a single API call"""
         if not articles:
             logger.warning("No articles to process")
@@ -840,7 +886,10 @@ class NewsAIAgent:
             logger.info(f"Selecting and processing articles from {len(articles)} total articles (max {max_posts} posts)")
 
             # Single API call to select articles and create posts
-            posts = self._select_and_process_articles(articles, max_posts, platform, recently_published)
+            posts = self._select_and_process_articles(
+                articles, max_posts, platform, recently_published,
+                slot_brief=slot_brief, content_mix=content_mix,
+            )
 
             logger.info(f"Successfully selected and processed {len(posts)} posts")
             return posts
@@ -858,9 +907,14 @@ class NewsAIAgent:
             return []
 
     @_lf_observe(name="select_and_process_articles")
-    def _select_and_process_articles(self, articles: List[Dict], max_posts: int, platform: str, recently_published: Optional[List[str]] = None) -> List[SocialMediaPost]:
+    def _select_and_process_articles(self, articles: List[Dict], max_posts: int, platform: str,
+                                     recently_published: Optional[List[str]] = None,
+                                     slot_brief: str = "", content_mix: str = "") -> List[SocialMediaPost]:
         """Select which articles to post and create posts for them in a single API call"""
-        prompt = self._create_batch_selection_prompt(articles, max_posts, platform, recently_published)
+        prompt = self._create_batch_selection_prompt(
+            articles, max_posts, platform, recently_published,
+            slot_brief=slot_brief, content_mix=content_mix,
+        )
 
         try:
             response = self.client.messages.create(
@@ -887,7 +941,9 @@ class NewsAIAgent:
             logger.error(f"Error in article selection: {str(e)}")
             raise
     
-    def _create_batch_selection_prompt(self, articles: List[Dict], max_posts: int, platform: str, recently_published: Optional[List[str]] = None) -> str:
+    def _create_batch_selection_prompt(self, articles: List[Dict], max_posts: int, platform: str,
+                                       recently_published: Optional[List[str]] = None,
+                                       slot_brief: str = "", content_mix: str = "") -> str:
         """Create prompt for selecting articles and creating posts"""
         if platform == "twitter":
             max_length = 280
@@ -907,20 +963,27 @@ ARTICLE {i}:
 - URL: {article['url']}
 """
 
+        # Topic-ARC dedup, not title matching. The old rule blocked anything
+        # that resembled a published title, which suppressed the escalation
+        # beats that are the most engaging part of a running story. What is
+        # actually banned is the same event told from the same angle.
         if recently_published:
             titles_list = "\n".join(f"- {t}" for t in recently_published)
             recent_publications = (
-                "RECENT PUBLICATIONS (last 3 days) — avoid re-posting the SAME SPECIFIC EVENT "
-                "as any of these, even if it comes from a different source (e.g. the same match "
-                "result, the same accident, the same announcement re-reported elsewhere):\n"
+                "PUBLISHED IN THE LAST 72 HOURS:\n"
                 f"{titles_list}\n\n"
-                "IMPORTANT — this is NOT a ban on a broad theme. A developing or escalating "
-                "situation may be selected when there is a materially new stage: new damage, "
-                "casualties, a distinct phenomenon, or a clear escalation. Example: a heatwave "
-                "already covered does NOT block a follow-up about the storms that end it, new "
-                "storm/lightning damage, or casualties — those are SEPARATE, newsworthy events. "
-                "Only skip a candidate when it is essentially the same incident already published, "
-                "not merely the same topic.\n\n"
+                "DEDUP RULE — SAME EVENT + SAME ANGLE ONLY.\n"
+                "Block a candidate only when it retells one of the above from the SAME angle "
+                "with nothing materially new (the same match result, the same accident, the "
+                "same announcement re-reported by another outlet).\n"
+                "EXPLICITLY ALLOWED — a continuation of a running story when there is a NEW "
+                "HARD NUMBER or a clear ESCALATION: a new record ('laagste ooit gemeten'), a "
+                "next stage ('vierde hittegolf'), a new consequence ('haven dicht'), new "
+                "damage, casualties, or a distinct phenomenon. A covered heatwave does NOT "
+                "block the storms that end it.\n"
+                "WHEN YOU SELECT A CONTINUATION, the 'hook' MUST open with the escalation "
+                "frame — state the previous stage, then the new one "
+                "(e.g. 'Last week the river hit a record low — today the port closed').\n\n"
             )
         else:
             recent_publications = ""
@@ -928,7 +991,7 @@ ARTICLE {i}:
         prompt_template = self._load_prompt('batch_selection.txt', 'AI_PROMPT_BATCH_SELECTION')
         hashtag_instruction = 'Include 5-10 relevant hashtags (in English)' if platform == 'instagram' else 'Include 3-5 relevant hashtags (in English)'
 
-        return prompt_template.format(
+        body = prompt_template.format(
             recent_publications=recent_publications,
             article_count=len(articles),
             max_posts=max_posts,
@@ -937,6 +1000,16 @@ ARTICLE {i}:
             max_length=max_length,
             hashtag_instruction=hashtag_instruction
         )
+
+        # The slot brief and content mix are PREPENDED, not substituted through
+        # a {placeholder}. The prompt template lives in Secrets Manager and is
+        # edited independently of a deploy, so a new placeholder would make the
+        # two a matched pair: publishing the prompt first raises KeyError in the
+        # running Lambda, which process_batch swallows into the single-article
+        # fallback — a silent collapse to "publish articles[0], no tiers".
+        # Prepending keeps prompt and code independently deployable in either order.
+        preamble = ''.join(part + "\n\n" for part in (slot_brief, content_mix) if part)
+        return preamble + body
     
     def _parse_batch_response(self, response_text: str, articles: List[Dict], platform: str) -> List[SocialMediaPost]:
         """Parse batch response and create SocialMediaPost objects"""
@@ -971,6 +1044,13 @@ ARTICLE {i}:
 
                 article = articles[idx]
 
+                # A series name outside the known set is dropped rather than
+                # honoured — an invented one-off series is worse than none.
+                series = (selected.get('series') or '').strip()
+                if series and series not in SocialMediaPost.SERIES_HASHTAGS:
+                    logger.warning(f"Unknown series '{series}' — ignoring")
+                    series = ''
+
                 post = SocialMediaPost(
                     original_title=article['title'],
                     original_url=article['url'],
@@ -981,7 +1061,11 @@ ARTICLE {i}:
                     hook=selected.get('hook', ''),
                     platform=platform,
                     image_url=article.get('image_url'),
+                    cta_question=(selected.get('cta_question') or '').strip(),
+                    save_prompt=(selected.get('save_prompt') or '').strip(),
+                    series=series,
                     selection_reason=selected.get('selection_reason', ''),
+                    personal_stake=_as_int(selected.get('personal_stake'), 0),
                     runner_ups=runner_ups,
                 )
                 posts.append(post)
@@ -1000,6 +1084,8 @@ ARTICLE {i}:
                         {
                             "title": p.original_title,
                             "selection_reason": p.selection_reason,
+                            "personal_stake": p.personal_stake,
+                            "series": p.series,
                         }
                         for p in posts
                     ],

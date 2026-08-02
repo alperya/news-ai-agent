@@ -25,6 +25,48 @@ _RESULTS_BUCKET = os.environ.get("RESULTS_BUCKET", "news-ai-agent-results-645949
 _METRICS_TABLE = os.environ.get("METRICS_TABLE", "news-ai-agent-post-metrics")
 _GRAPH_API = "https://graph.facebook.com/v24.0"
 
+# Thematic categories, most specific first — first match wins. Geography is
+# deliberately NOT a topic: NL keywords match nearly every caption, which used
+# to label every post "Netherlands" and made topic performance unmeasurable.
+# Shared with the news pipeline, which uses the same labels to hold the rolling
+# 7-day content mix (see lambda_handler.get_published_urls).
+_TOPIC_KEYWORDS = [
+    (["storm", "knmi", "lightning", "thunder", "flood", "heatwave", "heat wave",
+      "snow", "weather", "code orange", "code red", "code yellow",
+      "code oranje", "code rood", "code geel", "rainfall", "wind gust"], "Weather"),
+    (["schiphol", "railway", "train", "rail strike", "metro", "tram ", "flight",
+      "airport", "road clos", "traffic jam", "public transport", "travel disruption",
+      "ns strike", "prorail"], "Transport"),
+    (["police", "explosion", "shooting", "stabbing", "arrest", "raid", "bomb",
+      "suspect", "attack", "manhunt", "crime"], "Crime/Security"),
+    (["election", "cabinet", "parliament", "minister", "coalition", "vote",
+      "tax", "benefit", "rent regulation", "new law", "government"], "Politics/Policy"),
+    (["inflation", "energy bill", "housing market", "mortgage", "cost of living",
+      "wages", "economy", "stock"], "Economy"),
+    (["eredivisie", "football", "soccer", "olympic", "tournament",
+      "ajax", "psv", "feyenoord", "championship"], "Sports"),
+    (["festival", "concert", "museum", "exhibition", "things to do", "this week in"], "Events"),
+    (["euthanasia", "hospital", "healthcare", "covid", "vaccine", "medicine"], "Health"),
+    (["king", "queen", "royal", "koningsdag", "prince", "princess"], "Society/Royal"),
+    (["climate", "solar", "wind energy", "emissions", "sustainab", "environment"], "Climate/Energy"),
+    (["artificial intelligence", "ai ", "software", "startup", "chip", "semiconductor"], "Technology"),
+    (["ukraine", "russia", "nato", "eu ", "european union", "brussels"], "Europe"),
+]
+
+# Topics that count against the rolling violence cap (YouTube ad suitability).
+VIOLENCE_TOPICS = {"Crime/Security"}
+
+
+def classify_topic(caption: str) -> str:
+    """Classify a post by THEME from its caption. Returns 'Other' when unmatched."""
+    if not caption:
+        return "Other"
+    cap = caption.lower()
+    for keywords, label in _TOPIC_KEYWORDS:
+        if any(k in cap for k in keywords):
+            return label
+    return "Other"
+
 
 class MetricsCollector:
     def __init__(self):
@@ -149,52 +191,23 @@ class MetricsCollector:
     def _post_type(media_type: str, product_type: str, caption: str) -> str:
         if media_type != "VIDEO":
             return "photo"
-        if product_type == "REELS":
-            cap = caption.lower()
-            if "events" in cap or "🗓" in cap or "this week" in cap or "festival" in cap:
-                return "events_reel"
+        if product_type != "REELS":
+            return "photo"
+        # While event posts are disabled every Reel is a news Reel. The old
+        # caption-keyword guess ("events"/"this week"/"festival") mislabelled
+        # ordinary news Reels as events_reel, which fed the weekly review a
+        # format that the pipeline cannot even produce.
+        if os.environ.get("ENABLE_EVENT_POSTS", "false").strip().lower() != "true":
             return "reel"
-        return "photo"
+        cap = caption.lower()
+        if "events" in cap or "🗓" in cap or "this week" in cap or "festival" in cap:
+            return "events_reel"
+        return "reel"
 
     @staticmethod
     def _topic(caption: str) -> str:
-        """Classify a post by THEME (not geography).
-
-        The old version listed "Netherlands" first, but NL keywords
-        (amsterdam/dutch/nl) match nearly every caption, so every post was
-        labelled "Netherlands" and topic-level performance was unmeasurable.
-        Here the thematic categories come first (most specific → first match
-        wins); geography is intentionally not a topic.
-        """
-        if not caption:
-            return "Other"
-        cap = caption.lower()
-        topics = [
-            (["storm", "knmi", "lightning", "thunder", "flood", "heatwave", "heat wave",
-              "snow", "weather", "code orange", "code red", "code yellow",
-              "code oranje", "code rood", "code geel", "rainfall", "wind gust"], "Weather"),
-            (["schiphol", "railway", "train", "rail strike", "metro", "tram ", "flight",
-              "airport", "road clos", "traffic jam", "public transport", "travel disruption",
-              "ns strike", "prorail"], "Transport"),
-            (["police", "explosion", "shooting", "stabbing", "arrest", "raid", "bomb",
-              "suspect", "attack", "manhunt", "crime"], "Crime/Security"),
-            (["election", "cabinet", "parliament", "minister", "coalition", "vote",
-              "tax", "benefit", "rent regulation", "new law", "government"], "Politics/Policy"),
-            (["inflation", "energy bill", "housing market", "mortgage", "cost of living",
-              "wages", "economy", "stock"], "Economy"),
-            (["eredivisie", "football", "soccer", "olympic", "tournament",
-              "ajax", "psv", "feyenoord", "championship"], "Sports"),
-            (["festival", "concert", "museum", "exhibition", "things to do", "this week in"], "Events"),
-            (["euthanasia", "hospital", "healthcare", "covid", "vaccine", "medicine"], "Health"),
-            (["king", "queen", "royal", "koningsdag", "prince", "princess"], "Society/Royal"),
-            (["climate", "solar", "wind energy", "emissions", "sustainab", "environment"], "Climate/Energy"),
-            (["artificial intelligence", "ai ", "software", "startup", "chip", "semiconductor"], "Technology"),
-            (["ukraine", "russia", "nato", "eu ", "european union", "brussels"], "Europe"),
-        ]
-        for keywords, label in topics:
-            if any(k in cap for k in keywords):
-                return label
-        return "Other"
+        """Classify a post by THEME (not geography). See ``classify_topic``."""
+        return classify_topic(caption)
 
     # ── Publishing drought watchdog ──────────────────────────────────────────
 

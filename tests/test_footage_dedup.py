@@ -334,7 +334,7 @@ def test_get_published_urls_collects_recent_footage():
         }],
     }
     with patch.object(lambda_handler.boto3, "client", return_value=_s3_stub(objects)):
-        urls, titles, footage = lambda_handler.get_published_urls("bucket")
+        urls, titles, footage, topics = lambda_handler.get_published_urls("bucket")
 
     # all-time URLs include both; footage only the recent one
     assert urls == {"https://nos.nl/a/1", "https://nos.nl/a/2"}
@@ -353,7 +353,7 @@ def test_get_published_urls_backward_compatible_with_old_posts():
         }],
     }
     with patch.object(lambda_handler.boto3, "client", return_value=_s3_stub(objects)):
-        urls, titles, footage = lambda_handler.get_published_urls("bucket")
+        urls, titles, footage, topics = lambda_handler.get_published_urls("bucket")
 
     assert urls == {"https://nos.nl/a/3"}
     assert footage["pexels_ids"] == set()
