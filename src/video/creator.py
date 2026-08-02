@@ -26,6 +26,7 @@ from .effects import (
     compute_dhash,
     hamming,
     build_hook_overlays,
+    build_source_label_overlay,
     build_subtitle_overlays,
     make_fact_overlay,
     make_ken_burns_clip,
@@ -48,6 +49,14 @@ COVER_HASH_THRESHOLD = 10
 
 # Length of the real-photo cover scene in the hybrid composition (seconds).
 COVER_SCENE_DURATION = 4.0
+
+# Longer cover for stories tied to one specific place. Stock footage of a small
+# Dutch town does not exist, so every stock second is generic by design — the
+# article's own photo is the only frame that actually shows the place. It also
+# reprises mid-Reel, but that slot plays at the regular body-segment length
+# (the stitcher pins only the lead clip), so the reprise is rendered shorter.
+COVER_SCENE_DURATION_PLACE = 7.0
+COVER_REPRISE_DURATION = 3.5
 
 # Narration word budget = hook (~8-12 words) + content (prompt-capped 75-95
 # words) + slack. ~120 words ≈ 48 s of speech. Capping happens on sentence
@@ -124,6 +133,8 @@ def create_news_video(
     recent_cover_hashes: Optional[List[int]] = None,
     used_media_ids: Optional[List[int]] = None,
     cover_meta_out: Optional[dict] = None,
+    footage_plan: Optional[dict] = None,
+    footage_audit_out: Optional[List[dict]] = None,
 ) -> str:
     """Create a Reels-format news video.
 
@@ -144,6 +155,10 @@ def create_news_video(
         used_media_ids:      Out-param — appended with Pexels ids actually used.
         cover_meta_out:      Out-param dict — populated with cover_image_url /
                              cover_image_hash when a real photo becomes the cover.
+        footage_plan:        Geographic footage plan (see :mod:`footage_geo`) —
+                             decides how strictly footage is filtered and how
+                             much screen time the real photo earns.
+        footage_audit_out:   Out-param list — per-candidate accept/reject trail.
 
     Returns:
         Absolute path to the generated video file.
@@ -182,6 +197,7 @@ def create_news_video(
 
         # ── 2. Background visuals (returns a background mp4 path) ─────
         logger.info("🖼️  Building background visuals...")
+        bg_meta: dict = {}
         bg_path = _build_background(
             title, content, image_url, tmp_dir, total_duration,
             footage_queries=footage_queries,
@@ -192,6 +208,10 @@ def create_news_video(
             recent_cover_hashes=recent_cover_hashes,
             used_ids_out=used_media_ids,
             cover_meta_out=cover_meta_out,
+            footage_plan=footage_plan,
+            audit_out=footage_audit_out,
+            bg_meta_out=bg_meta,
+            headline=hook or content[:180],
         )
 
         # ── 3. Build static overlays (gradient + subtitles + hook) ───
@@ -202,6 +222,12 @@ def create_news_video(
         overlays += build_subtitle_overlays(subtitle_segments, hook_duration, tmp_dir)
         if hook:
             overlays += build_hook_overlays(hook, tmp_dir, duration=hook_duration)
+        # Label the stock segments so viewers stop reading generic footage as an
+        # AI-generated picture of the location.
+        if bg_meta.get("source") in ("hybrid", "stock") and total_duration > 8:
+            overlays += build_source_label_overlay(
+                tmp_dir, start=bg_meta.get("stock_starts_at", 0.0) + 0.3,
+            )
 
         # ── 4. Mix audio → file (cheap; not per-frame) ───────────────
         logger.info("🎵 Mixing audio...")
@@ -369,6 +395,10 @@ def _build_background(
     recent_cover_hashes: Optional[List[int]] = None,
     used_ids_out: Optional[List[int]] = None,
     cover_meta_out: Optional[dict] = None,
+    footage_plan: Optional[dict] = None,
+    audit_out: Optional[List[dict]] = None,
+    bg_meta_out: Optional[dict] = None,
+    headline: str = "",
 ) -> str:
     """Build the background and return a single **mp4 file path** (no overlays).
 
@@ -384,9 +414,26 @@ def _build_background(
     recurring "weekdienst" template card). Otherwise the cover falls back to a
     fresh Pexels stock clip. The readability gradient is NOT baked here — it is
     burned as an overlay in the single ffmpeg assembly pass.
+
+    For place-specific stories (``footage_plan["place_mode"] == "no_stock"``)
+    the article photo is the only footage that genuinely depicts the place, so
+    it gets a longer cover and a second appearance mid-Reel. *bg_meta_out*
+    reports what was actually built, which the caller uses to time the
+    stock-footage disclosure label.
     """
     recent_image_urls = recent_image_urls or set()
     recent_cover_hashes = recent_cover_hashes or []
+    place_specific = (footage_plan or {}).get("place_mode") == "no_stock"
+
+    def _record_bg_meta(source: str, cover_seconds: float = 0.0, has_real_cover: bool = False):
+        """Report the background's shape so overlays can be timed against it."""
+        if bg_meta_out is not None:
+            bg_meta_out.update({
+                "source": source,
+                "cover_seconds": cover_seconds,
+                "stock_starts_at": cover_seconds,
+                "has_real_cover": has_real_cover,
+            })
 
     # Priority 1 — Real news photo as cover (only when fresh)
     cover_img_path = None
@@ -417,8 +464,15 @@ def _build_background(
             if cover_dhash is not None:
                 cover_meta_out["cover_image_hash"] = cover_dhash
 
+    # The vision gate and the avoid terms are written in English; the Dutch
+    # headline would be judged against them. Prefer the English hook/content.
+    footage_headline = headline or title
+
     if cover_img_path:
-        cover_dur = min(COVER_SCENE_DURATION, duration * 0.4)
+        # A place-specific story gets a longer cover: the article's own photo is
+        # the only footage that actually shows the place, so it earns the time.
+        base_cover = COVER_SCENE_DURATION_PLACE if place_specific else COVER_SCENE_DURATION
+        cover_dur = min(base_cover, duration * 0.4)
         prepared = prepare_image_for_portrait(cover_img_path, tmp_dir)
         # Pre-render the cover to an MP4 with ffmpeg (fast) so it joins the stock
         # clips as a file-backed scene. Doing the Ken Burns in moviepy's final
@@ -431,16 +485,29 @@ def _build_background(
             title, content, tmp_dir,
             footage_queries=footage_queries,
             avoid_terms=avoid_terms,
-            headline=title,
+            headline=footage_headline,
             ai_agent=ai_agent,
             exclude_ids=exclude_ids,
             used_ids_out=used_ids_out,
+            footage_plan=footage_plan,
+            audit_out=audit_out,
         )
         if cover_mp4 and body_paths:
-            merged = _stitch_clips_to_file([cover_mp4] + body_paths, duration)
+            scenes = [cover_mp4] + body_paths
+            # Return to the real photo mid-Reel rather than holding it longer up
+            # front — same authentic seconds, without a static opening.
+            if place_specific and len(body_paths) >= 4:
+                reprise = render_ken_burns_mp4(
+                    prepared, COVER_REPRISE_DURATION, os.path.join(tmp_dir, "cover_kb2.mp4"),
+                )
+                if reprise:
+                    mid = len(body_paths) // 2
+                    scenes = [cover_mp4] + body_paths[:mid] + [reprise] + body_paths[mid:]
+            merged = _stitch_clips_to_file(scenes, duration, lead_duration=cover_dur)
             if merged:
                 logger.info(f"   🎬 Hybrid: real-photo cover + {len(body_paths)} stock scenes")
                 _record_cover_meta()
+                _record_bg_meta("hybrid", cover_seconds=cover_dur, has_real_cover=True)
                 return merged
         if body_paths:
             # Cover render failed (or stitch failed) — use stock clips alone.
@@ -448,12 +515,14 @@ def _build_background(
             merged = _stitch_clips_to_file(body_paths, duration)
             if merged:
                 logger.info(f"   🎬 Cover render failed; using {len(body_paths)} stock clips")
+                _record_bg_meta("stock")
                 return merged
         # No usable stock body — fall back to a full Ken Burns cover (mp4).
         cover_only = render_ken_burns_mp4(prepared, duration, os.path.join(tmp_dir, "cover_full.mp4"))
         if cover_only:
             logger.info("   🖼️  Real-photo cover only (no stock body available)")
             _record_cover_meta()
+            _record_bg_meta("photo", cover_seconds=duration, has_real_cover=True)
             return cover_only
 
     # Priority 2 — Stock footage from Pexels (cover from stock, id-deduped)
@@ -461,26 +530,31 @@ def _build_background(
         title, content, tmp_dir,
         footage_queries=footage_queries,
         avoid_terms=avoid_terms,
-        headline=title,
+        headline=footage_headline,
         ai_agent=ai_agent,
         exclude_ids=exclude_ids,
         used_ids_out=used_ids_out,
+        footage_plan=footage_plan,
+        audit_out=audit_out,
     )
     if clip_paths:
         merged = _stitch_clips_to_file(clip_paths, duration)
         if merged:
             logger.info(f"   🎬 Using {len(clip_paths)} stock video clips")
+            _record_bg_meta("stock")
             return merged
 
     # Priority 3 — Ken Burns on Pexels stock photo
-    stock_img = fetch_stock_image(title, content, tmp_dir)
+    stock_img = fetch_stock_image(title, content, tmp_dir, footage_plan=footage_plan)
     if stock_img:
         prepared = prepare_image_for_portrait(stock_img, tmp_dir)
         kb = render_ken_burns_mp4(prepared, duration, os.path.join(tmp_dir, "stockphoto.mp4"))
         if kb:
             logger.info("   🖼️  Ken Burns effect on Pexels stock photo")
+            _record_bg_meta("stock_photo")
             return kb
 
     # Priority 4 — Animated gradient (file-backed)
     logger.info("   🎨 Animated gradient fallback")
+    _record_bg_meta("gradient")
     return render_fallback_bg_mp4(os.path.join(tmp_dir, "fallback_bg.mp4"), duration)

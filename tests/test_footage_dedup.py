@@ -63,11 +63,12 @@ def test_fetch_clips_fresh_first_and_records_ids():
                           [{"id": i, "image": None} for i in (10, 11, 12, 13)]
                           if orientation == "portrait" else []), \
          patch.object(F, "_download_clip",
-                      side_effect=lambda v, idx, d: f"/tmp/stock_{idx}.mp4"):
+                      side_effect=lambda v, idx, d: f"/tmp/stock_{idx}.mp4"), \
+         patch.object(F, "PEXELS_API_KEY", "test-key"):
         used = []
-        paths = F._fetch_clips_for_query(
-            "k", "weather", "/tmp", count=3, headline="h", ai_agent=None,
-            exclude_ids={10, 11}, used_ids_out=used,
+        paths = F.fetch_stock_clips(
+            "k", "weather", "/tmp", count=3, footage_queries=["weather"],
+            headline="h", ai_agent=None, exclude_ids={10, 11}, used_ids_out=used,
         )
     assert len(paths) == 3
     assert used[0] == 12          # cover is fresh
@@ -82,11 +83,12 @@ def test_fetch_clips_all_stale_still_returns_clips():
                           [{"id": i, "image": None} for i in (10, 11)]
                           if orientation == "portrait" else []), \
          patch.object(F, "_download_clip",
-                      side_effect=lambda v, idx, d: f"/tmp/stock_{idx}.mp4"):
+                      side_effect=lambda v, idx, d: f"/tmp/stock_{idx}.mp4"), \
+         patch.object(F, "PEXELS_API_KEY", "test-key"):
         used = []
-        paths = F._fetch_clips_for_query(
-            "k", "weather", "/tmp", count=2, headline="h", ai_agent=None,
-            exclude_ids={10, 11}, used_ids_out=used,
+        paths = F.fetch_stock_clips(
+            "k", "weather", "/tmp", count=2, footage_queries=["weather"],
+            headline="h", ai_agent=None, exclude_ids={10, 11}, used_ids_out=used,
         )
     assert len(paths) == 2
     assert set(used) == {10, 11}
@@ -114,8 +116,10 @@ def _patch_build_background(monkeypatch, *, cover_render, body_clips):
     monkeypatch.setattr(C, "download_image", lambda url, d: "/tmp/news.jpg")
     monkeypatch.setattr(C, "compute_dhash", lambda p: 42)
     monkeypatch.setattr(C, "prepare_image_for_portrait", lambda p, d: "/tmp/prep.jpg")
+    # Mirror the real function: it returns the path it rendered to (or None on
+    # ffmpeg failure), so distinct output paths stay distinct.
     monkeypatch.setattr(C, "render_ken_burns_mp4",
-                        lambda img, dur, out: cover_render)
+                        lambda img, dur, out: out if cover_render else None)
 
     def _fake_fetch(*a, used_ids_out=None, **k):
         if used_ids_out is not None:
@@ -123,8 +127,11 @@ def _patch_build_background(monkeypatch, *, cover_render, body_clips):
         return list(body_clips)
 
     monkeypatch.setattr(C, "fetch_stock_clips", _fake_fetch)
-    monkeypatch.setattr(C, "_stitch_clips_to_file",
-                        lambda paths, dur: captured.update(paths=paths) or "MERGED")
+    monkeypatch.setattr(
+        C, "_stitch_clips_to_file",
+        lambda paths, dur, lead_duration=None:
+            captured.update(paths=paths, lead_duration=lead_duration) or "MERGED",
+    )
     return C, captured
 
 
@@ -175,6 +182,62 @@ def test_recently_used_photo_skipped_as_cover(monkeypatch):
     assert result == "MERGED"
     assert captured["paths"] == ["/tmp/b0.mp4"]  # stock only, no cover render
     assert meta == {}
+
+
+# ── 2e. Place-specific stories get more of the only authentic footage ────────
+
+def test_cover_duration_honoured_for_place_stories(monkeypatch):
+    """The article photo is the only frame that really shows the place.
+
+    Without lead_duration the stitcher splits time evenly and the cover constant
+    is a no-op, so assert the value actually reaches _stitch_clips_to_file.
+    """
+    import video.creator as C
+    _, captured = _patch_build_background(
+        monkeypatch, cover_render="/tmp/cover_kb.mp4",
+        body_clips=[f"/tmp/b{i}.mp4" for i in range(6)],
+    )
+    C._build_background(
+        "t", "c", "https://img/fresh.jpg", "/tmp", 35.0,
+        recent_image_urls=set(), recent_cover_hashes=[],
+        footage_plan={"place": "deventer", "place_mode": "no_stock"},
+    )
+    assert captured["lead_duration"] == C.COVER_SCENE_DURATION_PLACE
+    # …and the photo returns mid-Reel rather than holding a long static opening
+    assert captured["paths"].count("/tmp/cover_kb.mp4") == 1
+    assert "/tmp/cover_kb2.mp4" in captured["paths"]
+
+
+def test_cover_duration_default_for_non_place_stories(monkeypatch):
+    """A story with no geographic anchor keeps the original 4 s cover."""
+    import video.creator as C
+    _, captured = _patch_build_background(
+        monkeypatch, cover_render="/tmp/cover_kb.mp4",
+        body_clips=[f"/tmp/b{i}.mp4" for i in range(6)],
+    )
+    C._build_background(
+        "t", "c", "https://img/fresh.jpg", "/tmp", 35.0,
+        recent_image_urls=set(), recent_cover_hashes=[],
+        footage_plan={"place": "", "place_mode": "none"},
+    )
+    assert captured["lead_duration"] == C.COVER_SCENE_DURATION
+    assert "/tmp/cover_kb2.mp4" not in captured["paths"]
+
+
+def test_build_background_reports_bg_meta(monkeypatch):
+    """bg_meta_out drives the stock-footage disclosure label's timing."""
+    import video.creator as C
+    _, _ = _patch_build_background(
+        monkeypatch, cover_render="/tmp/cover_kb.mp4", body_clips=["/tmp/b0.mp4"],
+    )
+    bg_meta = {}
+    C._build_background(
+        "t", "c", "https://img/fresh.jpg", "/tmp", 35.0,
+        recent_image_urls=set(), recent_cover_hashes=[], bg_meta_out=bg_meta,
+    )
+    assert bg_meta["source"] == "hybrid"
+    assert bg_meta["has_real_cover"] is True
+    assert bg_meta["stock_starts_at"] == C.COVER_SCENE_DURATION
 
 
 # ── 2d. Single-pass ffmpeg assembly (render speedup) ─────────────────────────

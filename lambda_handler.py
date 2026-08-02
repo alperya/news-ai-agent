@@ -165,6 +165,8 @@ def get_secrets():
         os.environ['AI_PROMPT_EVENT_SELECTION'] = secret['AI_PROMPT_EVENT_SELECTION']
     if 'AI_PROMPT_CAROUSEL_CAPTION' in secret:
         os.environ['AI_PROMPT_CAROUSEL_CAPTION'] = secret['AI_PROMPT_CAROUSEL_CAPTION']
+    if 'AI_PROMPT_FOOTAGE_QUERIES' in secret:
+        os.environ['AI_PROMPT_FOOTAGE_QUERIES'] = secret['AI_PROMPT_FOOTAGE_QUERIES']
 
     # LangSmith observability (optional)
     for key in ('LANGCHAIN_API_KEY', 'LANGCHAIN_PROJECT', 'LANGCHAIN_TRACING_V2'):
@@ -913,7 +915,7 @@ def lambda_handler(event, context):
 
                     # Generate contextually accurate Pexels search queries
                     logger.info("🎬 Generating footage search queries...")
-                    footage_queries, avoid_terms = ai_agent.generate_footage_queries(
+                    footage_queries, avoid_terms, footage_plan = ai_agent.generate_footage_queries(
                         title=post.get('original_title', ''),
                         description=post.get('content', ''),
                     )
@@ -923,6 +925,7 @@ def lambda_handler(event, context):
                     # the same cover (Pexels clip or news photo) within the window.
                     used_media_ids = []
                     cover_meta = {}
+                    footage_audit = []
                     video_path = f'/tmp/reels_{timestamp}.mp4'
                     create_news_video(
                         title=post.get('original_title', ''),
@@ -941,11 +944,18 @@ def lambda_handler(event, context):
                         recent_cover_hashes=recent_footage['cover_hashes'],
                         used_media_ids=used_media_ids,
                         cover_meta_out=cover_meta,
+                        footage_plan=footage_plan,
+                        footage_audit_out=footage_audit,
                     )
                     # Persist footage fingerprints onto the post record (saved to
                     # posts_*.json below) for the next run's dedup scan.
                     post['pexels_media_ids'] = used_media_ids
                     post.update(cover_meta)
+                    # Persist the geographic decision + per-candidate trail. Without
+                    # this the footage choices are invisible after publish, which is
+                    # why the wrong-city problem went unmeasured for months.
+                    post['footage_plan'] = footage_plan
+                    post['footage_audit'] = footage_audit
 
                     s3_video_key = f'reels/reels_{timestamp}.mp4'
                     s3_client = boto3.client('s3')

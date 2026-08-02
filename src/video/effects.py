@@ -82,6 +82,7 @@ def hamming(a: int, b: int) -> int:
 def _stitch_clips_to_file(
     clip_paths: List[str],
     total_duration: float,
+    lead_duration: Optional[float] = None,
 ) -> Optional[str]:
     """Stitch stock clips into a single portrait merged.mp4 (pure ffmpeg).
 
@@ -95,6 +96,12 @@ def _stitch_clips_to_file(
     path, or None if there is nothing to stitch / ffmpeg fails (callers
     decide the fallback). The merged file may be shorter than
     *total_duration*; consumers loop/cut it themselves.
+
+    *lead_duration* pins the first clip's length and splits the remainder
+    evenly across the rest. Without it every clip gets the same slice, so a
+    cover rendered at 4 s is silently trimmed to ``total/len(clips)`` — which
+    made the cover-duration constant a no-op. Default None keeps that original
+    even-split behaviour for callers that don't have a distinguished lead.
     """
     if not clip_paths:
         return None
@@ -102,7 +109,13 @@ def _stitch_clips_to_file(
     from imageio_ffmpeg import get_ffmpeg_exe
     ffmpeg_bin = get_ffmpeg_exe()
 
-    segment_dur = max(total_duration / len(clip_paths), MIN_CLIP_DURATION)
+    if lead_duration and len(clip_paths) > 1:
+        segment_dur = max(
+            (total_duration - lead_duration) / (len(clip_paths) - 1), MIN_CLIP_DURATION,
+        )
+    else:
+        lead_duration = None
+        segment_dur = max(total_duration / len(clip_paths), MIN_CLIP_DURATION)
     proc_dir = os.path.join(tempfile.gettempdir(), "_stock_proc")
     if os.path.exists(proc_dir):
         shutil.rmtree(proc_dir, ignore_errors=True)
@@ -113,7 +126,8 @@ def _stitch_clips_to_file(
     for i, path in enumerate(clip_paths):
         try:
             clip = VideoFileClip(path)
-            dur = min(segment_dur, clip.duration)
+            target = lead_duration if (lead_duration and i == 0) else segment_dur
+            dur = min(target, clip.duration)
             is_portrait = (clip.h / clip.w) >= (VIDEO_HEIGHT / VIDEO_WIDTH) * 0.85
             clip.close()
 
@@ -544,6 +558,51 @@ def build_hook_overlays(hook_text: str, tmp_dir: str, duration: float = 3.0) -> 
     png = os.path.join(tmp_dir, "hook.png")
     canvas.save(png)
     return [OverlaySpec(png, scrim_top, 0.0, duration)]
+
+
+def build_source_label_overlay(
+    tmp_dir: str,
+    start: float,
+    duration: float = 3.5,
+    text: str = "STOCK FOOTAGE · ILLUSTRATION",
+) -> List[OverlaySpec]:
+    """Small pill marking the visuals as library footage, not the actual scene.
+
+    Viewers were reading generic stock clips as "the AI generated a fake image
+    of this place". Labelling the footage is the standard journalistic answer
+    (and cheap): it can't make a clip more accurate, but it removes the false
+    claim that the clip depicts the location.
+
+    Sits at ~12% of frame height — above the hook scrim (30–50%) and well clear
+    of the subtitle bar (80%). Keep *start* under ~10 s: ffcompose loops a short
+    background with ``-stream_loop -1``, so late overlays can drift out of sync.
+    """
+    from PIL import ImageDraw, ImageFont
+
+    font_size = max(24, HOOK_FONT_SIZE // 3)
+    try:
+        font = ImageFont.truetype(FONT_PATH, font_size)
+    except Exception:
+        font = ImageFont.load_default(size=font_size)
+
+    pad_x, pad_y = 22, 12
+    left, top, right, bottom = font.getbbox(text)
+    tw, th = int(right - left), int(bottom - top)
+    pill_w, pill_h = tw + 2 * pad_x, th + 2 * pad_y
+
+    # Full-width canvas: the ffmpeg overlay chain always places PNGs at x=0.
+    canvas = Image.new("RGBA", (VIDEO_WIDTH, pill_h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(canvas)
+    pill_x = (VIDEO_WIDTH - pill_w) // 2
+    draw.rounded_rectangle(
+        [pill_x, 0, pill_x + pill_w, pill_h], radius=pill_h // 2,
+        fill=(0, 0, 0, int(255 * 0.55)),
+    )
+    draw.text((pill_x + pad_x, pad_y - top), text, font=font, fill=(255, 255, 255, 230))
+
+    png = os.path.join(tmp_dir, "source_label.png")
+    canvas.save(png)
+    return [OverlaySpec(png, int(VIDEO_HEIGHT * 0.12), start, start + duration)]
 
 
 def make_fact_overlay(

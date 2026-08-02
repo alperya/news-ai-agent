@@ -59,6 +59,8 @@ try:
 except ImportError:
     boto3 = None
 
+from footage_geo import build_footage_plan
+
 # Load environment variables
 
 logging.basicConfig(level=logging.INFO)
@@ -68,6 +70,59 @@ logger = logging.getLogger(__name__)
 _THIS_DIR = Path(__file__).parent
 PROJECT_ROOT = _THIS_DIR.parent if (_THIS_DIR / '__init__.py').exists() or _THIS_DIR.name == 'src' else _THIS_DIR
 PROMPTS_DIR = PROJECT_ROOT / 'prompts'
+
+# Shipped default for the footage-query prompt. Unlike the other prompts this one
+# must never be missing: without it generate_footage_queries returns nothing and
+# the pipeline falls back to keyword extraction off the *Dutch* headline — which
+# is the wrong-city bug it exists to prevent. Secrets Manager
+# (AI_PROMPT_FOOTAGE_QUERIES) still overrides it for hot edits.
+_FOOTAGE_QUERIES_PROMPT = """You are selecting stock footage for a Dutch news Instagram Reel.
+
+Dutch article headline: {title}
+Article context: {description}
+
+STEP 1 — Locate the story.
+Name the single most specific real-world place the story is about, in English.
+Use "" when the story has no geographic anchor.
+place_type is one of:
+  "city"    — a town, city, village, port or municipality
+  "region"  — a province or region (Zeeland, Twente, Randstad)
+  "country" — the Netherlands as a whole, or a foreign country
+  "none"    — no geographic anchor
+
+STEP 2 — Write exactly 5 Pexels queries in English, most specific first.
+
+The hard rule: NEVER put the name of a city, town, village, port, harbour or
+province in a query. Not first, not last, not combined with another word.
+Pexels never returns nothing — it returns the closest visual match from
+anywhere on earth. Asking for a small Dutch town therefore guarantees footage
+of a DIFFERENT town, which viewers correctly read as fake.
+
+You MAY write "netherlands" or "dutch" only when the story is national in
+scope, or when the subject looks unmistakably Dutch anywhere in the country
+(dutch canal, dutch farmland, dutch motorway, dutch police car).
+You MAY name a foreign country only when the story is about that country.
+
+STEP 3 — Make every query non-identifiable and subject-focused.
+Describe the THING the story is about, seen close, not the place it sits in.
+  Prefer: close up, detail, interior, hands, machinery, equipment, texture,
+          low water line, empty berth, crane hook, barge deck, control room.
+  Forbid: skyline, aerial, drone, panorama, cityscape, establishing shot,
+          landmark, monument, city square, town centre, street signage.
+2-4 words per query. Concrete visual nouns. English only.
+Queries 4 and 5 must be the most generic, place-free version of the theme so
+they are safe fallbacks (e.g. "river barge closeup", "low water river").
+
+STEP 4 — "avoid": 3-5 English visual concepts that must NOT appear.
+When place_type is "city" or "region", always include "recognisable skyline"
+and "named landmark". Add wrong weather, wrong season, wrong country,
+unrelated celebration as relevant.
+
+Return ONLY valid JSON:
+{{"place": "...", "place_type": "city|region|country|none",
+  "queries": ["...", "...", "...", "...", "..."],
+  "avoid": ["...", "...", "..."]}}
+"""
 
 
 @dataclass
@@ -150,7 +205,20 @@ class NewsAIAgent:
         if value:
             return value.replace('\\n', '\n')
         raise ValueError(f"Prompt not found: {prompt_file} or env var {env_var}")
-    
+
+    @classmethod
+    def _load_prompt_or(cls, filename: str, env_var: str, default: str) -> str:
+        """Like :meth:`_load_prompt` but never raises — falls back to *default*.
+
+        Used for prompts introduced after the code that reads them, so a deploy
+        landing before the Secrets Manager entry exists degrades to the shipped
+        text instead of silently disabling the feature.
+        """
+        try:
+            return cls._load_prompt(filename, env_var)
+        except ValueError:
+            return default
+
     @_lf_observe(name="process_article")
     def process_article(self, article: Dict, target_platform: str = "twitter") -> SocialMediaPost:
         """Process single article into social media post"""
@@ -325,62 +393,56 @@ class NewsAIAgent:
 
     @_lf_observe(name="generate_footage_queries")
     def generate_footage_queries(self, title: str, description: str) -> tuple:
-        """Generate Pexels-optimised search queries + visual exclusion terms.
+        """Generate Pexels-optimised search queries + a geographic footage plan.
 
-        Returns (queries, avoid_terms):
-            queries     — up to 5 English queries, most-specific first
+        Returns (queries, avoid_terms, plan):
+            queries     — up to 5 English queries, most-specific first, sanitised
             avoid_terms — 3–5 visual concepts that must NOT appear in footage
-        Both fall back to empty lists on failure.
+            plan        — see :func:`footage.build_footage_plan`; carries the
+                          story's place and the derived ``place_mode`` that tells
+                          the rest of the pipeline how careful to be.
+
+        Queries and avoid terms fall back to empty lists on failure; the plan is
+        always a valid dict so callers never need to guard it.
         """
-        prompt = (
-            "You are selecting stock footage for a Dutch news Instagram Reel.\n\n"
-            f"Dutch article headline: {title}\n"
-            f"Article context: {description}\n\n"
-            "Generate exactly 5 Pexels search queries in English, ordered from most "
-            "specific to most generic.\n\n"
-            "Rules:\n"
-            "- If the article mentions a specific Dutch city or region (e.g. Nijmegen, "
-            "Rotterdam, Groningen), the FIRST TWO queries MUST include that city name\n"
-            "- Otherwise include 'netherlands' when the article is about the Netherlands "
-            "or a Dutch institution\n"
-            "- Use concrete visual nouns (what would appear on screen)\n"
-            "- English only — no Dutch words\n"
-            "- 2–4 words per query\n"
-            "- If the subject is niche (a specific building, archaeological find, "
-            "historical artifact, or unusual event), include at least 2 queries for "
-            "visually adjacent concepts that evoke the same theme — e.g. for a Roman "
-            "bathhouse discovery: 'archaeological excavation netherlands', "
-            "'ancient ruins europe', 'museum historical artifacts'\n\n"
-            'Also return "avoid": 3–5 English visual concepts that must NOT appear in '
-            "the footage (wrong weather type, wrong season, wrong country landmark, "
-            "unrelated celebrations, misleading context).\n\n"
-            'Return ONLY valid JSON: {"queries": ["...", "...", "...", "...", "..."], "avoid": ["...", "...", "..."]}'
-        )
+        prompt = self._load_prompt_or(
+            'footage_queries.txt', 'AI_PROMPT_FOOTAGE_QUERIES', _FOOTAGE_QUERIES_PROMPT,
+        ).format(title=title, description=description)
         try:
             response = self.client.messages.create(
                 model=self.footage_model,
-                max_tokens=300,
+                max_tokens=400,
                 messages=[{"role": "user", "content": prompt}],
-            )
-            _lf_ctx.update_current_observation(
-                input=prompt,
-                output=getattr(response.content[0], 'text', ''),
-                usage={"input": response.usage.input_tokens, "output": response.usage.output_tokens},
-                model=self.footage_model,
-                metadata={"article_title": title},
             )
             text = getattr(response.content[0], 'text', '')
             match = re.search(r'\{.*\}', text, re.DOTALL)
             data = json.loads(match.group() if match else text)
             queries = [q for q in data.get('queries', []) if isinstance(q, str) and q.strip()]
             avoid = [a for a in data.get('avoid', []) if isinstance(a, str) and a.strip()]
-            if queries:
-                logger.info(f"🎬 Footage queries: {queries}")
-                logger.info(f"🚫 Footage avoid terms: {avoid}")
-                return queries[:5], avoid[:5]
+
+            plan = build_footage_plan(
+                place=data.get('place') or "",
+                place_type=data.get('place_type') or "none",
+                queries=queries[:5],
+                avoid=avoid[:5],
+            )
+            _lf_ctx.update_current_observation(
+                input=prompt,
+                output=text,
+                usage={"input": response.usage.input_tokens, "output": response.usage.output_tokens},
+                model=self.footage_model,
+                metadata={
+                    "article_title": title,
+                    "place": plan["place"],
+                    "place_mode": plan["place_mode"],
+                },
+            )
+            if plan["queries"]:
+                logger.info(json.dumps({"event": "footage_plan", **plan}, ensure_ascii=False))
+                return plan["queries"], plan["avoid"], plan
         except Exception as e:
             logger.warning(f"⚠️  Footage query generation failed, falling back to keyword extraction: {e}")
-        return [], []
+        return [], [], build_footage_plan()
 
     # Fixed caption suffix (not a prompt) — kept stable across posts.
     _CAROUSEL_HASHTAGS = (
@@ -422,12 +484,20 @@ class NewsAIAgent:
         headline: str,
         avoid_terms: List[str],
         thumbnail_urls: List[str],
+        place_mode: str = "none",
+        place: str = "",
+        details_out: Optional[List[dict]] = None,
     ) -> List[bool]:
-        """Check each thumbnail against the news headline using Haiku vision.
+        """Check each thumbnail with Haiku vision. True = usable, False = skip.
 
-        Returns a bool per URL: True = relevant, False = misleading/skip.
-        Batches up to 15 thumbnails in a single API call to minimise latency.
-        Falls back to all-True on any error so footage selection is never blocked.
+        For place-specific stories (``place_mode == "no_stock"``) the question is
+        **not** "is this Deventer?" — no model can answer that from a thumbnail.
+        It is "would a viewer be able to name the place in this image?", an
+        identifiability judgement a vision model makes reliably. Anything that
+        claims a location we can't verify is rejected.
+
+        Batches up to 15 thumbnails in a single call. Falls back to all-True on
+        API error; *details_out* records that so the audit trail shows it.
         """
         if not thumbnail_urls:
             return []
@@ -436,18 +506,52 @@ class NewsAIAgent:
         avoid_str = ", ".join(avoid_terms) if avoid_terms else "none"
         n = len(batch)
 
+        if place_mode == "no_stock":
+            criteria = (
+                "This news story is about one specific place. We do NOT have footage of "
+                "it, so the footage must not CLAIM to be anywhere in particular.\n"
+                "Judge only one thing: could a viewer name the place in this image?\n"
+                "FAIL if the image shows any of:\n"
+                "- a recognisable city skyline, harbour panorama or aerial cityscape\n"
+                "- a landmark, monument, bridge or building a viewer could name\n"
+                "- readable signage, shop or street names, or number plates\n"
+                "- text in any language, or a flag\n"
+                "- an unmistakably foreign setting (palm trees, desert, mountains, "
+                "tropical sea, US or Asian architecture) — the story is in the Netherlands\n"
+                "- weather or season that contradicts the story (e.g. blooming summer "
+                "fields for a frost story, snow for a heatwave)\n"
+                f"FAIL also if it shows: {avoid_str}\n"
+                "PASS only if the image is a close, generic view of the subject that "
+                "could have been shot anywhere: machinery, water, hands, equipment, "
+                "interiors, textures.\n"
+                "When in doubt, FAIL."
+            )
+        else:
+            # A named place makes the wrong-location check concrete: "schiphol
+            # airport" queries happily return Kansai, and a generic "wrong
+            # country or landmark" instruction let that through.
+            place_line = (
+                f"The story is located in {place}. FAIL if the image clearly shows a "
+                "different recognisable location (a landmark or setting a viewer "
+                "could place elsewhere).\n"
+            ) if place else ""
+            criteria = (
+                f"Do NOT use footage showing: {avoid_str}\n"
+                f"{place_line}"
+                "FAIL if the image shows: wrong weather (e.g. snow for rain story), "
+                "wrong season, wrong country or landmark, unrelated celebration or "
+                "event, or anything that contradicts the news story.\n"
+                "PASS if the image is plausibly related or generic enough to work."
+            )
+
         content: List[dict] = [
             {
                 "type": "text",
                 "text": (
                     f'News headline: "{headline}"\n'
-                    f"Do NOT use footage showing: {avoid_str}\n\n"
+                    f"{criteria}\n\n"
                     f"For each of the {n} images below, reply with exactly one line:\n"
-                    '"<number>: PASS" or "<number>: FAIL — <one-word reason>"\n'
-                    "FAIL if the image shows: wrong weather (e.g. snow for rain story), "
-                    "wrong season, wrong country or landmark, unrelated celebration or "
-                    "event, or anything that contradicts the news story.\n"
-                    "PASS if the image is plausibly related or generic enough to work."
+                    '"<number>: PASS" or "<number>: FAIL - <one-word reason>"'
                 ),
             }
         ]
@@ -457,19 +561,32 @@ class NewsAIAgent:
         try:
             response = self.client.messages.create(
                 model=self.review_model,
-                max_tokens=300,
+                max_tokens=400,
                 temperature=0,
                 messages=[{"role": "user", "content": content}],
             )
             text = getattr(response.content[0], 'text', '')
             results: List[bool] = []
             for i in range(1, n + 1):
-                match = re.search(rf'\b{i}\s*:\s*(PASS|FAIL)', text, re.IGNORECASE)
-                results.append(match.group(1).upper() == 'PASS' if match else True)
-            logger.info(f"🖼️  Thumbnail validation: {sum(results)}/{n} passed")
+                match = re.search(
+                    rf'^\s*{i}\s*:\s*(PASS|FAIL)[^\n]*', text, re.IGNORECASE | re.MULTILINE,
+                )
+                ok = match.group(1).upper() == 'PASS' if match else True
+                results.append(ok)
+                if details_out is not None:
+                    details_out.append({
+                        "index": i,
+                        "ok": ok,
+                        "reason": match.group(0).strip()[:60] if match else "unparsed",
+                    })
+            logger.info(f"🖼️  Thumbnail validation ({place_mode}): {sum(results)}/{n} passed")
             return results
         except Exception as e:
             logger.warning(f"⚠️  Thumbnail validation failed, using all clips: {e}")
+            if details_out is not None:
+                details_out.extend(
+                    {"index": i, "ok": True, "reason": "gate_error"} for i in range(1, n + 1)
+                )
             return [True] * n
 
     # ── Event methods ──────────────────────────────────────────────────────────

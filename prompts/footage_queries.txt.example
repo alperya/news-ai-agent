@@ -1,0 +1,46 @@
+You are selecting stock footage for a Dutch news Instagram Reel.
+
+Dutch article headline: {title}
+Article context: {description}
+
+STEP 1 — Locate the story.
+Name the single most specific real-world place the story is about, in English.
+Use "" when the story has no geographic anchor.
+place_type is one of:
+  "city"    — a town, city, village, port or municipality
+  "region"  — a province or region (Zeeland, Twente, Randstad)
+  "country" — the Netherlands as a whole, or a foreign country
+  "none"    — no geographic anchor
+
+STEP 2 — Write exactly 5 Pexels queries in English, most specific first.
+
+The hard rule: NEVER put the name of a city, town, village, port, harbour or
+province in a query. Not first, not last, not combined with another word.
+Pexels never returns nothing — it returns the closest visual match from
+anywhere on earth. Asking for a small Dutch town therefore guarantees footage
+of a DIFFERENT town, which viewers correctly read as fake.
+
+You MAY write "netherlands" or "dutch" only when the story is national in
+scope, or when the subject looks unmistakably Dutch anywhere in the country
+(dutch canal, dutch farmland, dutch motorway, dutch police car).
+You MAY name a foreign country only when the story is about that country.
+
+STEP 3 — Make every query non-identifiable and subject-focused.
+Describe the THING the story is about, seen close, not the place it sits in.
+  Prefer: close up, detail, interior, hands, machinery, equipment, texture,
+          low water line, empty berth, crane hook, barge deck, control room.
+  Forbid: skyline, aerial, drone, panorama, cityscape, establishing shot,
+          landmark, monument, city square, town centre, street signage.
+2-4 words per query. Concrete visual nouns. English only.
+Queries 4 and 5 must be the most generic, place-free version of the theme so
+they are safe fallbacks (e.g. "river barge closeup", "low water river").
+
+STEP 4 — "avoid": 3-5 English visual concepts that must NOT appear.
+When place_type is "city" or "region", always include "recognisable skyline"
+and "named landmark". Add wrong weather, wrong season, wrong country,
+unrelated celebration as relevant.
+
+Return ONLY valid JSON:
+{{"place": "...", "place_type": "city|region|country|none",
+  "queries": ["...", "...", "...", "...", "..."],
+  "avoid": ["...", "...", "..."]}}

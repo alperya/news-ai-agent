@@ -31,10 +31,11 @@ The afternoon posting slot automatically generates an Instagram Reels video:
 1. **Hook overlay** — AI-generated attention sentence displayed in large white text for the first 3 seconds
 2. **TTS Narration** — ElevenLabs Multilingual v2 (natural voice) with edge-tts fallback (free); 75–95 word target (~30–40 s)
 3. **Cover & Footage** — when the article's own photo is *fresh* it becomes the cover (Ken Burns) with Pexels stock clips filling the body (hybrid); otherwise Pexels clips are used throughout. AI-generated queries + Haiku thumbnail validation pick relevant clips
-4. **Cover de-duplication** — the same cover (Pexels clip *or* news photo) is never reused within `FOOTAGE_REUSE_WINDOW_DAYS` (default 30); near-duplicate photos are caught by a perceptual hash so a recurring source template card can't repeat
-5. **Subtitles** — Word-timed orange subtitle overlay (62px Montserrat Bold, lower-third TikTok placement)
-6. **Background Music** — Mood-based: upbeat (`news_music.mp3`) for positive news, calm/alternative (60/40) for neutral
-7. **Visual Fallback** — fresh news photo cover → Pexels stock video → Pexels photo → animated gradient
+4. **Geographic footage safety** — stock footage never claims a place we can't source: queries for small-town stories are stripped of place names (Pexels always returns *something* — asking for a small Dutch town returns a different town), candidate clips whose URL slug names another place are dropped for free, and the Haiku vision gate rejects anything a viewer could geographically identify (skylines, landmarks, signage) or that contradicts the season. Place-specific stories give the article's own photo a longer cover + a mid-Reel reprise, stock segments carry a "STOCK FOOTAGE · ILLUSTRATION" label, and every accept/reject decision is persisted (`footage_plan`/`footage_audit` in `posts_*.json`)
+5. **Cover de-duplication** — the same cover (Pexels clip *or* news photo) is never reused within `FOOTAGE_REUSE_WINDOW_DAYS` (default 30); near-duplicate photos are caught by a perceptual hash so a recurring source template card can't repeat
+6. **Subtitles** — Word-timed orange subtitle overlay (62px Montserrat Bold, lower-third TikTok placement)
+7. **Background Music** — Mood-based: upbeat (`news_music.mp3`) for positive news, calm/alternative (60/40) for neutral
+8. **Visual Fallback** — fresh news photo cover → Pexels stock video → Pexels photo → animated gradient
 
 Video specs: 1080×1920 (9:16), 30 FPS, H.264 High, 4000 kbps, AAC audio, 9 stock clips per video, target duration 30–45 s.
 

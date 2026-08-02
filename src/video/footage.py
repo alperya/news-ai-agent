@@ -15,6 +15,13 @@ from typing import List, Optional, Set
 import requests as http_requests
 from PIL import Image
 
+from footage_geo import (
+    banned_places_for,
+    claims_a_place,
+    sanitize_query,
+    slug_banned_places_for,
+)
+
 from .config import (
     PEXELS_API_KEY,
     PEXELS_IMAGE_SEARCH_URL,
@@ -24,6 +31,22 @@ from .config import (
 )
 
 logger = logging.getLogger(__name__)
+
+# How many queries feed the pooled candidate search before escalating.
+POOL_QUERIES = 3
+# Thumbnails sent to the vision gate in one call (Haiku multimodal batch).
+VALIDATION_BATCH = 15
+# Per-candidate decisions persisted into posts_*.json.
+AUDIT_LIMIT = 25
+
+# Place-free by construction — the final tier when every real query has been
+# filtered out. Bland, but bland beats claiming the wrong city.
+_LAST_RESORT_QUERIES = (
+    "abstract light bokeh",
+    "slow motion water surface",
+    "cloudy sky timelapse",
+    "close up machinery",
+)
 
 # ── Dutch → English keyword map for better Pexels results ────────────────────
 
@@ -91,22 +114,29 @@ def fetch_stock_clips(
     ai_agent=None,
     exclude_ids: Optional[Set[int]] = None,
     used_ids_out: Optional[List[int]] = None,
+    footage_plan: Optional[dict] = None,
+    audit_out: Optional[List[dict]] = None,
 ) -> List[str]:
     """Fetch stock video clips from Pexels matching the news topic.
 
-    When *footage_queries* are provided (AI-generated, most-specific first)
-    each query is tried in order until enough clips are found. Falls back to
-    keyword-extracted query if all AI queries return too few results.
+    Candidates from the first ``POOL_QUERIES`` queries are **pooled** (search is
+    free and fast) so one narrow query can't win the whole Reel on a single weak
+    hit. Only downloads — the expensive part — are limited to the survivors.
 
-    *avoid_terms* and *ai_agent* enable thumbnail validation: before
-    downloading, Haiku vision checks each thumbnail against the headline and
-    skips misleading clips (wrong weather, wrong landmark, etc.).
+    Filtering runs in three widening stages, cheapest first:
+      1. slug pre-filter — drop clips whose Pexels URL names a place the story
+         cannot claim (free, no API call);
+      2. fresh-first reorder of *exclude_ids* (recently used clips to the back);
+      3. Haiku vision gate via *ai_agent* + *avoid_terms*.
 
-    *exclude_ids* are Pexels video ids used within the reuse window; they are
-    moved to the back of the candidate list (fresh-first) so the cover (first
-    downloaded clip) is fresh, while still allowing reuse if the pool is small.
-    When *used_ids_out* is provided, the ids of the downloaded clips are
-    appended in order (``used_ids_out[0]`` is the cover).
+    When too few clips survive, it escalates to the remaining (more generic)
+    queries and finally to `_LAST_RESORT_QUERIES` — never to clips the gate
+    rejected. Returning ``[]`` is a valid outcome: the caller then degrades to a
+    stock photo or a gradient, which beats showing the wrong place.
+
+    *footage_plan* carries the story's place and ``place_mode`` (see
+    :mod:`footage_geo`). *audit_out* collects one dict per considered candidate
+    so the decision is reviewable after publish.
 
     Returns list of local file paths (up to *count*).
     """
@@ -115,89 +145,192 @@ def fetch_stock_clips(
         logger.info("ℹ️  PEXELS_API_KEY not set — skipping stock footage")
         return []
 
-    # Build query list: AI-generated first, keyword fallback last
+    plan = footage_plan or {}
+    place_mode = plan.get("place_mode", "none")
+    place = plan.get("place", "")
+    banned = banned_places_for(place, place_mode)
+    # The slug set is wider than the query set and also active for stock_ok
+    # stories: a Schiphol story may ask for "schiphol airport", but a clip
+    # slugged "kansai-airport" is still the wrong airport.
+    slug_banned = slug_banned_places_for(place, place_mode)
+
+    # Keyword fallback is derived from the *Dutch* headline and happily keeps
+    # "deventer" / "moerdijk" as-is — sanitize it like any AI query.
     fallback_query = extract_search_query(title, content)
-    queries = list(footage_queries) + [fallback_query] if footage_queries else [fallback_query]
+    if place_mode == "no_stock":
+        fallback_query = sanitize_query(fallback_query, banned)
+    queries = [q for q in list(footage_queries or []) + [fallback_query] if q]
+    if not queries:
+        # Straight to the neutral tier — and don't list it twice below.
+        queries = list(_LAST_RESORT_QUERIES)
+        last_resort_tier: List[str] = []
+    else:
+        last_resort_tier = list(_LAST_RESORT_QUERIES)
 
-    for query in queries:
-        paths = _fetch_clips_for_query(
-            api_key, query, tmp_dir, count,
-            headline=headline or title,
-            avoid_terms=avoid_terms,
-            ai_agent=ai_agent,
-            exclude_ids=exclude_ids,
-            used_ids_out=used_ids_out,
-        )
-        if paths:
-            return paths
+    tiers = [queries[:POOL_QUERIES], queries[POOL_QUERIES:], last_resort_tier]
+    seen_ids: Set[int] = set()
+    survivors: List[dict] = []
+    minimum = min(2, count)
 
-    logger.warning("⚠️  No Pexels video results for any query")
-    return []
+    for tier_idx, tier in enumerate(tiers):
+        is_last_resort = tier_idx == len(tiers) - 1
+        # The neutral tier is a rescue, not a top-up: only reach for it when the
+        # real queries left us with nothing to build a Reel from.
+        if is_last_resort and len(survivors) >= minimum:
+            break
+        if not tier:
+            continue
+        candidates = _search_pool(api_key, tier, seen_ids)
 
+        if candidates and slug_banned:
+            kept = []
+            for v in candidates:
+                if claims_a_place(v.get("url", ""), slug_banned):
+                    _audit(audit_out, v, "slug", ok=False)
+                else:
+                    kept.append(v)
+            if len(candidates) != len(kept):
+                logger.info(f"   🗺️  Dropped {len(candidates) - len(kept)} clip(s) naming a place")
+            candidates = kept
 
-def _fetch_clips_for_query(
-    api_key: str,
-    query: str,
-    tmp_dir: str,
-    count: int,
-    headline: str = "",
-    avoid_terms: Optional[List[str]] = None,
-    ai_agent=None,
-    exclude_ids: Optional[Set[int]] = None,
-    used_ids_out: Optional[List[int]] = None,
-) -> List[str]:
-    """Try a single query and return downloaded clip paths (empty list if insufficient)."""
-    logger.info(f"🔍 Searching Pexels videos for: '{query}'")
+        # The last-resort tier is neutral by construction — a third vision call
+        # buys nothing and risks emptying an already-thin pool.
+        if candidates and ai_agent and headline and not is_last_resort:
+            candidates = _validate(ai_agent, candidates, headline, avoid_terms,
+                                   place_mode, audit_out, place=place)
 
-    # Prefer portrait clips for 9:16 Reels
-    videos = _pexels_video_search(api_key, query, per_page=PEXELS_PER_PAGE, orientation="portrait")
+        # Survivors accumulate across tiers: a single good clip from a specific
+        # query is worth keeping, it just isn't enough to stop searching. Keep
+        # going until there is enough variety to fill the Reel.
+        survivors.extend(candidates)
+        if len(survivors) >= count:
+            break
 
-    # Any orientation if portrait yields too few
-    if len(videos) < count:
-        extra = _pexels_video_search(api_key, query, per_page=PEXELS_PER_PAGE)
-        seen_ids = {v.get("id") for v in videos}
-        videos.extend(v for v in extra if v.get("id") not in seen_ids)
-
-    if not videos:
+    if not survivors:
+        logger.warning("⚠️  No usable Pexels clips — caller will degrade to photo/gradient")
         return []
 
-    # Fresh-first: de-prioritise clips used within the reuse window so the
-    # cover (first downloaded) is fresh. Stale clips stay available to fill the
-    # body if the pool is small — never degrade to a gradient fallback.
-    if exclude_ids:
-        fresh = [v for v in videos if v.get("id") not in exclude_ids]
-        stale = [v for v in videos if v.get("id") in exclude_ids]
-        if fresh and stale:
-            videos = fresh + stale
-            logger.info(f"   ♻️  Moved {len(stale)} recently-used clip(s) to the back")
+    return _download_pool(
+        _fresh_first(survivors, exclude_ids), count, tmp_dir, used_ids_out, audit_out,
+    )
 
-    # Thumbnail validation: filter out misleading clips before downloading
-    if ai_agent and headline and videos:
-        thumbnail_urls = [v["image"] for v in videos if v.get("image")]
-        if thumbnail_urls:
-            validation = ai_agent.validate_footage_thumbnails(headline, avoid_terms or [], thumbnail_urls)
-            # zip against original videos list (thumbnails may be fewer if some had no image)
-            videos_with_thumbs = [v for v in videos if v.get("image")]
-            videos_without_thumbs = [v for v in videos if not v.get("image")]
-            passed = [v for v, ok in zip(videos_with_thumbs, validation) if ok]
-            # safety net: if everything got rejected, fall back to top 2 unvalidated
-            if len(passed) < 2:
-                logger.warning("⚠️  Thumbnail validation rejected all clips — using top 2 unvalidated")
-                passed = videos[:2]
-            videos = passed + videos_without_thumbs
 
+def _search_pool(api_key: str, queries: List[str], seen_ids: Set[int]) -> List[dict]:
+    """Search several queries and pool the results, de-duplicated by clip id.
+
+    Query order is preserved as the tiebreak, so the most specific query still
+    supplies the cover when its clips survive filtering.
+    """
+    pooled: List[dict] = []
+    for query in queries:
+        logger.info(f"🔍 Searching Pexels videos for: '{query}'")
+        videos = _pexels_video_search(
+            api_key, query, per_page=PEXELS_PER_PAGE, orientation="portrait",
+        )
+        if len(videos) < PEXELS_PER_PAGE // 2:
+            videos = videos + _pexels_video_search(api_key, query, per_page=PEXELS_PER_PAGE)
+        for v in videos:
+            vid = v.get("id")
+            if vid is not None and vid in seen_ids:
+                continue
+            if vid is not None:
+                seen_ids.add(vid)
+            v.setdefault("_query", query)
+            pooled.append(v)
+    return pooled
+
+
+def _fresh_first(videos: List[dict], exclude_ids: Optional[Set[int]]) -> List[dict]:
+    """Move clips used within the reuse window to the back (soft, never a filter).
+
+    Keeps the cover fresh while letting stale clips still fill the body, so a
+    small pool never degrades all the way to a gradient.
+    """
+    if not exclude_ids:
+        return videos
+    fresh = [v for v in videos if v.get("id") not in exclude_ids]
+    stale = [v for v in videos if v.get("id") in exclude_ids]
+    if fresh and stale:
+        logger.info(f"   ♻️  Moved {len(stale)} recently-used clip(s) to the back")
+        return fresh + stale
+    return videos
+
+
+def _validate(
+    ai_agent, videos: List[dict], headline: str, avoid_terms: Optional[List[str]],
+    place_mode: str, audit_out: Optional[List[dict]], place: str = "",
+) -> List[dict]:
+    """Run the Haiku vision gate; return only the clips that passed.
+
+    Clips without a thumbnail can't be judged and are appended at the back
+    rather than dropped. There is deliberately **no** floor that falls back to
+    rejected clips: a rejected clip is one that claims the wrong place, which is
+    the failure we are removing.
+    """
+    with_thumbs = [v for v in videos if v.get("image")]
+    without_thumbs = [v for v in videos if not v.get("image")]
+    if not with_thumbs:
+        return videos
+
+    batch = with_thumbs[:VALIDATION_BATCH]
+    details: List[dict] = []
+    results = ai_agent.validate_footage_thumbnails(
+        headline, avoid_terms or [], [v["image"] for v in batch],
+        place_mode=place_mode, place=place, details_out=details,
+    )
+    passed = [v for v, ok in zip(batch, results) if ok]
+    for v, ok in zip(batch, results):
+        if not ok:
+            _audit(audit_out, v, "vision", ok=False)
+
+    # Candidates beyond the batch limit were never judged. For a place-specific
+    # story "unjudged" is not good enough — an unchecked clip may well be the
+    # skyline we're trying to keep off screen — so drop them and let the caller
+    # escalate to the next query instead. Other modes keep them as a tail.
+    unjudged = [] if place_mode == "no_stock" else with_thumbs[VALIDATION_BATCH:]
+    if place_mode == "no_stock":
+        for v in with_thumbs[VALIDATION_BATCH:]:
+            _audit(audit_out, v, "unjudged", ok=False)
+        without_thumbs = []
+    return passed + unjudged + without_thumbs
+
+
+def _download_pool(
+    videos: List[dict], count: int, tmp_dir: str,
+    used_ids_out: Optional[List[int]], audit_out: Optional[List[dict]],
+) -> List[str]:
+    """Download up to *count* clips, skipping ids already taken."""
     paths: List[str] = []
+    taken: Set[int] = set()
     for idx, video in enumerate(videos):
         if len(paths) >= count:
             break
+        vid = video.get("id")
+        if vid is not None and vid in taken:
+            continue
         clip_path = _download_clip(video, idx, tmp_dir)
-        if clip_path:
-            paths.append(clip_path)
-            if used_ids_out is not None and video.get("id") is not None:
-                used_ids_out.append(video["id"])
-
-    logger.info(f"📥 Downloaded {len(paths)}/{count} clips for '{query}'")
+        if not clip_path:
+            continue
+        paths.append(clip_path)
+        _audit(audit_out, video, "used", ok=True)
+        if vid is not None:
+            taken.add(vid)
+            if used_ids_out is not None:
+                used_ids_out.append(vid)
+    logger.info(f"📥 Downloaded {len(paths)}/{count} clips")
     return paths
+
+
+def _audit(audit_out: Optional[List[dict]], video: dict, reason: str, ok: bool) -> None:
+    """Record one candidate decision, capped so posts_*.json stays small."""
+    if audit_out is None or len(audit_out) >= AUDIT_LIMIT:
+        return
+    audit_out.append({
+        "pexels_id": video.get("id"),
+        "query": video.get("_query", ""),
+        "ok": ok,
+        "reason": reason,
+    })
 
 
 def _pexels_video_search(
@@ -292,17 +425,27 @@ def fetch_pexels_photo(
 
 def fetch_stock_image(
     title: str, content: str, tmp_dir: str,
+    footage_plan: Optional[dict] = None,
 ) -> Optional[str]:
     """Search Pexels for a single stock PHOTO matching the news topic.
 
     Returns local path to downloaded image, or None.
     Useful as a Ken Burns fallback when video clips aren't available.
+
+    The query comes from the *Dutch* headline via :func:`extract_search_query`,
+    which keeps raw place names — so it is sanitized here too, or this fallback
+    would reintroduce the wrong-city problem the video path just designed out.
     """
     api_key = PEXELS_API_KEY or os.environ.get("PEXELS_API_KEY", "")
     if not api_key:
         return None
 
+    plan = footage_plan or {}
     query = extract_search_query(title, content)
+    if plan.get("place_mode") == "no_stock":
+        query = sanitize_query(query, banned_places_for(plan.get("place", ""), "no_stock"))
+    if not query:
+        return None
     logger.info(f"🖼️  Searching Pexels images for: '{query}'")
 
     try:
