@@ -23,6 +23,7 @@ from video import create_news_video
 from event_scraper import EventScraper
 from video.event_card import generate_carousel_slides, generate_reels_video
 from notifier import send_alert, alert_on_exception, detect_error_type, send_event_summary
+from viral_guard import should_skip_next_post
 
 # Configure logging for Lambda
 logger = logging.getLogger()
@@ -146,6 +147,13 @@ def get_secrets():
     # Feature flag: weekly Dutch-fact carousel feed post (default off)
     if 'ENABLE_FACT_CAROUSEL' in secret:
         os.environ['ENABLE_FACT_CAROUSEL'] = secret['ENABLE_FACT_CAROUSEL']
+    # Feature flag + thresholds: skip one news slot while the previous post is viral
+    # (flag default on). Thresholds are read at call time, so editing the secret
+    # retunes the guard without a redeploy.
+    for key in ('ENABLE_VIRAL_SKIP', 'VIRAL_SKIP_MULTIPLIER', 'VIRAL_MIN_ENGAGEMENT',
+                'VIRAL_WINDOW_HOURS', 'MIN_BASELINE_POSTS'):
+        if key in secret:
+            os.environ[key] = secret[key]
     # Connected Facebook Page — when set, the Story is cross-posted to FB
     if 'FACEBOOK_PAGE_ID' in secret:
         os.environ['FACEBOOK_PAGE_ID'] = secret['FACEBOOK_PAGE_ID']
@@ -745,6 +753,28 @@ def lambda_handler(event, context):
         if is_fact_carousel:
             dry_run = bool(event.get('dry_run', False))
             return _run_fact_carousel_pipeline(timestamp, bucket_name, dry_run=dry_run)
+
+        # Viral-skip guard — if the previous post is still going viral, give it the
+        # slot instead of competing with it. Checked here so a skip costs nothing:
+        # no scrape, no Claude call, no render. Fail-open by construction.
+        skip_run, viral_info = should_skip_next_post(bucket_name)
+        if skip_run:
+            logger.info(
+                f"⏸️  Previous post is viral ({viral_info['engagement']} engagements, "
+                f"{viral_info['multiplier']}× median) — skipping this news slot"
+            )
+            logger.info(json.dumps({"event": "viral_skip", **viral_info}))
+            send_alert(
+                "News slot skipped — previous post is viral",
+                f"Post {viral_info['media_id']} has {viral_info['engagement']} engagements "
+                f"({viral_info['multiplier']}× the {viral_info['median_engagement']} median) "
+                f"after {viral_info['age_hours']}h.\n\n"
+                f"This slot was skipped so the viral post keeps the audience's attention. "
+                f"Only one slot is ever skipped per viral post — the next run publishes normally.",
+                "GENERAL",
+            )
+            return {'statusCode': 200,
+                    'body': json.dumps({'status': 'skipped', **viral_info, 'timestamp': timestamp})}
 
         # STAGE 1: Scrape news
         logger.info("\n📰 STAGE 1: Scraping news articles...")

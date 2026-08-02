@@ -16,6 +16,7 @@ An intelligent AI-powered pipeline that automatically scrapes Dutch news from NO
 - ✅ Tiered news selection (🇳🇱 Holland → 🇪🇺 Europe → 🌍 Global) with viral potential scoring
 - ✅ Source attribution with article links in posts
 - ✅ Duplicate detection — URL-based (all-time) + cross-source semantic deduplication via 3-day title window passed to AI selection
+- ✅ **Viral-skip guard** — when the previous post is still going viral, the next news slot is skipped once so the viral post keeps the audience and the top of the grid; conservative dual threshold (5× the 30-day median **and** ≥1000 engagements within 24 h), never skips twice in a row, fail-open
 - ✅ **Weekly events post** — every Wednesday 18:00, a PIL-generated infographic of 5–12 curated NL events drawn from 8 sources (Eventbrite, Ticketmaster, amsterdam.nl, rotterdam.nl, denhaag.nl, uitagenda.nl, festileaks.nl, doedagen.nl)
 - ✅ AWS Lambda deployment with scheduled posting (daily Story + 2 Reels/day + weekly events)
 - ✅ Infrastructure as Code (Terraform)
@@ -107,6 +108,7 @@ python3 scripts/update_secrets.py
 │   ├── youtube_publisher.py       # YouTube Data API v3 — upload as Short
 │   ├── youtube_worker.py          # Async Lambda handler for YouTube Shorts
 │   ├── notifier.py                # Error alerts via AWS SNS (email)
+│   ├── viral_guard.py             # 🔥 Skips one news slot while the previous post is viral
 │   ├── video/                     # 🎬 Reels video generation package
 │   │   ├── __init__.py            # Public API exports
 │   │   ├── config.py              # Video constants & env configuration
@@ -136,7 +138,7 @@ python3 scripts/update_secrets.py
 │   └── lambda.txt                 # Lambda runtime dependencies
 ├── infrastructure/
 │   └── terraform/                 # AWS infrastructure (Lambda, S3, EventBridge)
-├── tests/                         # Test suite (272 tests)
+├── tests/                         # Test suite (347 tests)
 ├── output/                        # Generated articles & posts (gitignored)
 └── errors/                        # Rejected/corrected posts log (gitignored)
 ```
@@ -158,6 +160,8 @@ AWS Lambda runs via EventBridge (UTC → Amsterdam CEST = UTC+2):
 > The weekly fact carousel is **enabled by default** (`ENABLE_FACT_CAROUSEL`, set to `false` in Secrets Manager to disable) — it collects the week's Story facts into one save-friendly Instagram feed carousel (a discovery/save surface the Story can't reach).
 
 > The weekly events post is disabled (EventBridge rule off + `ENABLE_EVENT_POSTS` flag, default off) — deprecated for low engagement.
+
+> **Viral-skip guard** (`ENABLE_VIRAL_SKIP`, enabled by default): before each news slot, the previous post's live engagement is checked. If it is under 24 h old and has both ≥5× the 30-day median engagement and ≥1000 engagements, that slot is skipped once — a viral post keeps the audience's attention and the top of the grid instead of competing with a fresh one. Exactly one slot is ever skipped per viral post, and any API/data error means the post goes out normally. Only news slots are affected; the daily fact Story and the weekly carousel always run.
 
 > Note: cron times assume CEST (UTC+2). In winter (CET, UTC+1) posts run 1 hour later Amsterdam time.
 
@@ -207,6 +211,10 @@ All configuration is managed through environment variables (`.env` locally, AWS 
 | `YOUTUBE_CLIENT_SECRET` | ❌ | Google OAuth 2.0 client secret |
 | `YOUTUBE_REFRESH_TOKEN` | ❌ | OAuth refresh token for the YouTube channel (long-lived) |
 | `ALERT_EMAIL` | ❌ | Email for Lambda error alerts — OOM, token expiry, publish failures |
+| `ENABLE_VIRAL_SKIP` | ❌ | Viral-skip guard (default `true`) — set to `false` to always publish on schedule |
+| `VIRAL_SKIP_MULTIPLIER` | ❌ | Engagement multiple over the 30-day median that counts as viral (default `5.0`) |
+| `VIRAL_MIN_ENGAGEMENT` | ❌ | Absolute engagement floor for a viral skip (default `1000`) |
+| `VIRAL_WINDOW_HOURS` | ❌ | How recent the previous post must be to protect it (default `24`) |
 | `REVIEW_MODEL` | ❌ | Quality gate model (default: `claude-opus-5`) |
 | `LANGCHAIN_API_KEY` | ❌ | LangSmith API key — enables LLM trace dashboard |
 | `LANGCHAIN_PROJECT` | ❌ | LangSmith project name (default suggestion: `news-ai-agent`) |
@@ -242,10 +250,10 @@ make test
 # or
 pytest tests/ -v
 
-# 272 tests covering scraper, AI agent, quality gate, video pipeline,
+# 347 tests covering scraper, AI agent, quality gate, video pipeline,
 # social publisher, YouTube publisher/worker, event scraper, event card,
 # notifier, token refresher, lambda handler (incl. YouTube isolation test),
-# selection transparency + weekly selection review
+# selection transparency + weekly selection review, viral-skip guard
 ```
 
 ## 📝 License
