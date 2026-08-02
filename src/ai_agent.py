@@ -191,9 +191,37 @@ class NewsAIAgent:
         
         base_client = anthropic.Anthropic(api_key=self.api_key)
         self.client = _ls_wrap_anthropic(base_client) if _ls_wrap_anthropic else base_client
-        self.model = "claude-opus-4-6"
-        self.review_model = os.getenv('REVIEW_MODEL', 'claude-haiku-4-5-20251001')
-        self.footage_model = os.getenv('FOOTAGE_QUERY_MODEL', 'claude-opus-4-7')
+        # One model for everything since the Opus 5 migration (2026-08). The old
+        # split (Opus for content, Haiku for review/vision) optimised cost, but
+        # at ~6-8 calls/day the difference is a few $/month — and the vision
+        # gate is now the backbone of geographic footage safety, where model
+        # quality directly prevents published mistakes (Harlingen/Kansai).
+        self.model = os.getenv('CONTENT_MODEL', 'claude-opus-5')
+        self.review_model = os.getenv('REVIEW_MODEL', 'claude-opus-5')
+        self.footage_model = os.getenv('FOOTAGE_QUERY_MODEL', 'claude-opus-5')
+
+    @staticmethod
+    def _response_text(response) -> str:
+        """First text block of a Messages response.
+
+        On Opus 5 thinking is on by default and thinking blocks precede text in
+        ``response.content`` — indexing ``content[0]`` would silently return ""
+        (every caller would degrade to its fallback with no error). Refusals
+        (HTTP 200 + ``stop_reason == "refusal"``) are logged for the same
+        reason: the safe fallback still runs, but the audit trail says why.
+        """
+        if getattr(response, 'stop_reason', None) == 'refusal':
+            details = getattr(response, 'stop_details', None)
+            logger.warning(
+                f"⚠️  Model refused request (category: {getattr(details, 'category', None)})"
+            )
+        for block in response.content:
+            # Thinking blocks carry `.thinking`, text blocks a str `.text` —
+            # match on the payload, not only `.type`, so test doubles work too.
+            text = getattr(block, 'text', None)
+            if isinstance(text, str) and getattr(block, 'type', 'text') != 'thinking':
+                return text
+        return ""
 
     @staticmethod
     def _load_prompt(filename: str, env_var: str) -> str:
@@ -229,23 +257,22 @@ class NewsAIAgent:
 
             response = self.client.messages.create(
                 model=self.model,
-                max_tokens=500,
-                temperature=0.2,
+                max_tokens=4000,  # thinking counts against max_tokens on Opus 5
                 messages=[{
                     "role": "user",
                     "content": prompt
                 }]
             )
+            text = self._response_text(response)
             _lf_ctx.update_current_observation(
                 input=prompt,
-                output=getattr(response.content[0], 'text', ''),
+                output=text,
                 usage={"input": response.usage.input_tokens, "output": response.usage.output_tokens},
                 model=self.model,
                 metadata={"platform": target_platform, "article_title": article.get('title', '')},
             )
 
-            content_block = response.content[0]
-            result = self._parse_response(getattr(content_block, 'text', ''))  # type: ignore[union-attr]
+            result = self._parse_response(text)
             
             return SocialMediaPost(
                 original_title=article['title'],
@@ -339,27 +366,25 @@ class NewsAIAgent:
             self._save_error(post, errors)
             return None
 
-        # ── AI language review (fast/cheap model) ──
+        # ── AI language review ──
         try:
             prompt_template = self._load_prompt('quality_check.txt', 'AI_PROMPT_QUALITY_CHECK')
             prompt = prompt_template.format(content=post.content)
 
             response = self.client.messages.create(
                 model=self.review_model,
-                max_tokens=1500,
-                temperature=0,
+                max_tokens=4000,  # thinking counts against max_tokens on Opus 5
                 messages=[{"role": "user", "content": prompt}]
             )
+            raw = self._response_text(response)
             _lf_ctx.update_current_observation(
                 input=prompt,
-                output=getattr(response.content[0], 'text', ''),
+                output=raw,
                 usage={"input": response.usage.input_tokens, "output": response.usage.output_tokens},
                 model=self.review_model,
                 metadata={"post_source": post.source, "platform": post.platform},
             )
 
-            content_block = response.content[0]
-            raw = getattr(content_block, 'text', '')  # type: ignore[union-attr]
             json_match = re.search(r'\{.*\}', raw, re.DOTALL)
             result = json.loads(json_match.group()) if json_match else json.loads(raw)
 
@@ -411,10 +436,10 @@ class NewsAIAgent:
         try:
             response = self.client.messages.create(
                 model=self.footage_model,
-                max_tokens=400,
+                max_tokens=3000,  # thinking counts against max_tokens on Opus 5
                 messages=[{"role": "user", "content": prompt}],
             )
-            text = getattr(response.content[0], 'text', '')
+            text = self._response_text(response)
             match = re.search(r'\{.*\}', text, re.DOTALL)
             data = json.loads(match.group() if match else text)
             queries = [q for q in data.get('queries', []) if isinstance(q, str) and q.strip()]
@@ -464,10 +489,10 @@ class NewsAIAgent:
             prompt = self._load_prompt('carousel_caption.txt', 'AI_PROMPT_CAROUSEL_CAPTION').format(facts=preview)
             response = self.client.messages.create(
                 model=self.model,
-                max_tokens=220,
+                max_tokens=2000,  # thinking counts against max_tokens on Opus 5
                 messages=[{"role": "user", "content": prompt}],
             )
-            text = getattr(response.content[0], 'text', '').strip()
+            text = self._response_text(response).strip()
             if text:
                 logger.info("📝 Carousel caption generated")
                 return text + self._CAROUSEL_HASHTAGS
@@ -561,11 +586,10 @@ class NewsAIAgent:
         try:
             response = self.client.messages.create(
                 model=self.review_model,
-                max_tokens=400,
-                temperature=0,
+                max_tokens=3000,  # thinking counts against max_tokens on Opus 5
                 messages=[{"role": "user", "content": content}],
             )
-            text = getattr(response.content[0], 'text', '')
+            text = self._response_text(response)
             results: List[bool] = []
             for i in range(1, n + 1):
                 match = re.search(
@@ -628,18 +652,17 @@ class NewsAIAgent:
         try:
             response = self.client.messages.create(
                 model=self.review_model,
-                max_tokens=1000,
-                temperature=0,
+                max_tokens=4000,  # thinking counts against max_tokens on Opus 5
                 messages=[{"role": "user", "content": prompt}],
             )
+            raw = self._response_text(response)
             _lf_ctx.update_current_observation(
                 input=prompt,
-                output=getattr(response.content[0], 'text', ''),
+                output=raw,
                 usage={"input": response.usage.input_tokens, "output": response.usage.output_tokens},
                 model=self.review_model,
                 metadata={"event_count": len(events)},
             )
-            raw = getattr(response.content[0], 'text', '')
             match = re.search(r'\{.*\}', raw, re.DOTALL)
             result = json.loads(match.group() if match else raw)
 
@@ -710,18 +733,17 @@ class NewsAIAgent:
         try:
             response = self.client.messages.create(
                 model=self.model,
-                max_tokens=3000,
-                temperature=0.2,
+                max_tokens=8000,  # thinking counts against max_tokens on Opus 5
                 messages=[{"role": "user", "content": prompt}],
             )
+            raw = self._response_text(response)
             _lf_ctx.update_current_observation(
                 input=prompt,
-                output=getattr(response.content[0], 'text', ''),
+                output=raw,
                 usage={"input": response.usage.input_tokens, "output": response.usage.output_tokens},
                 model=self.model,
                 metadata={"event_count": len(events), "max_events": max_events, "date_range": date_range},
             )
-            raw = getattr(response.content[0], 'text', '')
             match = re.search(r'\{.*\}', raw, re.DOTALL)
             result = json.loads(match.group() if match else raw)
 
@@ -843,23 +865,22 @@ class NewsAIAgent:
         try:
             response = self.client.messages.create(
                 model=self.model,
-                max_tokens=4000,
-                temperature=0.2,
+                max_tokens=8000,  # thinking counts against max_tokens on Opus 5
                 messages=[{
                     "role": "user",
                     "content": prompt
                 }]
             )
+            text = self._response_text(response)
             _lf_ctx.update_current_observation(
                 input=prompt,
-                output=getattr(response.content[0], 'text', ''),
+                output=text,
                 usage={"input": response.usage.input_tokens, "output": response.usage.output_tokens},
                 model=self.model,
                 metadata={"article_count": len(articles), "max_posts": max_posts, "platform": platform},
             )
 
-            content_block = response.content[0]
-            result = self._parse_batch_response(getattr(content_block, 'text', ''), articles, platform)  # type: ignore[union-attr]
+            result = self._parse_batch_response(text, articles, platform)
             return result
             
         except Exception as e:

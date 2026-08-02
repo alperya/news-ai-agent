@@ -37,7 +37,7 @@ _METRICS_TABLE = os.environ.get("METRICS_TABLE", "news-ai-agent-post-metrics")
 
 # Most advanced Claude model — review quality matters more than cost here (run
 # once a week). Overridable so the id can be bumped without a code change.
-_REVIEW_MODEL = os.environ.get("SELECTION_REVIEW_MODEL", "claude-opus-4-8")
+_REVIEW_MODEL = os.environ.get("SELECTION_REVIEW_MODEL", "claude-opus-5")
 
 # A multi-lens expert panel, chosen for the stated goal: fastest follower growth
 # and rising engagement toward commercialisation. Performance is framed as
@@ -268,7 +268,7 @@ class SelectionReviewer:
         try:
             msg = self._claude.messages.create(
                 model=_REVIEW_MODEL,
-                max_tokens=2000,
+                max_tokens=8000,  # thinking counts against max_tokens on Opus 5
                 system=_REVIEW_SYSTEM,
                 messages=[{"role": "user", "content": prompt}],
             )

@@ -41,7 +41,7 @@ _PROMPT_KEYS = {
 }
 
 _DAYS_OF_WEEK = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-_ANALYTICS_MODEL = "claude-sonnet-4-6"
+_ANALYTICS_MODEL = os.environ.get("ANALYTICS_MODEL", "claude-opus-5")
 
 
 class AnalyticsEngine:
@@ -270,16 +270,19 @@ Rules:
         return prompt
 
     def _call_claude(self, prompt: str) -> Optional[dict]:
-        """Call Claude Sonnet and parse the JSON response."""
+        """Call Claude and parse the JSON response."""
         if not prompt:
             return None
         try:
             msg = self._claude.messages.create(
                 model=_ANALYTICS_MODEL,
-                max_tokens=4000,
+                max_tokens=8000,  # thinking counts against max_tokens on Opus 5
                 messages=[{"role": "user", "content": prompt}],
             )
-            raw = msg.content[0].text.strip()
+            # Thinking blocks precede text on Opus 5 — never index content[0]
+            raw = next(
+                (b.text for b in msg.content if getattr(b, "type", None) == "text"), ""
+            ).strip()
             # Strip any accidental markdown fences
             if raw.startswith("```"):
                 raw = raw.split("```")[1]

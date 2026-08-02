@@ -5,8 +5,8 @@ An intelligent AI-powered pipeline that automatically scrapes Dutch news from NO
 ## 📦 Features
 
 - ✅ Multi-source RSS scraping (NOS, RTL Nieuws)
-- ✅ Claude Opus 4.6 AI content generation with Holland-priority news selection
-- ✅ Quality gate: structural validation + AI language review (Claude Haiku 4.5) before publishing
+- ✅ Claude Opus 5 AI content generation with Holland-priority news selection
+- ✅ Quality gate: structural validation + AI language review (Claude Opus 5) before publishing
 - ✅ Instagram Graph API integration with automatic token refresh
 - ✅ **Instagram Reels** — auto-generated news videos with TTS narration, stock footage & subtitles
 - ✅ **YouTube Shorts** — same Reels video simultaneously published as a YouTube Short (news only; separate async Lambda)
@@ -30,8 +30,8 @@ The afternoon posting slot automatically generates an Instagram Reels video:
 
 1. **Hook overlay** — AI-generated attention sentence displayed in large white text for the first 3 seconds
 2. **TTS Narration** — ElevenLabs Multilingual v2 (natural voice) with edge-tts fallback (free); 75–95 word target (~30–40 s). Dutch place names are phonetically respelled for the voice only (so "Twente" isn't read as "Twenty") while subtitles keep the real spelling; lexicon extendable via `TTS_PRONUNCIATIONS`
-3. **Cover & Footage** — when the article's own photo is *fresh* it becomes the cover (Ken Burns) with Pexels stock clips filling the body (hybrid); otherwise Pexels clips are used throughout. AI-generated queries + Haiku thumbnail validation pick relevant clips
-4. **Geographic footage safety** — stock footage never claims a place we can't source: queries for small-town stories are stripped of place names (Pexels always returns *something* — asking for a small Dutch town returns a different town), candidate clips whose URL slug names another place are dropped for free, and the Haiku vision gate rejects anything a viewer could geographically identify (skylines, landmarks, signage) or that contradicts the season. Place-specific stories give the article's own photo a longer cover + a mid-Reel reprise, stock segments carry a "STOCK FOOTAGE · ILLUSTRATION" label, and every accept/reject decision is persisted (`footage_plan`/`footage_audit` in `posts_*.json`)
+3. **Cover & Footage** — when the article's own photo is *fresh* it becomes the cover (Ken Burns) with Pexels stock clips filling the body (hybrid); otherwise Pexels clips are used throughout. AI-generated queries + vision thumbnail validation pick relevant clips
+4. **Geographic footage safety** — stock footage never claims a place we can't source: queries for small-town stories are stripped of place names (Pexels always returns *something* — asking for a small Dutch town returns a different town), candidate clips whose URL slug names another place are dropped for free, and the Opus vision gate rejects anything a viewer could geographically identify (skylines, landmarks, signage) or that contradicts the season. Place-specific stories give the article's own photo a longer cover + a mid-Reel reprise, stock segments carry a "STOCK FOOTAGE · ILLUSTRATION" label, and every accept/reject decision is persisted (`footage_plan`/`footage_audit` in `posts_*.json`)
 5. **Cover de-duplication** — the same cover (Pexels clip *or* news photo) is never reused within `FOOTAGE_REUSE_WINDOW_DAYS` (default 30); near-duplicate photos are caught by a perceptual hash so a recurring source template card can't repeat
 6. **Subtitles** — Word-timed orange subtitle overlay (62px Montserrat Bold, lower-third TikTok placement)
 7. **Background Music** — Mood-based: upbeat (`news_music.mp3`) for positive news, calm/alternative (60/40) for neutral
@@ -165,7 +165,7 @@ AWS Lambda runs via EventBridge (UTC → Amsterdam CEST = UTC+2):
 
 Weekly (Thursday 18:00 Amsterdam time) the pipeline runs a separate events mode (`format: event_post`) that:
 1. Scrapes upcoming NL events from **8 sources**: Eventbrite API, Ticketmaster API, amsterdam.nl, rotterdam.nl, denhaag.nl, uitagenda.nl, festileaks.nl, doedagen.nl
-2. Scores each event with Claude Haiku (0–8 rubric: audience fit, completeness, public access, visual appeal)
+2. Scores each event with Claude (0–8 rubric: audience fit, completeness, public access, visual appeal)
 3. Selects the best 5–12 events with Claude Opus and generates the caption
 4. Generates a branded 1080×1080 PIL infographic with event listings
 5. Publishes to Instagram as a feed photo post
@@ -176,7 +176,7 @@ All posts include an AI-assistance disclaimer at the bottom.
 
 | Category | Technology |
 |----------|-----------|
-| **AI** | Claude Opus 4.6 (content) + Claude Haiku 4.5 (quality gate) |
+| **AI** | Claude Opus 5 (content, quality gate, vision validation) |
 | **TTS** | ElevenLabs Multilingual v2 (primary) + edge-tts (free fallback) |
 | **Video** | moviepy, Pillow, FFmpeg (H.264 / AAC) |
 | **Stock Media** | Pexels API (free — video & photo) |
@@ -207,7 +207,7 @@ All configuration is managed through environment variables (`.env` locally, AWS 
 | `YOUTUBE_CLIENT_SECRET` | ❌ | Google OAuth 2.0 client secret |
 | `YOUTUBE_REFRESH_TOKEN` | ❌ | OAuth refresh token for the YouTube channel (long-lived) |
 | `ALERT_EMAIL` | ❌ | Email for Lambda error alerts — OOM, token expiry, publish failures |
-| `REVIEW_MODEL` | ❌ | Quality gate model (default: `claude-haiku-4-5-20251001`) |
+| `REVIEW_MODEL` | ❌ | Quality gate model (default: `claude-opus-5`) |
 | `LANGCHAIN_API_KEY` | ❌ | LangSmith API key — enables LLM trace dashboard |
 | `LANGCHAIN_PROJECT` | ❌ | LangSmith project name (default suggestion: `news-ai-agent`) |
 | `LANGCHAIN_TRACING_V2` | ❌ | Set to `true` to activate LangSmith tracing |
