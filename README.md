@@ -81,18 +81,22 @@ make test         # run tests
 
 ### AWS Lambda Deployment
 
-```bash
-# One-step deployment (build + Terraform)
-./scripts/deploy.sh
+**Every push to `main` deploys automatically** via `.github/workflows/deploy.yml` (tests →
+build ZIP → `terraform apply` → smoke test). There is no manual deploy step.
 
-# Or step by step:
+For a local build or an emergency manual apply:
+
+```bash
 ./scripts/build_lambda.sh              # Build Lambda deployment package
 cd infrastructure/terraform
 terraform init && terraform apply      # Deploy infrastructure
-
-# Push secrets & prompts to AWS Secrets Manager
-python3 scripts/update_secrets.py
 ```
+
+Secrets and prompts live in AWS Secrets Manager (`news-ai-agent/credentials`). Edit them
+by merging into the existing secret — `get-secret-value` → edit JSON → `put-secret-value`.
+⚠️ Do **not** run `scripts/update_secrets.py`: it replaces the whole secret with a
+three-prompt payload and drops `AI_PROMPT_EVENT_SELECTION`, `AI_PROMPT_CAROUSEL_CAPTION`
+and `AI_PROMPT_FOOTAGE_QUERIES`.
 
 ## 📁 Project Structure
 
@@ -128,12 +132,11 @@ python3 scripts/update_secrets.py
 │   ├── quality_check.txt          # Quality gate review prompt
 │   └── event_selection.txt        # 📅 Weekly events selection & caption prompt
 ├── scripts/                       # Shell & utility scripts
-│   ├── build_lambda.sh            # Build Lambda deployment ZIP
-│   ├── deploy.sh                  # Full deployment script
+│   ├── build_lambda.sh            # Build Lambda deployment ZIP (used by CI)
 │   ├── run_pipeline.sh            # Local pipeline runner
 │   ├── preview_reels.sh           # Generate a preview Reels video locally
-│   ├── aws_deploy_wizard.sh       # Interactive AWS setup wizard
-│   ├── update_secrets.py          # Push .env & prompts to AWS Secrets Manager
+│   ├── install_git_hooks.sh       # Install the pre-push guard (run once per clone)
+│   ├── update_secrets.py          # ⚠️ Legacy — replaces the whole secret, see above
 │   └── get_new_instagram_token.py # Emergency: exchange short-lived token for 60-day token
 ├── requirements/                  # Python dependencies
 │   ├── base.txt                   # Development dependencies

@@ -73,7 +73,7 @@ try:
 except ClientError as e:
     if e.response['Error']['Code'] == 'ResourceNotFoundException':
         print("❌ Secrets Manager secret bulunamadı")
-        print("   Run: ./scripts/deploy.sh")
+        print("   Create it first: terraform apply in infrastructure/terraform")
     else:
         print(f"❌ Hata: {e}")
         exit(1)

@@ -1,4 +1,4 @@
-.PHONY: help install test run deploy clean
+.PHONY: help install test run clean
 
 help:
 	@echo "Available commands:"
@@ -30,7 +30,3 @@ clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 	find . -type f -name "*.pyc" -delete
 	@echo "🧹 Cleaned"
-
-deploy:
-	@chmod +x scripts/deploy.sh
-	@./scripts/deploy.sh
