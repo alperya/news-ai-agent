@@ -25,6 +25,7 @@ from .config import (
     ELEVENLABS_TTS_URL,
     ELEVENLABS_VOICE_ID,
 )
+from .pronunciation import respell_for_tts, restore_display_words
 
 logger = logging.getLogger(__name__)
 
@@ -45,23 +46,32 @@ def generate_tts(
     """Generate TTS audio + subtitle segments.
 
     Tries ElevenLabs first (natural voice), falls back to edge-tts (free).
+
+    Dutch place names are phonetically respelled before synthesis (the English
+    voice read "Twente" as "Twenty" — a viewer complained) and restored in the
+    returned segments so subtitles show the real spelling. The debug SRT file
+    keeps the respelled (spoken) text, since it mirrors the audio.
     """
     api_key = ELEVENLABS_API_KEY or os.environ.get("ELEVENLABS_API_KEY", "")
     voice_id = os.environ.get("ELEVENLABS_VOICE_ID", ELEVENLABS_VOICE_ID)
 
+    tts_text = respell_for_tts(text)
+    if tts_text != text:
+        logger.info("🗣️  Respelled Dutch place name(s) for TTS pronunciation")
+
     if api_key:
         try:
             segments = _elevenlabs_tts(
-                text, output_audio, output_subs, api_key, voice_id,
+                tts_text, output_audio, output_subs, api_key, voice_id,
             )
             logger.info("🎙️  ElevenLabs TTS — natural voice ✅")
-            return segments
+            return restore_display_words(segments)
         except Exception as e:
             logger.warning(f"⚠️  ElevenLabs failed, falling back to edge-tts: {e}")
     else:
         logger.info("ℹ️  No ELEVENLABS_API_KEY — using free edge-tts")
 
-    return _edge_tts(text, output_audio, output_subs)
+    return restore_display_words(_edge_tts(tts_text, output_audio, output_subs))
 
 
 def clean_for_narration(text: str) -> str:
