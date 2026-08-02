@@ -63,3 +63,44 @@ jobs:
       - name: Terraform Apply
         working-directory: infrastructure/terraform
         run: terraform apply -auto-approve -var-file=terraform.tfvars.ci
+
+      # Proves the deployed code actually loads. terraform apply only confirms the ZIP
+      # was uploaded — a broken import or handler stays green until the next cron fires,
+      # up to 13 hours later. This catches it here, in under a minute.
+      #
+      # This step REQUIRES the deployed code to handle the health_check payload: code
+      # without that branch falls through to the news pipeline and publishes. If you
+      # ever revert main below the commit that introduced it, drop this step too.
+      - name: Smoke test deployed Lambda
+        run: |
+          set -euo pipefail
+
+          # Block until the new code is actually live. terraform apply can return while
+          # the update is still propagating, and invoking during that window runs the
+          # OLD code — which does not know the health_check payload and would fall
+          # through to the news pipeline, publishing an unscheduled post.
+          aws lambda wait function-updated --function-name news-ai-agent
+
+          aws lambda invoke \
+            --function-name news-ai-agent \
+            --payload "$(printf '{"health_check":true}' | base64)" \
+            --cli-read-timeout 120 \
+            response.json > invoke.json
+
+          echo "Invoke metadata:"; cat invoke.json
+          echo "Response:"; cat response.json
+
+          python - <<'PY'
+          import json, sys
+
+          meta = json.load(open("invoke.json"))
+          if meta.get("FunctionError"):
+              sys.exit(f"::error::Deployed Lambda raised on a health check "
+                       f"({meta['FunctionError']}) — the deploy is broken.")
+
+          body = json.loads(json.load(open("response.json"))["body"])
+          if body.get("status") != "healthy":
+              sys.exit(f"::error::Health check returned {body!r} — the deploy is broken.")
+
+          print("✅ Deployed Lambda is healthy")
+          PY

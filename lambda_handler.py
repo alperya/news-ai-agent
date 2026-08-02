@@ -154,6 +154,9 @@ def get_secrets():
                 'VIRAL_WINDOW_HOURS', 'MIN_BASELINE_POSTS'):
         if key in secret:
             os.environ[key] = secret[key]
+    # Publishing drought watchdog threshold (hours) — same call-time read as above
+    if 'PUBLISH_DROUGHT_HOURS' in secret:
+        os.environ['PUBLISH_DROUGHT_HOURS'] = secret['PUBLISH_DROUGHT_HOURS']
     # Connected Facebook Page — when set, the Story is cross-posted to FB
     if 'FACEBOOK_PAGE_ID' in secret:
         os.environ['FACEBOOK_PAGE_ID'] = secret['FACEBOOK_PAGE_ID']
@@ -729,6 +732,16 @@ def lambda_handler(event, context):
         logger.info("\n🔐 Loading secrets from AWS Secrets Manager...")
         get_secrets()
 
+        # Post-deploy smoke test (CI invokes this right after terraform apply). Reaching
+        # this line already proves every module imported and the secret is readable —
+        # the failure class a bad commit produces most often. Deliberately a dedicated
+        # payload rather than a flag-disabled pipeline: a flag flip must never turn the
+        # smoke test into a real publish.
+        if isinstance(event, dict) and event.get('health_check'):
+            logger.info("🩺 Health check — imports and secrets OK")
+            return {'statusCode': 200,
+                    'body': json.dumps({'status': 'healthy', 'timestamp': timestamp})}
+
         # Detect run mode early — event_post bypasses the news pipeline entirely
         is_event_post = isinstance(event, dict) and event.get('format') == 'event_post'
         if is_event_post:
@@ -828,7 +841,16 @@ def lambda_handler(event, context):
                 'timestamp': timestamp,
                 'original_count': original_count
             }, f'pipeline_results_{timestamp}.json', bucket_name)
-            
+
+            send_alert(
+                "Slot missed — every scraped article was already published",
+                f"All {original_count} scraped articles were filtered out as duplicates, "
+                f"so this slot published nothing.\nTimestamp: {timestamp}\n\n"
+                f"Occasional occurrences are normal on a quiet news day. Repeated ones point "
+                f"at the scraper returning a stale feed or the dedup scan over-matching.",
+                "GENERAL",
+            )
+
             return {
                 'statusCode': 200,
                 'body': json.dumps({
@@ -858,6 +880,14 @@ def lambda_handler(event, context):
                     'articles_count': len(articles_data),
                 },
                 f'pipeline_results_{timestamp}.json', bucket_name,
+            )
+            send_alert(
+                "Slot missed — AI generated no posts",
+                f"{len(articles_data)} article(s) were available but the AI returned no post, "
+                f"so this slot published nothing.\nTimestamp: {timestamp}\n\n"
+                f"Check the batch-selection prompt, the Anthropic API status, and whether the "
+                f"model refused (a refusal returns empty text, not an error).",
+                "GENERAL",
             )
             return {
                 'statusCode': 200,
@@ -892,6 +922,14 @@ def lambda_handler(event, context):
                 'timestamp': timestamp,
                 'rejected_count': rejected_count
             }, f'pipeline_results_{timestamp}.json', bucket_name)
+            send_alert(
+                "Slot missed — quality gate rejected every post",
+                f"All {rejected_count} generated post(s) failed the quality gate, so this slot "
+                f"published nothing.\nTimestamp: {timestamp}\n\n"
+                f"Repeated occurrences usually mean the quality-check prompt became too strict "
+                f"or the content prompt regressed — compare both in Secrets Manager.",
+                "GENERAL",
+            )
             return {
                 'statusCode': 200,
                 'body': json.dumps({
@@ -1100,11 +1138,14 @@ def lambda_handler(event, context):
             f'pipeline_results_{timestamp}.json', bucket_name,
         )
         alert_on_exception("Lambda execution failed", e, error_type)
-        return {
-            'statusCode': 500,
-            'body': json.dumps({
-                'status': 'error',
-                'error': str(e),
-                'timestamp': timestamp
-            })
-        }
+        # Re-raise so AWS records a failed invocation. Returning a 500 dict here looked
+        # like a success to Lambda, which zeroed the Errors metric, disarmed the
+        # news-ai-agent-lambda-errors alarm and stopped the on-failure destination from
+        # firing — leaving the in-code SNS email above as the only notification path for
+        # every runtime error. Raising restores those three AWS-side signals as an
+        # independent channel that does not depend on our own alerting still working.
+        # Safe here because this function runs with maximum_retry_attempts = 0, so there
+        # is no retry amplification and no double-publish risk. The async workers keep
+        # returning 500 instead: they retry twice, and a failure after Instagram accepted
+        # the container would republish.
+        raise

@@ -22,6 +22,8 @@ An intelligent AI-powered pipeline that automatically scrapes Dutch news from NO
 - ✅ Infrastructure as Code (Terraform)
 - ✅ AWS Secrets Manager for credential management
 - ✅ Email alerts on errors (OOM, token expiry, publish failures) via AWS SNS
+- ✅ **Publishing drought watchdog** — a daily check against Instagram itself emails if no post has gone live for 30 hours, so a silently broken pipeline can't go unnoticed; every "published nothing" outcome also alerts on the spot
+- ✅ **Post-deploy smoke test** — CI invokes the deployed Lambda's health check after `terraform apply` and fails the build if the new code doesn't load
 - ✅ Objective, news-agency style content (BBC/Reuters style)
 - ✅ **LangSmith + Langfuse** observability — LLM traces, token usage, latency & cost dashboard
 
@@ -138,7 +140,7 @@ python3 scripts/update_secrets.py
 │   └── lambda.txt                 # Lambda runtime dependencies
 ├── infrastructure/
 │   └── terraform/                 # AWS infrastructure (Lambda, S3, EventBridge)
-├── tests/                         # Test suite (347 tests)
+├── tests/                         # Test suite (358 tests)
 ├── output/                        # Generated articles & posts (gitignored)
 └── errors/                        # Rejected/corrected posts log (gitignored)
 ```
@@ -211,6 +213,7 @@ All configuration is managed through environment variables (`.env` locally, AWS 
 | `YOUTUBE_CLIENT_SECRET` | ❌ | Google OAuth 2.0 client secret |
 | `YOUTUBE_REFRESH_TOKEN` | ❌ | OAuth refresh token for the YouTube channel (long-lived) |
 | `ALERT_EMAIL` | ❌ | Email for Lambda error alerts — OOM, token expiry, publish failures |
+| `PUBLISH_DROUGHT_HOURS` | ❌ | Alert if Instagram has no new post for this many hours (default `30`) |
 | `ENABLE_VIRAL_SKIP` | ❌ | Viral-skip guard (default `true`) — set to `false` to always publish on schedule |
 | `VIRAL_SKIP_MULTIPLIER` | ❌ | Engagement multiple over the 30-day median that counts as viral (default `5.0`) |
 | `VIRAL_MIN_ENGAGEMENT` | ❌ | Absolute engagement floor for a viral skip (default `1000`) |
@@ -250,7 +253,7 @@ make test
 # or
 pytest tests/ -v
 
-# 347 tests covering scraper, AI agent, quality gate, video pipeline,
+# 358 tests covering scraper, AI agent, quality gate, video pipeline,
 # social publisher, YouTube publisher/worker, event scraper, event card,
 # notifier, token refresher, lambda handler (incl. YouTube isolation test),
 # selection transparency + weekly selection review, viral-skip guard

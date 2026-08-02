@@ -16,6 +16,8 @@ import boto3
 import requests
 from botocore.exceptions import ClientError
 
+from notifier import send_alert
+
 logger = logging.getLogger(__name__)
 
 _REGION = os.environ.get("AWS_REGION", "eu-central-1")
@@ -194,14 +196,71 @@ class MetricsCollector:
                 return label
         return "Other"
 
+    # ── Publishing drought watchdog ──────────────────────────────────────────
+
+    def check_publish_drought(self, media_items: list) -> Optional[dict]:
+        """Alert if Instagram holds no recent post — the catch-all failure detector.
+
+        Every other alert in this codebase is cause-based: a known failure mode with a
+        try/except that emails. An unforeseen regression produces an *unknown* failure
+        mode, and several pipeline paths return HTTP 200 having published nothing. This
+        check asks the only question that covers all of them at once — "does Instagram
+        actually have a recent post?" — and never asks why.
+
+        It reads the media list `collect()` already fetched, so it costs no extra API
+        call, and it verifies at the destination rather than trusting our own S3
+        artifacts (`posts_*.json` is written even when the publish later fails).
+
+        Returns the drought details when one is detected, else None.
+        """
+        threshold_hours = float(os.environ.get("PUBLISH_DROUGHT_HOURS", "30"))
+
+        if not media_items:
+            # Nothing at all in the 30-day window — publishing has been dead for weeks.
+            logger.error("🚨 No posts on Instagram in the last 30 days")
+            send_alert(
+                "PUBLISHING STOPPED — no Instagram posts in 30 days",
+                "The Instagram account has no posts at all within the last 30 days.\n\n"
+                "This means the publishing pipeline has been failing silently for weeks. "
+                "Check the news-ai-agent CloudWatch logs and the most recent scheduled runs.",
+                "PUBLISH_FAILED",
+            )
+            return {"drought": True, "hours_since_last_post": None}
+
+        # _recent_media returns newest-first.
+        last_published = datetime.fromisoformat(media_items[0]["timestamp"].replace("Z", "+00:00"))
+        gap_hours = (datetime.now(timezone.utc) - last_published).total_seconds() / 3600
+        if gap_hours < threshold_hours:
+            logger.info(f"✅ Last post was {gap_hours:.1f}h ago — publishing is healthy")
+            return None
+
+        logger.error(f"🚨 No Instagram post for {gap_hours:.1f}h (threshold {threshold_hours}h)")
+        send_alert(
+            f"PUBLISHING STOPPED — nothing posted for {gap_hours:.0f} hours",
+            f"The most recent Instagram post is {gap_hours:.1f} hours old "
+            f"(published {last_published.isoformat()}), past the {threshold_hours}h threshold.\n\n"
+            f"Normal cadence is 2 posts/day, and the viral-skip guard only ever skips one slot, "
+            f"so this gap is not expected.\n\n"
+            f"Check the news-ai-agent CloudWatch logs for the last few scheduled runs — a run "
+            f"that returns 'all_duplicates', 'no_posts' or 'quality_gate_rejected' publishes "
+            f"nothing while still reporting success.",
+            "PUBLISH_FAILED",
+        )
+        return {"drought": True, "hours_since_last_post": round(gap_hours, 1)}
+
     # ── Main ─────────────────────────────────────────────────────────────────
 
     def collect(self, dry_run: bool = False) -> dict:
         """Run full collection cycle: account snapshot + per-post metrics."""
         account = self.collect_account_metrics()
         media_items = self._recent_media(days=30)
+
+        # Watchdog first — it must run even when there is nothing to collect below.
+        drought = self.check_publish_drought(media_items)
+
         if not media_items:
-            return {"collected": 0, "errors": 0, "followers": account.get("followers_count")}
+            return {"collected": 0, "errors": 0, "followers": account.get("followers_count"),
+                    "drought": drought}
 
         collected = errors = 0
         for item in media_items:
@@ -299,4 +358,5 @@ class MetricsCollector:
                 errors += 1
 
         logger.info(f"✅ Collection done: {collected} posts, {errors} errors")
-        return {"collected": collected, "errors": errors, "followers": account.get("followers_count")}
+        return {"collected": collected, "errors": errors,
+                "followers": account.get("followers_count"), "drought": drought}
