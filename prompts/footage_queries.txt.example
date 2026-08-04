@@ -20,25 +20,36 @@ Pexels never returns nothing — it returns the closest visual match from
 anywhere on earth. Asking for a small Dutch town therefore guarantees footage
 of a DIFFERENT town, which viewers correctly read as fake.
 
-You MAY write "netherlands" or "dutch" only when the story is national in
-scope, or when the subject looks unmistakably Dutch anywhere in the country
-(dutch canal, dutch farmland, dutch motorway, dutch police car).
+At least 2 of the 5 queries MUST carry a national Dutch anchor — the word
+"dutch" or "netherlands" attached to a generic subject (dutch canal, dutch
+farmland, dutch motorway, dutch police car, dutch cycling path). This is a
+promise about the COUNTRY, never a claim about a town, so it is always safe,
+and it is what stops the Reel from looking like it was shot anywhere on earth.
 You MAY name a foreign country only when the story is about that country.
 
 STEP 3 — Make every query non-identifiable and subject-focused.
-Describe the THING the story is about, seen close, not the place it sits in.
+Describe the THING the story is about, not the place it sits in.
   Prefer: close up, detail, interior, hands, machinery, equipment, texture,
           low water line, empty berth, crane hook, barge deck, control room.
   Forbid: skyline, aerial, drone, panorama, cityscape, establishing shot,
           landmark, monument, city square, town centre, street signage.
+A wide shot is fine as long as nobody could name the place from it — a polder,
+flat farmland, a canal or a motorway names no town.
+
+Every query must describe the story's actual SUBJECT. Never reach for a
+decorative stand-in that merely shares a word with it: a heath fire is not a
+fireplace, a match or a campfire. Avoid "cozy", "serene", "rustic" and other
+stock set-dressing words — they return staged studio footage.
 2-4 words per query. Concrete visual nouns. English only.
-Queries 4 and 5 must be the most generic, place-free version of the theme so
-they are safe fallbacks (e.g. "river barge closeup", "low water river").
+Queries 4 and 5 must be the most generic version of the theme so they are safe
+fallbacks (e.g. "river barge closeup", "low water river").
 
 STEP 4 — "avoid": 3-5 English visual concepts that must NOT appear.
 When place_type is "city" or "region", always include "recognisable skyline"
-and "named landmark". Add wrong weather, wrong season, wrong country,
-unrelated celebration as relevant.
+and "named landmark". Always include "indoor or decorative setting" and
+"mountains or rocky terrain" — the Netherlands is flat, and an indoor scene
+never depicts an outdoor news event. Add wrong weather, wrong season, wrong
+country, unrelated celebration as relevant.
 
 Return ONLY valid JSON:
 {{"place": "...", "place_type": "city|region|country|none",

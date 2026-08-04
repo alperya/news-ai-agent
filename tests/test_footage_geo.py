@@ -12,6 +12,8 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
 import footage_geo as G
@@ -57,6 +59,68 @@ def test_sanitize_is_noop_for_stock_ok_stories():
     assert out == ["amsterdam skyline", "amsterdam canal"]
 
 
+# ── 2b. National anchor: "no place" must still mean the Netherlands ──────────
+
+def test_anchor_added_when_sanitizing_removed_every_geographic_cue():
+    """The Venray regression: 5 correct, careful, entirely placeless queries."""
+    out = G.ensure_national_anchor(
+        ["forest fire firefighters hose", "burning heathland close up",
+         "smouldering ground smoke"],
+        "no_stock", "venray",
+    )
+    assert out[:3] == ["forest fire firefighters hose", "burning heathland close up",
+                       "smouldering ground smoke"]  # order kept, cover unchanged
+    anchored = [q for q in out if "dutch" in q or "netherlands" in q]
+    assert len(anchored) >= G.MIN_ANCHORED_QUERIES
+
+
+def test_anchor_is_a_noop_when_queries_already_promise_the_country():
+    queries = ["dutch canal summer heat", "netherlands farmland drought", "thermometer"]
+    assert G.ensure_national_anchor(queries, "stock_ok", "netherlands") == queries
+
+
+def test_stock_ok_story_is_anchored_by_its_own_place():
+    """An Amsterdam story already reads as Dutch — don't pad it with canals."""
+    queries = ["amsterdam canal boat", "amsterdam street crowd", "police tape"]
+    assert G.ensure_national_anchor(queries, "stock_ok", "amsterdam") == queries
+
+
+def test_anchor_leaves_an_empty_plan_empty():
+    """No queries means generation failed; the caller's fallbacks decide, not us."""
+    assert G.ensure_national_anchor([], "no_stock", "venray") == []
+
+
+def test_build_footage_plan_anchors_place_specific_stories():
+    plan = G.build_footage_plan(
+        place="Venray", place_type="city",
+        queries=["smouldering forest floor", "firefighter hose heathland"],
+    )
+    assert plan["place_mode"] == "no_stock"
+    assert sum(1 for q in plan["queries"] if "dutch" in q) >= G.MIN_ANCHORED_QUERIES
+
+
+# ── 2c. Terrain the Netherlands does not have ────────────────────────────────
+
+def test_impossible_terrain_rejected():
+    """Measured: a Venray drought Reel shipped a rocky mountain river.
+
+    It names no place, so the identifiability test passes it — and it single
+    handedly stops the Reel reading as Dutch news.
+    """
+    assert G.shows_impossible_terrain("peaceful-river-flowing-through-rocky-landscape-1")
+    assert G.shows_impossible_terrain("serene-riverbank-with-stone-reflections-in-valley-2")
+    assert G.shows_impossible_terrain("aerial-view-of-mountain-forest-3")
+    assert G.shows_impossible_terrain("palm-trees-on-a-tropical-beach-4")
+
+
+def test_dutch_landscape_is_not_impossible_terrain():
+    """The country has dunes, beaches and heath — only the geology is banned."""
+    assert not G.shows_impossible_terrain("charred-forest-floor-after-a-fire-1")
+    assert not G.shows_impossible_terrain("sand-dunes-and-beach-grass-2")
+    assert not G.shows_impossible_terrain("low-water-in-a-wide-river-3")
+    assert not G.shows_impossible_terrain("")
+
+
 def test_build_footage_plan_drops_empty_and_duplicate_queries():
     plan = G.build_footage_plan(
         place="Deventer", place_type="city",
@@ -64,7 +128,8 @@ def test_build_footage_plan_drops_empty_and_duplicate_queries():
         avoid=["recognisable skyline"],
     )
     assert plan["place_mode"] == "no_stock"
-    assert plan["queries"] == ["harbour", "low water river"]  # empty + dupe dropped
+    # empty + dupe dropped; the story's own queries keep their order and lead
+    assert plan["queries"][:2] == ["harbour", "low water river"]
     assert plan["avoid"] == ["recognisable skyline"]
 
 
@@ -105,6 +170,51 @@ def test_world_slug_rejected_even_for_stock_ok():
     assert G.claims_a_place("/video/kansai-airport-terminal-88/", banned)
     assert G.claims_a_place("/video/osaka-airport-interior-3/", banned)
     assert not G.claims_a_place("/video/schiphol-departures-hall-9/", banned)
+
+
+def test_country_slug_rejected():
+    """Measured: a Venray wildfire Reel took its COVER from a clip slugged
+    "controlled farm fire in south africa". The list was cities and landmarks
+    only, so a whole country walked straight through it."""
+    banned = G.slug_banned_places_for("Venray", "no_stock")
+    assert G.claims_a_place("/video/controlled-farm-fire-in-south-africa-33661463/", banned)
+    assert G.claims_a_place("/video/wildfire-in-california-hills-5/", banned)
+
+
+def test_own_country_still_allowed_for_a_foreign_story():
+    """A story about Turkey may show Turkey — stock_ok drops it from the ban."""
+    banned = G.slug_banned_places_for("Turkey", "stock_ok")
+    assert "turkey" not in banned
+    assert G.claims_a_place("/video/turkish-flag-over-ankara-1/", banned) is False
+    # Erring wide is still accepted: a named city stays banned even so.
+    assert G.claims_a_place("/video/istanbul-street-market-2/", banned)
+
+
+def test_named_dutch_river_rejected_for_a_different_dutch_town():
+    """Measured: a Deventer (IJssel) story pulled seven "nederrijn river" clips.
+
+    A named river is exactly as specific as a named town.
+    """
+    banned = G.slug_banned_places_for("Deventer", "no_stock")
+    assert G.claims_a_place("/video/aerial-view-of-nederrijn-river-and-ferry-1/", banned)
+    assert G.claims_a_place("/video/wheat-field-in-drenthe-2/", banned)
+    assert not G.claims_a_place("/video/scenic-dutch-countryside-river-3/", banned)
+
+
+def test_dutch_region_allowed_for_a_national_story():
+    """A national story IS the whole country — Drenthe is the Netherlands."""
+    banned = G.slug_banned_places_for("Netherlands", "stock_ok")
+    assert not G.claims_a_place("/video/wheat-field-in-drenthe-2/", banned)
+
+
+def test_unnamed_city_framing_rejected_only_for_place_stories():
+    """An unnamed city aerial under a Deventer headline reads as Deventer;
+    under an Amsterdam headline a skyline is simply correct."""
+    assert G.claims_identifiable_framing(
+        "/video/an-aerial-view-of-a-city-with-a-river-and-buildings-2/", "no_stock")
+    assert G.claims_identifiable_framing("/video/harbour-skyline-at-dusk-3/", "no_stock")
+    assert not G.claims_identifiable_framing("/video/aerial-view-of-farmland-4/", "no_stock")
+    assert not G.claims_identifiable_framing("/video/harbour-skyline-at-dusk-3/", "stock_ok")
 
 
 def test_slug_prefilter_ignores_ambiguous_words():
@@ -261,6 +371,98 @@ def test_slug_filter_allows_own_place_for_stock_ok_story(monkeypatch):
     assert any(a["pexels_id"] == 2 and a["reason"] == "slug" for a in audit)
 
 
+def test_terrain_filter_applied_before_download(monkeypatch):
+    """Measured: a Venray drought Reel shipped a rocky mountain river.
+
+    It names no place, so neither the place ban nor the vision gate's
+    identifiability test stops it — only the terrain check does, and it runs in
+    every place mode because a mountain is wrong for an Amsterdam story too.
+    """
+    videos = [
+        _vid(1, slug="https://www.pexels.com/video/river-through-rocky-landscape-1/"),
+        _vid(2, slug="https://www.pexels.com/video/low-water-in-a-wide-river-2/"),
+        _vid(3, slug="https://www.pexels.com/video/palm-trees-tropical-beach-3/"),
+    ]
+    F = _patch_pexels(monkeypatch, videos)
+    used, audit = [], []
+    F.fetch_stock_clips(
+        title="t", content="c", tmp_dir="/tmp", count=3,
+        footage_queries=["low water river"], used_ids_out=used, audit_out=audit,
+        footage_plan=G.build_footage_plan("Amsterdam", "city"),
+    )
+    assert used == [2], used
+    assert {a["pexels_id"] for a in audit if a["reason"] == "terrain"} == {1, 3}
+
+
+def test_pool_interleaves_queries_so_one_cannot_fill_the_reel(monkeypatch):
+    """Measured: a heat-record Reel ran nine Amsterdam canal clips in a row.
+
+    Pexels returns 20 hits per query and a Reel uses 9, so concatenating the
+    pool meant the first query supplied every scene. It still leads (it supplies
+    the cover) — it just no longer wins the whole Reel.
+    """
+    import video.footage as F
+
+    def _search(api_key, query, per_page=15, orientation=""):
+        if orientation != "portrait":
+            return []
+        base = {"a": 100, "b": 200, "c": 300}[query]
+        return [_vid(base + i, query=query) for i in range(20)]
+
+    monkeypatch.setattr(F, "_pexels_video_search", _search)
+    monkeypatch.setattr(F, "_download_clip", lambda v, idx, d: f"/tmp/{v['id']}.mp4")
+    monkeypatch.setattr(F, "PEXELS_API_KEY", "test-key")
+
+    used = []
+    F.fetch_stock_clips(
+        title="t", content="c", tmp_dir="/tmp", count=9,
+        footage_queries=["a", "b", "c"], used_ids_out=used,
+    )
+    assert used[0] == 100, "the first query must still supply the cover"
+    assert len({i // 100 for i in used}) == 3, f"all three queries must feature: {used}"
+
+
+def test_dutch_keyword_fallback_never_joins_ai_queries(monkeypatch):
+    """A live run searched Pexels for 'uitzonderlijke situatie droogte brand'.
+
+    extract_search_query keeps untranslated Dutch, which Pexels does not
+    understand — its results were then scored as if they were about drought. The
+    fallback is a replacement for the AI queries, never an addition to them.
+    """
+    calls = []
+    F = _patch_pexels(monkeypatch, [_vid(1), _vid(2)], calls)
+    F.fetch_stock_clips(
+        title="'Uitzonderlijke situatie' door droogte, brand bij Venray",
+        content="De brandweer blijft bezig met blussen.",
+        tmp_dir="/tmp", count=2,
+        footage_queries=["smouldering forest floor", "firefighter hose heathland"],
+        footage_plan=G.build_footage_plan("Venray", "city"),
+    )
+    assert not any("droogte" in q or "uitzonderlijke" in q for q in calls), calls
+
+
+def test_audit_keeps_used_clips_when_rejections_are_plentiful(monkeypatch):
+    """The trail used to go silent in exactly the runs worth auditing.
+
+    One shared cap meant a heavily-filtered run spent it all on rejections and
+    recorded none of the nine clips that actually shipped (`used=0`).
+    """
+    videos = [
+        _vid(i, slug=f"https://www.pexels.com/video/hamburg-harbor-{i}/")
+        for i in range(1, 30)
+    ] + [_vid(90), _vid(91)]
+    F = _patch_pexels(monkeypatch, videos)
+    used, audit = [], []
+    F.fetch_stock_clips(
+        title="t", content="c", tmp_dir="/tmp", count=2,
+        footage_queries=["low water river"], used_ids_out=used, audit_out=audit,
+        footage_plan=G.build_footage_plan("Deventer", "city"),
+    )
+    assert used == [90, 91], used
+    assert [a["pexels_id"] for a in audit if a["ok"]] == [90, 91]
+    assert sum(1 for a in audit if not a["ok"]) == F.AUDIT_REJECT_LIMIT
+
+
 def test_stock_ok_gate_receives_place(monkeypatch):
     """The plausibility gate gets the concrete place so 'wrong location'
     is checkable ('schiphol' vs a generic 'wrong country or landmark')."""
@@ -398,7 +600,7 @@ def test_generate_footage_queries_uses_shipped_prompt_without_secret(monkeypatch
     monkeypatch.setattr(A, "PROMPTS_DIR", Path("/nonexistent"))
     agent = _agent_returning('{"place": "", "place_type": "none", "queries": ["dutch canal"], "avoid": []}')
     queries, _, plan = agent.generate_footage_queries("t", "d")
-    assert queries == ["dutch canal"]
+    assert queries[0] == "dutch canal"
     assert plan["place_mode"] == "none"
 
 
@@ -429,7 +631,7 @@ def test_no_stock_prompt_mentions_season_contradiction():
     )
     text = _gate_prompt_text(agent)
     assert "season that contradicts" in text
-    assert "could a viewer name the place" in text
+    assert "could name the place" in text
 
 
 def test_stock_ok_prompt_names_the_place():
@@ -441,5 +643,42 @@ def test_stock_ok_prompt_names_the_place():
         place_mode="stock_ok", place="schiphol",
     )
     text = _gate_prompt_text(agent)
-    assert "located in schiphol" in text
-    assert "different recognisable location" in text
+    assert "footage of schiphol is fine" in text
+    assert "identifiable as a DIFFERENT place" in text
+
+
+@pytest.mark.parametrize("mode,place", [
+    ("no_stock", "venray"), ("stock_ok", "amsterdam"), ("none", ""),
+])
+def test_every_mode_gets_the_same_four_tests(mode, place):
+    """One criteria block, not two.
+
+    The split that used to live here is the whole reason a heatwave Reel
+    shipped cosy-fireplace clips: the relevance question existed only in the
+    stock_ok branch and the identifiability question only in the no_stock one,
+    so a decorative indoor fire passed whichever branch it landed in.
+    """
+    agent = _agent_returning("1: PASS")
+    agent.validate_footage_thumbnails(
+        "Heath fire near Venray", ["mountains or rocky terrain"],
+        ["https://img/1.jpg"], place_mode=mode, place=place,
+    )
+    text = _gate_prompt_text(agent)
+    assert "1. SUBJECT" in text and "2. PLACE" in text
+    assert "3. TERRAIN" in text and "4. AVOID" in text
+    # The measured failures, named so a future edit can't quietly drop them
+    assert "fireplace" in text          # decorative stand-in for a wildfire
+    assert "rocky river gorges" in text  # terrain the Netherlands does not have
+    assert "mountains or rocky terrain" in text  # the story's own avoid terms
+
+
+def test_gate_explicitly_passes_generically_dutch_wide_shots():
+    """The regression this fixes: 'PASS only if close and generic' left the
+    account showing nowhere, which reads as fake just like the wrong town did."""
+    agent = _agent_returning("1: PASS")
+    agent.validate_footage_thumbnails(
+        "Drought near Venray", [], ["https://img/1.jpg"], place_mode="no_stock",
+    )
+    text = _gate_prompt_text(agent)
+    assert "polders" in text and "flat farmland" in text
+    assert "do not fail them for being wide" in text

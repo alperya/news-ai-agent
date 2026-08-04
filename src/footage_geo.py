@@ -13,6 +13,13 @@ and reject candidates that visibly claim to be somewhere.
 
 The rule: prefer showing **no** place over showing the **wrong** place.
 
+The corollary, learned the hard way: "no place" must still mean *the
+Netherlands*. Stripping every geographic cue left Reels that could have been
+shot anywhere on earth, and a Dutch news account that shows nowhere reads as
+one that shows fake. So a country-level anchor is guaranteed
+(:func:`ensure_national_anchor`) and terrain the country does not have is
+rejected (:func:`shows_impossible_terrain`) — neither can name a town.
+
 Kept dependency-light on purpose — imported by both ``ai_agent`` and
 ``video.footage``, neither of which should pull in the other.
 """
@@ -39,6 +46,34 @@ STOCK_SAFE_PLACES: Set[str] = {
 # even though Rotterdam is a place we'd happily name in a Rotterdam story.
 _NATIONAL_TERMS: Set[str] = {"netherlands", "nederland", "holland", "dutch", "nl"}
 
+# Generic Dutch scenes that really exist on Pexels and name no town. Used both
+# to top up a query list that lost every geographic cue, and as the last-resort
+# tier — "abstract light bokeh" is the worst a news Reel can look, while a
+# Dutch canal is safe by construction *and* still reads as the Netherlands.
+NATIONAL_ANCHOR_QUERIES = (
+    "dutch canal water",
+    "dutch flat farmland",
+    "dutch motorway traffic",
+    "dutch countryside windmill",
+    "dutch cycling path",
+)
+
+# How many of a story's queries must promise the Netherlands. Two, not one:
+# the first query supplies the cover and the rest fill the body, so a single
+# anchored query can end up behind clips that made the Reel look like nowhere.
+MIN_ANCHORED_QUERIES = 2
+
+# Terrain that cannot exist in the Netherlands. Unlike a place name this is not
+# an identifiability problem — nobody can name a mountain river — it is a
+# *country* problem: it silently drains the "Dutch news" read from the Reel.
+# Deliberately excludes "dune" and "beach": the Netherlands has both.
+_NON_DUTCH_TERRAIN_TOKENS: Set[str] = {
+    "mountain", "mountains", "mountainous", "alpine", "alps", "canyon",
+    "gorge", "cliff", "cliffs", "desert", "tropical", "jungle", "rainforest",
+    "waterfall", "fjord", "volcano", "volcanic", "glacier", "savanna",
+    "palm", "palms", "cactus", "rocky", "boulders", "hillside", "valley",
+}
+
 # Dutch places beyond the NL_CITIES top-30 that show up in stock-clip slugs and
 # queries. Ports and postcard towns dominate on purpose: that is what Pexels has
 # footage OF, so that is what a wrong-place match looks like. Proven in the
@@ -59,6 +94,15 @@ _NL_PLACE_TOKENS: Set[str] = {
     "moerdijk", "gorinchem", "zutphen", "tiel", "wageningen", "ede",
     "sneek", "lelystad", "roermond", "sittard", "weert", "oss", "uden",
     "veghel",
+    # named waters — a Deventer (IJssel) story really pulled seven clips
+    # slugged "nederrijn river". A named river is as specific as a named town.
+    "nederrijn", "ijssel", "hollandse ijssel", "waal", "maas", "merwede",
+    "amstel", "vecht", "dommel", "ijsselmeer", "markermeer", "waddenzee",
+    "oosterschelde", "westerschelde", "noordzeekanaal", "biesbosch",
+    # provinces & regions — narrower than a country, so just as unverifiable
+    "friesland", "drenthe", "overijssel", "gelderland", "flevoland",
+    "brabant", "limburg", "zeeland", "twente", "veluwe", "achterhoek",
+    "betuwe", "randstad",
 }
 
 # Place names that are also ordinary words. Banning these would mangle innocent
@@ -97,6 +141,20 @@ _WORLD_PLACE_TOKENS: Set[str] = {
     "charles de gaulle", "orly", "jfk", "laguardia", "gardermoen",
     "tegel", "schoenefeld", "haneda", "narita", "suvarnabhumi", "ataturk",
     "sabiha", "zaventem", "vantaa",
+    # countries and regions — the list started as cities and landmarks only,
+    # so a Venray wildfire Reel took its COVER from a clip slugged
+    # "controlled farm fire in south africa". A named country is exactly as
+    # wrong as a named city. For a story genuinely about one of these,
+    # slug_banned_places_for() removes it again.
+    "south africa", "australia", "new zealand", "canada", "brazil", "argentina",
+    "california", "texas", "florida", "arizona", "alaska", "colorado",
+    "iceland", "norway", "sweden", "finland", "denmark", "scotland", "ireland",
+    "wales", "england", "france", "germany", "switzerland", "austria", "italy",
+    "spain", "portugal", "greece", "croatia", "poland", "romania", "turkey",
+    "russia", "ukraine", "morocco", "egypt", "kenya", "tanzania", "namibia",
+    "india", "china", "japan", "vietnam", "thailand", "indonesia", "philippines",
+    "patagonia", "tuscany", "provence", "bavaria", "andalusia", "siberia",
+    "sahara", "amazon", "himalaya", "andes", "rockies", "dolomites",
 }
 
 
@@ -200,6 +258,96 @@ def sanitize_queries(queries: List[str], place: str, place_mode: str) -> List[st
     return cleaned
 
 
+def ensure_national_anchor(
+    queries: List[str], place_mode: str = "none", place: str = "",
+) -> List[str]:
+    """Guarantee the query list still promises the Netherlands somewhere.
+
+    Sanitizing a place-specific story strips every geographic cue, which is
+    correct for *towns* and wrong for the *country*: a Reel built entirely from
+    "smouldering ground smoke" could be anywhere on earth, and viewers read a
+    Dutch news account that shows nowhere as a Dutch news account that shows
+    fake. A national term is a country promise, never a city claim, so it is
+    safe in exactly the modes where a city name is not.
+
+    Anchors are **appended**, never substituted: the story's own queries keep
+    their order and still supply the cover when their clips survive filtering.
+
+    Enforced here rather than in the prompt because the live prompt lives in
+    Secrets Manager and is edited without a deploy — see ``_load_prompt_or``.
+    """
+    # For a stock_ok story the place itself is the anchor: "amsterdam canal"
+    # already reads as the Netherlands, so it should not be topped up.
+    extra_anchors = {_norm(place)} if place_mode == "stock_ok" and place else set()
+    anchors = _NATIONAL_TERMS | {a for a in extra_anchors if a}
+
+    kept = [q.strip() for q in (queries or []) if q and q.strip()]
+    if not kept:
+        # Nothing to anchor: an empty plan means query generation failed, and the
+        # caller's own fallbacks (keyword extraction, then the national
+        # last-resort tier) are better placed to decide than a plan that pretends
+        # to have picked canal footage for a story it never read.
+        return kept
+
+    anchored = sum(1 for q in kept if _has_any_token(q, anchors))
+    if anchored >= MIN_ANCHORED_QUERIES:
+        return kept
+
+    existing = {_norm(q) for q in kept}
+    for anchor_query in NATIONAL_ANCHOR_QUERIES:
+        if anchored >= MIN_ANCHORED_QUERIES:
+            break
+        if anchor_query in existing:
+            continue
+        kept.append(anchor_query)
+        anchored += 1
+    return kept
+
+
+def _has_any_token(text: str, needles: Set[str]) -> bool:
+    """True when any phrase in *needles* appears in *text* on word boundaries."""
+    tokens = _tokenise(text)
+    return bool(tokens) and any(_contains_phrase(tokens, n) for n in needles if n)
+
+
+# Slug wording that means "this shot is OF a settlement" even when the clip is
+# never named. An unnamed city aerial presented as the story's town is the same
+# lie as a named one — the viewer just can't prove it.
+_IDENTIFYING_SLUG_TERMS: Set[str] = {
+    "skyline", "cityscape", "downtown", "panorama", "panoramic",
+}
+
+
+def claims_identifiable_framing(slug: str, place_mode: str) -> bool:
+    """True when a slug frames an unnamed settlement, for a story that can't claim one.
+
+    Only for ``no_stock``: an Amsterdam story may absolutely run an Amsterdam
+    skyline. Measured on a Deventer run, which selected
+    ``an-aerial-view-of-a-city-with-a-river-and-buildings`` — no place name to
+    ban, but shown under a Deventer headline it reads as Deventer.
+    """
+    if place_mode != "no_stock":
+        return False
+    if _has_any_token(slug, _IDENTIFYING_SLUG_TERMS):
+        return True
+    tokens = _tokenise(slug)
+    return _contains_phrase(tokens, "aerial") and _contains_phrase(tokens, "city")
+
+
+def shows_impossible_terrain(slug: str) -> bool:
+    """True when a Pexels URL slug describes terrain the Netherlands does not have.
+
+    Runs in **every** place mode, and for a different reason than
+    :func:`claims_a_place`: a mountain gorge names no place a viewer could call
+    out, so the vision gate's identifiability test passes it — while a rocky
+    river on a Dutch drought story is exactly what makes the account stop
+    looking Dutch. Slug-based, so it costs nothing and runs before the vision
+    call. Proven in the wild: a Venray drought Reel shipped
+    ``peaceful-river-flowing-through-rocky-landscape``.
+    """
+    return _has_any_token(slug, _NON_DUTCH_TERRAIN_TOKENS)
+
+
 def claims_a_place(slug: str, banned_places: Set[str]) -> bool:
     """True when a Pexels URL slug names a place in *banned_places*.
 
@@ -235,6 +383,8 @@ def build_footage_plan(
         "place": place,
         "place_type": place_type,
         "place_mode": place_mode,
-        "queries": sanitize_queries(queries or [], place, place_mode),
+        "queries": ensure_national_anchor(
+            sanitize_queries(queries or [], place, place_mode), place_mode, place,
+        ),
         "avoid": [a.strip() for a in (avoid or []) if a and a.strip()],
     }

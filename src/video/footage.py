@@ -16,9 +16,12 @@ import requests as http_requests
 from PIL import Image
 
 from footage_geo import (
+    NATIONAL_ANCHOR_QUERIES,
     banned_places_for,
     claims_a_place,
+    claims_identifiable_framing,
     sanitize_query,
+    shows_impossible_terrain,
     slug_banned_places_for,
 )
 
@@ -36,17 +39,17 @@ logger = logging.getLogger(__name__)
 POOL_QUERIES = 3
 # Thumbnails sent to the vision gate in one call (Haiku multimodal batch).
 VALIDATION_BATCH = 15
-# Per-candidate decisions persisted into posts_*.json.
-AUDIT_LIMIT = 25
+# Per-candidate decisions persisted into posts_*.json. Separate budgets: a run
+# whose rejections fill one shared cap used to record NO used clips at all, so
+# the audit trail went silent in exactly the runs worth auditing.
+AUDIT_USED_LIMIT = 12
+AUDIT_REJECT_LIMIT = 25
 
-# Place-free by construction — the final tier when every real query has been
-# filtered out. Bland, but bland beats claiming the wrong city.
-_LAST_RESORT_QUERIES = (
-    "abstract light bokeh",
-    "slow motion water surface",
-    "cloudy sky timelapse",
-    "close up machinery",
-)
+# Town-free by construction — the final tier when every real query has been
+# filtered out. Not neutral though: "abstract light bokeh" is the worst a news
+# Reel can look, so the rescue tier promises the *country* instead. A national
+# term can never become a wrong-town claim.
+_LAST_RESORT_QUERIES = NATIONAL_ANCHOR_QUERIES
 
 # ── Dutch → English keyword map for better Pexels results ────────────────────
 
@@ -125,7 +128,8 @@ def fetch_stock_clips(
 
     Filtering runs in three widening stages, cheapest first:
       1. slug pre-filter — drop clips whose Pexels URL names a place the story
-         cannot claim (free, no API call);
+         cannot claim, or describes terrain the Netherlands does not have
+         (free, no API call);
       2. fresh-first reorder of *exclude_ids* (recently used clips to the back);
       3. Haiku vision gate via *ai_agent* + *avoid_terms*.
 
@@ -154,12 +158,18 @@ def fetch_stock_clips(
     # slugged "kansai-airport" is still the wrong airport.
     slug_banned = slug_banned_places_for(place, place_mode)
 
-    # Keyword fallback is derived from the *Dutch* headline and happily keeps
-    # "deventer" / "moerdijk" as-is — sanitize it like any AI query.
-    fallback_query = extract_search_query(title, content)
-    if place_mode == "no_stock":
-        fallback_query = sanitize_query(fallback_query, banned)
-    queries = [q for q in list(footage_queries or []) + [fallback_query] if q]
+    # Keyword fallback is derived from the *Dutch* headline: it keeps place
+    # names ("deventer") — so it is sanitized like any AI query — and it keeps
+    # untranslated Dutch words, which Pexels simply does not understand. A live
+    # run really searched 'uitzonderlijke situatie droogte brand' and scored the
+    # results as if they were about drought. So it is a *replacement* for the AI
+    # queries, never an addition to them.
+    queries = [q for q in (footage_queries or []) if q]
+    if not queries:
+        fallback_query = extract_search_query(title, content)
+        if place_mode == "no_stock":
+            fallback_query = sanitize_query(fallback_query, banned)
+        queries = [fallback_query] if fallback_query else []
     if not queries:
         # Straight to the neutral tier — and don't list it twice below.
         queries = list(_LAST_RESORT_QUERIES)
@@ -182,15 +192,26 @@ def fetch_stock_clips(
             continue
         candidates = _search_pool(api_key, tier, seen_ids)
 
-        if candidates and slug_banned:
+        if candidates:
             kept = []
             for v in candidates:
-                if claims_a_place(v.get("url", ""), slug_banned):
+                slug = v.get("url", "")
+                # Terrain runs in every place mode and for a different reason
+                # than the place ban: a mountain gorge names nowhere, so the
+                # vision gate passes it, while making the Reel stop looking Dutch.
+                if shows_impossible_terrain(slug):
+                    _audit(audit_out, v, "terrain", ok=False)
+                elif slug_banned and claims_a_place(slug, slug_banned):
                     _audit(audit_out, v, "slug", ok=False)
+                elif claims_identifiable_framing(slug, place_mode):
+                    _audit(audit_out, v, "framing", ok=False)
                 else:
                     kept.append(v)
             if len(candidates) != len(kept):
-                logger.info(f"   🗺️  Dropped {len(candidates) - len(kept)} clip(s) naming a place")
+                logger.info(
+                    f"   🗺️  Dropped {len(candidates) - len(kept)} clip(s) "
+                    f"naming a place or showing non-Dutch terrain"
+                )
             candidates = kept
 
         # The last-resort tier is neutral by construction — a third vision call
@@ -218,10 +239,14 @@ def fetch_stock_clips(
 def _search_pool(api_key: str, queries: List[str], seen_ids: Set[int]) -> List[dict]:
     """Search several queries and pool the results, de-duplicated by clip id.
 
-    Query order is preserved as the tiebreak, so the most specific query still
-    supplies the cover when its clips survive filtering.
+    Results are **interleaved** round-robin, not concatenated. Pexels returns 20
+    hits per query and a Reel uses 9, so concatenating meant the first query
+    supplied every single scene: a heat-record Reel ran nine Amsterdam canal
+    clips in a row because "dutch canal summer heat" was asked first. The first
+    query still leads — it supplies the cover — it just no longer wins the whole
+    Reel, which is where visual variety comes from within a single run.
     """
-    pooled: List[dict] = []
+    per_query: List[List[dict]] = []
     for query in queries:
         logger.info(f"🔍 Searching Pexels videos for: '{query}'")
         videos = _pexels_video_search(
@@ -229,6 +254,7 @@ def _search_pool(api_key: str, queries: List[str], seen_ids: Set[int]) -> List[d
         )
         if len(videos) < PEXELS_PER_PAGE // 2:
             videos = videos + _pexels_video_search(api_key, query, per_page=PEXELS_PER_PAGE)
+        bucket: List[dict] = []
         for v in videos:
             vid = v.get("id")
             if vid is not None and vid in seen_ids:
@@ -236,7 +262,14 @@ def _search_pool(api_key: str, queries: List[str], seen_ids: Set[int]) -> List[d
             if vid is not None:
                 seen_ids.add(vid)
             v.setdefault("_query", query)
-            pooled.append(v)
+            bucket.append(v)
+        per_query.append(bucket)
+
+    pooled: List[dict] = []
+    for rank in range(max((len(b) for b in per_query), default=0)):
+        for bucket in per_query:
+            if rank < len(bucket):
+                pooled.append(bucket[rank])
     return pooled
 
 
@@ -322,8 +355,17 @@ def _download_pool(
 
 
 def _audit(audit_out: Optional[List[dict]], video: dict, reason: str, ok: bool) -> None:
-    """Record one candidate decision, capped so posts_*.json stays small."""
-    if audit_out is None or len(audit_out) >= AUDIT_LIMIT:
+    """Record one candidate decision, capped so posts_*.json stays small.
+
+    Accepted and rejected clips get **separate** budgets. With one shared cap a
+    heavily-filtered run spent it all on rejections and recorded none of the
+    clips that actually shipped, so the audit read ``used=0`` for a Reel with
+    nine clips in it — silent precisely when the trail was needed.
+    """
+    if audit_out is None:
+        return
+    limit = AUDIT_USED_LIMIT if ok else AUDIT_REJECT_LIMIT
+    if sum(1 for a in audit_out if a.get("ok") is ok) >= limit:
         return
     audit_out.append({
         "pexels_id": video.get("id"),

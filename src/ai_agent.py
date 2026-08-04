@@ -98,25 +98,36 @@ Pexels never returns nothing — it returns the closest visual match from
 anywhere on earth. Asking for a small Dutch town therefore guarantees footage
 of a DIFFERENT town, which viewers correctly read as fake.
 
-You MAY write "netherlands" or "dutch" only when the story is national in
-scope, or when the subject looks unmistakably Dutch anywhere in the country
-(dutch canal, dutch farmland, dutch motorway, dutch police car).
+At least 2 of the 5 queries MUST carry a national Dutch anchor — the word
+"dutch" or "netherlands" attached to a generic subject (dutch canal, dutch
+farmland, dutch motorway, dutch police car, dutch cycling path). This is a
+promise about the COUNTRY, never a claim about a town, so it is always safe,
+and it is what stops the Reel from looking like it was shot anywhere on earth.
 You MAY name a foreign country only when the story is about that country.
 
 STEP 3 — Make every query non-identifiable and subject-focused.
-Describe the THING the story is about, seen close, not the place it sits in.
+Describe the THING the story is about, not the place it sits in.
   Prefer: close up, detail, interior, hands, machinery, equipment, texture,
           low water line, empty berth, crane hook, barge deck, control room.
   Forbid: skyline, aerial, drone, panorama, cityscape, establishing shot,
           landmark, monument, city square, town centre, street signage.
+A wide shot is fine as long as nobody could name the place from it — a polder,
+flat farmland, a canal or a motorway names no town.
+
+Every query must describe the story's actual SUBJECT. Never reach for a
+decorative stand-in that merely shares a word with it: a heath fire is not a
+fireplace, a match or a campfire. Avoid "cozy", "serene", "rustic" and other
+stock set-dressing words — they return staged studio footage.
 2-4 words per query. Concrete visual nouns. English only.
-Queries 4 and 5 must be the most generic, place-free version of the theme so
-they are safe fallbacks (e.g. "river barge closeup", "low water river").
+Queries 4 and 5 must be the most generic version of the theme so they are safe
+fallbacks (e.g. "river barge closeup", "low water river").
 
 STEP 4 — "avoid": 3-5 English visual concepts that must NOT appear.
 When place_type is "city" or "region", always include "recognisable skyline"
-and "named landmark". Add wrong weather, wrong season, wrong country,
-unrelated celebration as relevant.
+and "named landmark". Always include "indoor or decorative setting" and
+"mountains or rocky terrain" — the Netherlands is flat, and an indoor scene
+never depicts an outdoor news event. Add wrong weather, wrong season, wrong
+country, unrelated celebration as relevant.
 
 Return ONLY valid JSON:
 {{"place": "...", "place_type": "city|region|country|none",
@@ -559,11 +570,24 @@ class NewsAIAgent:
     ) -> List[bool]:
         """Check each thumbnail with Haiku vision. True = usable, False = skip.
 
-        For place-specific stories (``place_mode == "no_stock"``) the question is
-        **not** "is this Deventer?" — no model can answer that from a thumbnail.
-        It is "would a viewer be able to name the place in this image?", an
-        identifiability judgement a vision model makes reliably. Anything that
-        claims a location we can't verify is rejected.
+        **One** set of criteria for every place mode. The split that used to
+        live here — a "can a viewer name this place?" block for ``no_stock`` and
+        a "plausibly related" block for everything else — is why a heatwave Reel
+        shipped cosy-fireplace clips: the relevance question existed in only one
+        branch and the identifiability question in the other, so a decorative
+        indoor fire passed both ways. A single block cannot drift like that.
+
+        The four tests, all mandatory:
+          1. subject   — does the image show what the story is ABOUT?
+          2. place     — does it claim a location we cannot verify? (*place* is
+             named when we may show it, so "wrong airport" stays checkable)
+          3. terrain   — could this be the Netherlands at all?
+          4. avoid     — the story's own *avoid_terms*.
+
+        Generic-but-unmistakably-Dutch **wide** shots pass on purpose: a polder,
+        a canal, flat farmland or a motorway names no town, so it fails none of
+        the tests above while being the only thing that keeps the account
+        looking Dutch.
 
         Batches up to 15 thumbnails in a single call. Falls back to all-True on
         API error; *details_out* records that so the audit trail shows it.
@@ -575,43 +599,44 @@ class NewsAIAgent:
         avoid_str = ", ".join(avoid_terms) if avoid_terms else "none"
         n = len(batch)
 
-        if place_mode == "no_stock":
-            criteria = (
-                "This news story is about one specific place. We do NOT have footage of "
-                "it, so the footage must not CLAIM to be anywhere in particular.\n"
-                "Judge only one thing: could a viewer name the place in this image?\n"
-                "FAIL if the image shows any of:\n"
-                "- a recognisable city skyline, harbour panorama or aerial cityscape\n"
-                "- a landmark, monument, bridge or building a viewer could name\n"
-                "- readable signage, shop or street names, or number plates\n"
-                "- text in any language, or a flag\n"
-                "- an unmistakably foreign setting (palm trees, desert, mountains, "
-                "tropical sea, US or Asian architecture) — the story is in the Netherlands\n"
-                "- weather or season that contradicts the story (e.g. blooming summer "
-                "fields for a frost story, snow for a heatwave)\n"
-                f"FAIL also if it shows: {avoid_str}\n"
-                "PASS only if the image is a close, generic view of the subject that "
-                "could have been shot anywhere: machinery, water, hands, equipment, "
-                "interiors, textures.\n"
-                "When in doubt, FAIL."
+        # Naming the place makes the wrong-location check concrete: "schiphol
+        # airport" queries happily return Kansai, and a generic "wrong country
+        # or landmark" instruction let that through. With no nameable place
+        # (no_stock/none) any identifiable location is wrong by definition.
+        if place_mode == "stock_ok" and place:
+            place_rule = (
+                f"This story is in {place}, so footage of {place} is fine. FAIL if the "
+                "image is identifiable as a DIFFERENT place: another city's skyline, "
+                "another airport or port, a landmark or setting a viewer could name."
             )
         else:
-            # A named place makes the wrong-location check concrete: "schiphol
-            # airport" queries happily return Kansai, and a generic "wrong
-            # country or landmark" instruction let that through.
-            place_line = (
-                f"The story is located in {place}. FAIL if the image clearly shows a "
-                "different recognisable location (a landmark or setting a viewer "
-                "could place elsewhere).\n"
-            ) if place else ""
-            criteria = (
-                f"Do NOT use footage showing: {avoid_str}\n"
-                f"{place_line}"
-                "FAIL if the image shows: wrong weather (e.g. snow for rain story), "
-                "wrong season, wrong country or landmark, unrelated celebration or "
-                "event, or anything that contradicts the news story.\n"
-                "PASS if the image is plausibly related or generic enough to work."
+            place_rule = (
+                "We do NOT have verified footage of where this story happened, so the "
+                "footage must not claim to be anywhere in particular. FAIL if a viewer "
+                "could name the place: a recognisable city skyline, harbour panorama or "
+                "aerial cityscape; a landmark, monument, bridge or building; readable "
+                "signage, shop or street names, or number plates; a flag."
             )
+
+        criteria = (
+            "Judge each image on FOUR tests. Any single failure means FAIL.\n\n"
+            "1. SUBJECT — does the image plausibly show what this story is ABOUT?\n"
+            "   FAIL decorative or staged stand-ins that merely share a word with the "
+            "story: a fireplace, candle, match or campfire for a wildfire story; a "
+            "studio set-up; cosy or 'serene' stock set dressing. An outdoor news event "
+            "needs outdoor footage of that event, not a domestic scene.\n"
+            f"2. PLACE — {place_rule}\n"
+            "3. TERRAIN — could this be the Netherlands? The country is flat and has no "
+            "mountains, rocky river gorges, cliffs, canyons, deserts, tropical "
+            "vegetation or alpine forest. FAIL those, and FAIL weather or season that "
+            "contradicts the story (blooming spring fields for a drought, snow for a "
+            "heatwave).\n"
+            f"4. AVOID — FAIL if the image shows: {avoid_str}\n\n"
+            "PASS everything else, including wide shots that are generically Dutch "
+            "without naming a town: canals, polders, flat farmland, motorways, cycle "
+            "paths, rows of terraced houses. Those are what makes the Reel read as "
+            "Dutch news — do not fail them for being wide."
+        )
 
         content: List[dict] = [
             {
