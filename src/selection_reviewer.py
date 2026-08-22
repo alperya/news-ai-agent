@@ -35,6 +35,7 @@ _REGION = os.environ.get("AWS_REGION", "eu-central-1")
 _RESULTS_BUCKET = os.environ.get("RESULTS_BUCKET", "news-ai-agent-results-645949963620")
 _METRICS_TABLE = os.environ.get("METRICS_TABLE", "news-ai-agent-post-metrics")
 
+
 # Most advanced Claude model — review quality matters more than cost here (run
 # once a week). Overridable so the id can be bumped without a code change.
 _REVIEW_MODEL = os.environ.get("SELECTION_REVIEW_MODEL", "claude-opus-5")
@@ -64,6 +65,14 @@ _REVIEW_SYSTEM = (
 )
 
 _FILENAME_TS = re.compile(r"_(\d{8}_\d{6})\.json$")
+
+
+def _as_float(value) -> float:
+    """DynamoDB stores these metrics as strings; a missing one must not raise."""
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 class SelectionReviewer:
@@ -172,6 +181,7 @@ class SelectionReviewer:
                 "slot": post.get("slot", ""),
                 "topic": post.get("topic", ""),
                 "personal_stake": post.get("personal_stake"),
+                "share_potential": post.get("share_potential"),
                 "series": post.get("series", ""),
                 "chosen_title": post.get("original_title", ""),
                 "selection_reason": post.get("selection_reason", ""),
@@ -222,11 +232,24 @@ class SelectionReviewer:
                 # Fallback: closest metric within ~6h of the run timestamp
                 best = self._nearest_by_time(run["when"], metrics)
             if best is not None:
+                # `shares` and `reach_amplification` are load-bearing, not extra
+                # detail: on this account shares track reach at Spearman 0.86
+                # and every breakout post broke out on shares. A review that
+                # cannot see them optimises for saves by default — which is
+                # exactly how a previous round of these recommendations halved
+                # the median share rate and flattened follower growth.
+                shares = _as_float(best.get("shares"))
+                reach = _as_float(best.get("reach"))
                 run["engagement"] = {
                     "normalized_engagement_rate": best.get("normalized_engagement_rate"),
                     "reach": best.get("reach"),
+                    "shares": best.get("shares"),
+                    "shares_per_1k_reach": round(shares / reach * 1000, 1) if reach else None,
                     "saves": best.get("saves"),
                     "comments": best.get("comments"),
+                    "likes": best.get("likes"),
+                    "video_views": best.get("video_views"),
+                    "reach_amplification": best.get("reach_amplification"),
                     "post_type": best.get("post_type"),
                 }
 
@@ -257,6 +280,7 @@ class SelectionReviewer:
                 "chosen": r["chosen_title"],
                 "topic": r.get("topic", ""),
                 "personal_stake": r.get("personal_stake"),
+                "share_potential": r.get("share_potential"),
                 "series": r.get("series", ""),
                 "selection_reason": r["selection_reason"],
                 "runner_ups": r["runner_ups"],
@@ -277,10 +301,28 @@ class SelectionReviewer:
             "saves — 'what changes for you today') or evening (19:00 AMS, optimised "
             "for shares/comments — biggest national story). `personal_stake` is the "
             "0-3 score for how directly the story affects the viewer's money, "
-            "commute, safety or calendar. `excluded_from_pool` lists articles a "
+            "commute, safety or calendar, and `share_potential` is the 0-3 score "
+            "for why someone would send the post to another person. "
+            "`excluded_from_pool` lists articles a "
             "code-level filter removed before the AI saw them (recurring non-story "
             "formats, collapsed near-duplicates) — flag any that look wrongly "
             "excluded.\n\n"
+            "MEASURED FACTS ABOUT THIS ACCOUNT — reason from these, not from "
+            "general social-media advice:\n"
+            "- Across 123 Reels, reach correlates with shares at Spearman 0.86. "
+            "Every post that broke past 8,000 reach broke out on shares (the two "
+            "biggest: 43k reach / 1,709 shares and 55k reach / 1,608 shares).\n"
+            "- Follower growth comes from the OUTLIERS, not the median post. A "
+            "fortnight with a healthy median and no breakout adds roughly half the "
+            "followers of one with a breakout.\n"
+            "- The lever metric is therefore `engagement.shares_per_1k_reach`. A "
+            "previous round of these recommendations optimised for saves instead; "
+            "the median share rate halved (9.8 → 5.2 per 1k), breakouts went from "
+            "8-in-41 posts to 0-in-37, and weekly follower growth fell from +266 to "
+            "+107. Saves stayed flat throughout, so saves did not warn anyone.\n"
+            "- Judge every recommendation you make against shares per 1k reach and "
+            "`reach_amplification` FIRST, saves and ER second. If a suggestion would "
+            "raise saves while lowering shareability, say so and drop it.\n\n"
             f"{json.dumps(digest, ensure_ascii=False, indent=2)}\n\n"
             "Write a concise review (plain text, no markdown headers) covering:\n"
             "1. OVERALL: how strong were this week's picks for FAST follower growth "

@@ -79,6 +79,31 @@ def test_parse_back_compat_without_new_fields(agent):
     assert posts[0].selection_reason == ""
     assert posts[0].runner_ups == []
     assert posts[0].to_dict()["runner_ups"] == []
+    # The live prompt sits in Secrets Manager and is edited without a deploy, so
+    # code must never REQUIRE a prompt field — only default it.
+    assert posts[0].share_potential == 0
+    assert posts[0].to_dict()["share_potential"] == 0
+
+
+def test_parse_reads_both_ranking_axes(agent):
+    """Reach on this account tracks shares, so the share score has to survive
+    the round trip into posts_*.json where the weekly review reads it."""
+    raw = json.dumps({
+        "selected_articles": [{
+            "article_index": 1,
+            "hook": "A storm flattens an icon",
+            "content": "text",
+            "emoji": "🌪️",
+            "hashtags": ["#Netherlands"],
+            "personal_stake": 2,
+            "share_potential": 3,
+            "selection_reason": "Tier 1a — save 2 + share 3 is the pool's best total.",
+        }],
+    })
+    p = agent._parse_batch_response(raw, _ARTICLES, "instagram")[0]
+    assert (p.personal_stake, p.share_potential) == (2, 3)
+    d = p.to_dict()
+    assert (d["personal_stake"], d["share_potential"]) == (2, 3)
 
 
 # ── 3. Malformed runner_ups type is tolerated ────────────────────────────────
@@ -140,11 +165,50 @@ def test_attach_engagement_matches_by_caption(reviewer):
         "caption_preview": "🏊 Marrit Steenbergen has broken the world record in the 100-meter freestyle. The reigning",
         "normalized_engagement_rate": "1.23",
         "reach": "5000", "saves": "40", "comments": "8", "post_type": "reel",
+        "shares": "60", "likes": "150", "video_views": "6200",
+        "reach_amplification": "0.81",
         "published_at": "2026-06-27T20:50:00+00:00",
     }]
     reviewer._attach_engagement(runs, metrics)
     assert runs[0]["engagement"] is not None
     assert runs[0]["engagement"]["normalized_engagement_rate"] == "1.23"
+
+
+def test_review_sees_shares_the_metric_that_predicts_reach(reviewer):
+    """A review that cannot see shares optimises for saves by default — which is
+    how the previous round of recommendations halved the median share rate."""
+    runs = [{
+        "when": __import__("datetime").datetime(2026, 6, 27, 20, 41,
+                                                tzinfo=__import__("datetime").timezone.utc),
+        "content": "Marrit Steenbergen has broken the world record",
+        "full_post": "🏊 Marrit Steenbergen has broken the world record ...",
+        "engagement": None,
+    }]
+    metrics = [{
+        "caption_preview": "🏊 Marrit Steenbergen has broken the world record",
+        "reach": "5000", "shares": "60", "saves": "40", "comments": "8",
+        "likes": "150", "video_views": "6200", "reach_amplification": "0.81",
+        "normalized_engagement_rate": "1.23", "post_type": "reel",
+        "published_at": "2026-06-27T20:50:00+00:00",
+    }]
+    reviewer._attach_engagement(runs, metrics)
+    eng = runs[0]["engagement"]
+    assert eng["shares"] == "60"
+    assert eng["shares_per_1k_reach"] == 12.0  # 60 / 5000 * 1000
+    assert eng["reach_amplification"] == "0.81"
+
+
+def test_shares_per_1k_survives_missing_metrics(reviewer):
+    """Immature or partial metrics must not raise inside the weekly Lambda."""
+    runs = [{
+        "when": __import__("datetime").datetime(2026, 6, 27, 20, 41,
+                                                tzinfo=__import__("datetime").timezone.utc),
+        "content": "x", "full_post": "x", "engagement": None,
+    }]
+    reviewer._attach_engagement(runs, [{
+        "caption_preview": "x", "published_at": "2026-06-27T20:50:00+00:00",
+    }])
+    assert runs[0]["engagement"]["shares_per_1k_reach"] is None
 
 
 # ── 6. SelectionReviewer: email renders chosen + runner-ups ───────────────────

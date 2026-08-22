@@ -165,7 +165,13 @@ class SocialMediaPost:
     # Editorial-transparency fields (filled from the batch-selection response).
     # Why the AI chose this article and the strongest candidates it passed over.
     selection_reason: str = ""
+    # The two ranking axes. `personal_stake` is the SAVE score (why someone keeps
+    # the post); `share_potential` is the SHARE score (why someone sends it on).
+    # Both default to 0 so the pipeline still runs against a prompt version that
+    # predates either field — the live prompt lives in Secrets Manager and is
+    # edited without a deploy, so code must never *require* a prompt field.
     personal_stake: int = 0
+    share_potential: int = 0
     runner_ups: List[Dict] = field(default_factory=list)
     _corrected: bool = field(default=False, init=False, repr=False)
 
@@ -186,6 +192,7 @@ class SocialMediaPost:
             'series': self.series,
             'selection_reason': self.selection_reason,
             'personal_stake': self.personal_stake,
+            'share_potential': self.share_potential,
             'runner_ups': self.runner_ups,
         }
 
@@ -1091,6 +1098,7 @@ ARTICLE {i}:
                     series=series,
                     selection_reason=selected.get('selection_reason', ''),
                     personal_stake=_as_int(selected.get('personal_stake'), 0),
+                    share_potential=_as_int(selected.get('share_potential'), 0),
                     runner_ups=runner_ups,
                 )
                 posts.append(post)
@@ -1110,6 +1118,7 @@ ARTICLE {i}:
                             "title": p.original_title,
                             "selection_reason": p.selection_reason,
                             "personal_stake": p.personal_stake,
+                            "share_potential": p.share_potential,
                             "series": p.series,
                         }
                         for p in posts

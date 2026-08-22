@@ -7,14 +7,34 @@ Below are {article_count} news articles. Select the MOST INTERESTING, MOST IMPOR
 >> If {max_posts} = 1, select ONLY 1 article
 >> Never return more than {max_posts} article(s)!
 
-STEP 1 — PERSONAL STAKE SCORE (score EVERY candidate first, 0–3):
+STEP 1 — SCORE EVERY CANDIDATE ON TWO AXES FIRST.
+A post travels two different ways and they need different stories. Score both.
+
+1a. SAVE SCORE (0–3) — why someone keeps it.
 Award 1 point for each of these that is true for an ordinary person in the Netherlands:
    • it costs them money (a price, a bill, a tax, a fee, a fine)
    • it changes their travel or commute (strike, closure, cancellation, roadworks)
    • it threatens safety on their own street (not a distant incident)
    • it sets a DATE they must remember (a strike day, a deadline, a rule taking effect)
-Personal stake is weighted AT LEAST AS HEAVILY as visual potential.
+Save score is weighted AT LEAST AS HEAVILY as visual potential.
 >> Any story scoring 3 OUTRANKS a Tier 2e local incident regardless of footage quality.
+
+1b. SHARE SCORE (0–3) — why someone sends it to another person.
+Award 1 point for each:
+   • ANOMALY OR RECORD — "first time ever", "never happened before", "highest/lowest
+     on record", a number a Dutch person would refuse to believe
+   • NATIONALLY RECOGNISED name or moment — a person, club, brand or event the whole
+     country knows (Verstappen, Ajax, the royal family, the Zandvoort GP weekend,
+     Koningsdag), or a national institution in trouble
+   • A REACTION SOMEONE WANTS TO VOICE — unfairness, outrage, pride, or absurdity
+     that makes a viewer want to say something about it
+   • A "LOOK AT THIS" IMAGE — one frame worth sending on its own
+
+>> RANK BY THE SUM: save score + share score. The two axes carry equal weight.
+>> A story scoring 0 on BOTH axes is NEVER selected, even if it is the only Tier 1
+   story left in the pool. A dutiful post nobody saves and nobody sends is worse
+   than a lesser story that does one of the two.
+>> A high share score does not excuse a story that is not about the Netherlands.
 
 STEP 2 — TIER (apply after scoring):
 1. ⭐ NETHERLANDS-FOCUSED: News directly related to the Netherlands gets HIGHEST PRIORITY.
@@ -41,8 +61,10 @@ STEP 2 — TIER (apply after scoring):
         • national in scale (multi-province, terrorism, explosives, mass evacuation), OR
         • in the G4 (Amsterdam, Rotterdam, The Hague, Utrecht), OR
         • involves a national symbol or institution (Dam monument, Binnenhof, Schiphol).
-      A single-location fire or accident WITHOUT fatalities does NOT clear the floor
-      and is automatically demoted BELOW Tier 1b.
+      A single-location fire or accident WITHOUT fatalities that ALSO scores below 2
+      on SHARE SCORE is demoted BELOW Tier 1b. A local incident with a share score of
+      2 or more keeps its tier: an incident people talk about travels regardless of
+      how many postcodes it touches.
    f) Dutch performance or controversy on the international stage
 
    🥉 TIER 3 — STANDARD (select when Tier 1 and Tier 2 are not available):
@@ -51,18 +73,22 @@ STEP 2 — TIER (apply after scoring):
 2. 🇪🇺 EUROPE: EU/European-wide topics
 3. 🌍 GLOBAL: Other interesting news
 
-⏰ TIEBREAKER (within same tier): the story with A DATE THE VIEWER CAN ACT ON wins.
-   A dated future disruption (a strike three weeks out, a closure from the 11th to the
-   20th, a rule taking effect next month) is the STRONGEST category — the viewer saves
-   it to remember it. Do NOT demote a story for "not happening today": a future date
-   the viewer must plan around beats an event that is already over.
-   Direct disruption to daily routine beats abstract policy debates.
+⏰ TIEBREAKER (within the same tier and the same total score) — decided by the SLOT:
+   • MORNING slot (09:00): the story with A DATE THE VIEWER CAN ACT ON wins, then the
+     higher SAVE score. A dated future disruption (a strike three weeks out, a closure
+     from the 11th to the 20th, a rule taking effect next month) is the strongest
+     category here — the viewer saves it to remember it. Do NOT demote a story for
+     "not happening today": a future date the viewer must plan around beats an event
+     that is already over. Direct disruption to daily routine beats abstract policy.
+   • EVENING slot (19:00): the higher SHARE score wins. This slot is judged on how
+     far the post travels, and a dutiful dated notice does not travel.
+   The brief at the top of this prompt names which slot you are writing for.
 
 🎥 VISUAL POTENTIAL (these posts are published as Reels — footage drives watch time):
-   Within the same tier AND the same personal-stake score, PREFER stories with strong,
+   Within the same tier AND the same total score, PREFER stories with strong,
    concrete visuals that map to compelling stock footage: weather/storms, fire, flooding,
    crowds, transport hubs (Schiphol, train stations), protests, landmarks, sport.
-   Visual potential is a TIEBREAKER, never a veto: it must not outweigh personal stake.
+   Visual potential is a TIEBREAKER, never a veto: it must not outweigh the two scores.
 
 ARTICLES:
 {articles_text}
@@ -121,11 +147,12 @@ Examples:
 Check every word for correct English!
 
 SELECTION TRANSPARENCY (for editorial review — does NOT change how many you select):
-- For each selected article, add a "selection_reason": 1-2 sentences naming the TIER (e.g. "Tier 1a") and why it beat the alternatives.
-- For each selected article, add "personal_stake": the 0–3 integer scored in STEP 1.
-- Also return "runner_ups": the next strongest candidates you did NOT select, ranked best-first, so that selected + runner_ups together cover the TOP 7 articles in the pool (i.e. up to 6 runner_ups; fewer if the pool has fewer than 7 articles). For each: "title" (the article title), "tier" (e.g. "Tier 1a", "Tier 1d", "Tier 3"), "personal_stake" (0–3), and "reason_not_selected" (1 sentence — why it lost to the chosen article or was de-prioritized).
+- For each selected article, add a "selection_reason": 1-2 sentences naming the TIER (e.g. "Tier 1a"), both scores, and why it beat the alternatives.
+- For each selected article, add "personal_stake": the 0–3 SAVE score from STEP 1a.
+- For each selected article, add "share_potential": the 0–3 SHARE score from STEP 1b.
+- Also return "runner_ups": the next strongest candidates you did NOT select, ranked best-first, so that selected + runner_ups together cover the TOP 7 articles in the pool (i.e. up to 6 runner_ups; fewer if the pool has fewer than 7 articles). For each: "title" (the article title), "tier" (e.g. "Tier 1a", "Tier 1d", "Tier 3"), "personal_stake" (0–3), "share_potential" (0–3), and "reason_not_selected" (1 sentence — why it lost to the chosen article or was de-prioritized).
 
 Respond in JSON format (use double curly braces):
-{{"selected_articles": [{{"article_index": 1, "hook": "8-12 word attention hook sentence", "content": "text (75-95 words)", "emoji": "emoji", "hashtags": ["#tag1"], "cta_question": "Will you stop on 9 September?", "save_prompt": "Save this for that day.", "series": "Wat Verandert Er Vandaag", "personal_stake": 3, "selection_reason": "Tier 1b — nationwide strike with a date viewers must plan around, personal stake 3."}}], "runner_ups": [{{"title": "exact article title", "tier": "Tier 1a", "personal_stake": 1, "reason_not_selected": "Same tier but no date to act on and lower personal stake."}}]}}
+{{"selected_articles": [{{"article_index": 1, "hook": "8-12 word attention hook sentence", "content": "text (75-95 words)", "emoji": "emoji", "hashtags": ["#tag1"], "cta_question": "Will you stop on 9 September?", "save_prompt": "Save this for that day.", "series": "Wat Verandert Er Vandaag", "personal_stake": 3, "share_potential": 2, "selection_reason": "Tier 1b — nationwide strike with a date viewers must plan around; save 3 + share 2 is the highest total in the pool."}}], "runner_ups": [{{"title": "exact article title", "tier": "Tier 1a", "personal_stake": 1, "share_potential": 1, "reason_not_selected": "Same tier but a lower total: no date to act on and nothing anyone would pass along."}}]}}
 
 IMPORTANT: RESPONSE MUST CONTAIN EXACTLY {max_posts} ARTICLE(S) in "selected_articles"! (runner_ups is separate and does not count toward this.)

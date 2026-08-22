@@ -180,6 +180,107 @@ def test_crime_cap_is_read_at_call_time_not_import_time(lh):
         assert "cap 30%" in lh.build_content_mix_brief(topics)
 
 
+def _series(*triples):
+    """(topic, days_ago, series) → the 3-tuple get_published_urls now returns."""
+    now = datetime.now(timezone.utc)
+    return [(t, now - timedelta(days=d), s) for t, d, s in triples]
+
+
+def test_topic_saturation_fires_on_the_measured_regression(lh):
+    """Weather reached 30% of a fortnight's output while median reach halved.
+
+    The crime cap was the only cap that existed, so it pointed at the one
+    category that was already shrinking.
+    """
+    brief = lh.build_content_mix_brief(_topics(
+        ("Weather", 6), ("Weather", 5), ("Weather", 4),
+        ("Weather", 3), ("Transport", 2), ("Economy", 1),
+    ))  # Weather 4/6 = 67%
+    assert "TOPIC SATURATED: Weather" in brief
+    assert "national emergency" in brief
+
+
+def test_topic_saturation_silent_on_a_healthy_mix(lh):
+    brief = lh.build_content_mix_brief(_topics(
+        ("Weather", 5), ("Transport", 4), ("Economy", 3),
+        ("Politics/Policy", 2), ("Society/Royal", 1),
+    ))  # every topic 20%
+    assert "TOPIC SATURATED" not in brief
+
+
+def test_topic_saturation_leaves_crime_to_the_crime_cap(lh):
+    """One category, one message — crime has its own line with its own rules."""
+    brief = lh.build_content_mix_brief(_topics(
+        ("Crime/Security", 3), ("Crime/Security", 2), ("Weather", 1),
+    ))
+    assert "CRIME CAP REACHED" in brief
+    assert "TOPIC SATURATED" not in brief
+
+
+def test_series_exhausted_after_consecutive_days(lh):
+    """'Nederland Droogt Uit' ran 13 posts across 14 days. Days, not posts:
+    the account publishes twice daily, and fatigue is felt in days."""
+    brief = lh.build_content_mix_brief(_series(
+        ("Weather", 0, "Nederland Droogt Uit"),
+        ("Weather", 1, "Nederland Droogt Uit"),
+        ("Weather", 2, "Nederland Droogt Uit"),
+        ("Weather", 3, "Nederland Droogt Uit"),
+        ("Transport", 4, ""),
+    ))
+    assert "SERIES EXHAUSTED: 'Nederland Droogt Uit'" in brief
+    assert "4 day(s) in a row" in brief
+
+
+def test_series_run_must_reach_today(lh):
+    """A series that stopped yesterday is not exhausted — it is available again."""
+    brief = lh.build_content_mix_brief(_series(
+        ("Weather", 1, "Nederland Droogt Uit"),
+        ("Weather", 2, "Nederland Droogt Uit"),
+        ("Weather", 3, "Nederland Droogt Uit"),
+        ("Weather", 4, "Nederland Droogt Uit"),
+        ("Transport", 0, ""),
+    ))
+    assert "SERIES EXHAUSTED" not in brief
+
+
+def test_two_tuple_history_still_works(lh):
+    """Histories written before the series field existed must not raise."""
+    brief = lh.build_content_mix_brief(_topics(("Weather", 1), ("Transport", 0)))
+    assert "CONTENT MIX" in brief
+    assert "SERIES EXHAUSTED" not in brief
+
+
+def test_one_post_is_never_saturation(lh):
+    """In a thin window a single post is 33%. One post is not a story arc."""
+    brief = lh.build_content_mix_brief(_topics(
+        ("Weather", 2), ("Transport", 1), ("Economy", 0),
+    ))
+    assert "TOPIC SATURATED" not in brief
+
+
+def test_saturation_thresholds_are_read_at_call_time(lh):
+    """Same reason as the crime cap: get_secrets() fills os.environ after import."""
+    topics = _topics(("Weather", 5), ("Weather", 4), ("Weather", 3),
+                     ("Transport", 2), ("Economy", 1), ("Health", 0))  # Weather 50%
+    with patch.dict(os.environ, {"TOPIC_SHARE_CAP": "0.60"}):
+        assert "TOPIC SATURATED" not in lh.build_content_mix_brief(topics)
+    with patch.dict(os.environ, {"TOPIC_SHARE_CAP": "0.40"}):
+        assert "TOPIC SATURATED" in lh.build_content_mix_brief(topics)
+
+    run = _series(*[("Weather", d, "Nederland Droogt Uit") for d in range(3)])
+    with patch.dict(os.environ, {"SERIES_MAX_DAYS": "5"}):
+        assert "SERIES EXHAUSTED" not in lh.build_content_mix_brief(run)
+    with patch.dict(os.environ, {"SERIES_MAX_DAYS": "3"}):
+        assert "SERIES EXHAUSTED" in lh.build_content_mix_brief(run)
+
+
+def test_saturation_tunables_are_reachable_from_secrets_manager(lh):
+    """A threshold get_secrets() does not copy out is unreachable from the secret."""
+    import inspect
+    src = inspect.getsource(lh.get_secrets)
+    assert "TOPIC_SHARE_CAP" in src and "SERIES_MAX_DAYS" in src
+
+
 def test_topic_classifier_is_shared_with_analytics(lh):
     from metrics_collector import MetricsCollector
     caption = "Police raided a warehouse in Rotterdam after an explosion"

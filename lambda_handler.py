@@ -162,7 +162,8 @@ def get_secrets():
         os.environ['PUBLISH_DROUGHT_HOURS'] = secret['PUBLISH_DROUGHT_HOURS']
     # Rolling content-mix window + crime cap — also read at call time, so the
     # editorial balance can be retuned from the secret without a redeploy.
-    for key in ('CONTENT_MIX_WINDOW_DAYS', 'VIOLENCE_SHARE_CAP'):
+    for key in ('CONTENT_MIX_WINDOW_DAYS', 'VIOLENCE_SHARE_CAP',
+                'TOPIC_SHARE_CAP', 'SERIES_MAX_DAYS'):
         if key in secret:
             os.environ[key] = secret[key]
     # Connected Facebook Page — when set, the Story is cross-posted to FB
@@ -236,7 +237,24 @@ FOOTAGE_REUSE_WINDOW_DAYS = int(os.environ.get('FOOTAGE_REUSE_WINDOW_DAYS', '30'
 #     Above it the prompt stands down unless the story is national in scale:
 #     YouTube ad suitability degrades on a heavy violence diet, and a
 #     sponsorable account needs a category mix, not a crime feed.
-_CONTENT_MIX_DEFAULTS = {'CONTENT_MIX_WINDOW_DAYS': '7', 'VIOLENCE_SHARE_CAP': '0.40'}
+#   TOPIC_SHARE_CAP — max share of the window ANY single topic may hold.
+#     The violence cap alone left every other category uncapped, and the brake
+#     sat on the one high-variance category: Weather went from 10% to 30% of
+#     output while the drought serial ran 13 posts in 14 days and median reach
+#     halved. A cap that only points one way is not a mix constraint.
+#   SERIES_MAX_DAYS — how many consecutive days one named series may run.
+_CONTENT_MIX_DEFAULTS = {
+    'CONTENT_MIX_WINDOW_DAYS': '7',
+    'VIOLENCE_SHARE_CAP': '0.40',
+    'TOPIC_SHARE_CAP': '0.30',
+    'SERIES_MAX_DAYS': '4',
+}
+
+# A share alone cannot declare saturation: in a thin window (a fresh bucket, a
+# pruned history) one post is 33%. A topic must actually recur before the brief
+# tells the model to stand down. Not a secret tunable — it is a statistical
+# floor, not a policy dial, and the same reasoning as viral_guard's baseline.
+_MIN_SATURATION_POSTS = 3
 
 
 def _mix_tunable(name, cast):
@@ -266,16 +284,26 @@ def build_content_mix_brief(recent_topics, now=None):
     The arithmetic is done here rather than left to the model: asking Claude to
     remember a week of its own output is exactly the kind of rule an LLM drops
     silently. The code states the fact; the model decides the exception.
+
+    *recent_topics* entries are ``(topic, datetime)`` or ``(topic, datetime,
+    series)``; the third element is optional so histories written before the
+    series cap existed still work.
     """
     now = now or datetime.now(timezone.utc)
     window_days = _mix_tunable('CONTENT_MIX_WINDOW_DAYS', int)
     cap = _mix_tunable('VIOLENCE_SHARE_CAP', float)
+    topic_cap = _mix_tunable('TOPIC_SHARE_CAP', float)
+    series_max_days = _mix_tunable('SERIES_MAX_DAYS', int)
     total = len(recent_topics)
     if not total:
         return ""
 
+    entries = [
+        (e[0], e[1], e[2] if len(e) > 2 else '') for e in recent_topics
+    ]
+
     counts = {}
-    for topic, _ in recent_topics:
+    for topic, _, _s in entries:
         counts[topic] = counts.get(topic, 0) + 1
 
     distribution = ', '.join(
@@ -287,7 +315,7 @@ def build_content_mix_brief(recent_topics, now=None):
     violence_share = violence_count / total
     violence_today = any(
         topic in VIOLENCE_TOPICS and dt.date() == now.date()
-        for topic, dt in recent_topics
+        for topic, dt, _s in entries
     )
 
     lines = [
@@ -309,7 +337,58 @@ def build_content_mix_brief(recent_topics, now=None):
             "violence stories in one day — select a different category."
         )
 
+    # Saturation: any topic, not just crime. Measured on a live regression —
+    # Weather reached 30% of a fortnight's output and median reach halved, while
+    # the crime cap (the only one that existed) was pointing the other way.
+    # The absolute floor matters as much as the share: in a thin window a single
+    # post is 33%, and one post is not a story arc anyone is tired of.
+    for topic, n in sorted(counts.items(), key=lambda kv: -kv[1]):
+        share = n / total
+        if (topic not in VIOLENCE_TOPICS
+                and n >= _MIN_SATURATION_POSTS and share > topic_cap):
+            lines.append(
+                f"⛔ TOPIC SATURATED: {topic} is {share:.0%} of the last {window_days} "
+                f"days ({n} of {total} posts, cap {topic_cap:.0%}). Viewers have seen "
+                f"this story arc. Select a DIFFERENT category unless this is a genuine "
+                f"national emergency with a new hard number."
+            )
+            break
+
+    run_series, run_days = _longest_series_run(entries, now)
+    if run_series and run_days >= series_max_days:
+        lines.append(
+            f"⛔ SERIES EXHAUSTED: '{run_series}' has run {run_days} day(s) in a row "
+            f"(max {series_max_days}). Do NOT use this series today — a serial that "
+            f"outlives the news behind it reads as filler."
+        )
+
     return '\n'.join(lines)
+
+
+def _longest_series_run(entries, now):
+    """Consecutive days up to today that one named series has been used.
+
+    Returns ``(series, days)``, or ``("", 0)`` when today carries no series.
+    Counted in days rather than posts because the account publishes twice daily:
+    "13 posts" and "13 days" are very different fatigue signals, and the one the
+    viewer feels is days.
+    """
+    by_day = {}
+    for _topic, dt, series in entries:
+        if series:
+            by_day.setdefault(dt.date(), set()).add(series)
+
+    today = now.date()
+    running = by_day.get(today) or set()
+    best = ('', 0)
+    for series in running:
+        days, cursor = 0, today
+        while series in (by_day.get(cursor) or set()):
+            days += 1
+            cursor -= timedelta(days=1)
+        if days > best[1]:
+            best = (series, days)
+    return best
 
 
 def get_published_urls(bucket_name):
@@ -329,8 +408,9 @@ def get_published_urls(bucket_name):
             recent_titles  — original_title values from the past 72 h for semantic dedup
             footage        — {'pexels_ids': set[int], 'image_urls': set[str],
                               'cover_hashes': list[int]} used within the reuse window
-            recent_topics  — [(topic, published_datetime)] over the past 7 days,
-                             used to hold the rolling content mix / violence cap
+            recent_topics  — [(topic, published_datetime, series)] over the past
+                             7 days, used to hold the rolling content mix, the
+                             violence cap and the topic/series saturation caps
     """
     published_urls = set()
     recent_titles = []
@@ -405,7 +485,13 @@ def get_published_urls(bucket_name):
                                 topic = post.get('topic') or classify_topic(
                                     post.get('full_post') or post.get('content') or ''
                                 )
-                                recent_topics.append((topic, file_dt))
+                                # Third element is the named series, so the mix
+                                # brief can measure how long one has been running
+                                # without a second S3 listing. Older entries are
+                                # 2-tuples and stay valid — see the brief.
+                                recent_topics.append(
+                                    (topic, file_dt, post.get('series') or '')
+                                )
                             if within_footage_window:
                                 for pid in post.get('pexels_media_ids') or []:
                                     recent_pexels_ids.add(pid)
