@@ -125,6 +125,83 @@ resource "aws_s3_bucket_lifecycle_configuration" "results_lifecycle" {
       storage_class = "GLACIER"
     }
   }
+
+  # ── 2-year retention for the run record (added 2026-08) ───────────────────
+  #
+  # These three root-level prefixes previously matched NO lifecycle rule at
+  # all: never transitioned, never expired, kept forever.
+
+  # The candidate pool per run, plus the articles the editorial filters
+  # excluded. Read only by selection_reviewer over a 7-day window, so 2 years
+  # is already far beyond any reader.
+  rule {
+    id     = "expire-articles-after-730-days"
+    status = "Enabled"
+
+    filter {
+      prefix = "articles_"
+    }
+
+    expiration {
+      days = 730
+    }
+  }
+
+  # Per-run status/telemetry records. Nothing reads these programmatically —
+  # they exist for post-hoc debugging.
+  rule {
+    id     = "expire-pipeline-results-after-730-days"
+    status = "Enabled"
+
+    filter {
+      prefix = "pipeline_results_"
+    }
+
+    expiration {
+      days = 730
+    }
+  }
+
+  # posts_*.json: COLDER, BUT NEVER ARCHIVED AND NEVER EXPIRED.
+  #
+  # `lambda_handler.get_published_urls` reads the BODY of every posts_ object
+  # on every run to build the all-time published-URL set. Glacier objects
+  # cannot be read without a restore, so a transition to GLACIER here would
+  # break URL dedup, the 3-day title window, the 7-day content mix, the
+  # violence cap and footage dedup simultaneously — and expiry would let a
+  # two-year-old article be republished as new.
+  #
+  # STANDARD_IA keeps every object directly readable at roughly half the
+  # storage cost. Bounding this prefix properly needs a compact all-time URL
+  # ledger so the dedup scan stops depending on the raw objects; until that
+  # exists, "cheaper but still readable" is the honest ceiling.
+  rule {
+    id     = "cool-posts-after-90-days"
+    status = "Enabled"
+
+    filter {
+      prefix = "posts_"
+    }
+
+    transition {
+      days          = 90
+      storage_class = "STANDARD_IA"
+    }
+  }
+
+  # Versioning is enabled bucket-wide, but until now only the errors/ rule
+  # expired non-current versions — so every overwritten object anywhere else
+  # kept all of its old versions forever, invisibly.
+  rule {
+    id     = "expire-noncurrent-versions-after-730-days"
+    status = "Enabled"
+
+    filter {}
+
+    noncurrent_version_expiration {
+      noncurrent_days = 730
+    }
+  }
 }
 
 # ===== Secrets Manager for Credentials =====

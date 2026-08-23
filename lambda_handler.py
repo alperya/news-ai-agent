@@ -166,6 +166,18 @@ def get_secrets():
                 'TOPIC_SHARE_CAP', 'SERIES_MAX_DAYS'):
         if key in secret:
             os.environ[key] = secret[key]
+    # Claude model per role. Read in NewsAIAgent.__init__, which runs after this
+    # function on every invoke, so a model swap is a Secrets Manager edit with no
+    # redeploy — the same hot-tuning path as the viral and content-mix knobs.
+    #
+    # Without this loop the defaults in ai_agent.py would be the only way to
+    # change a model, i.e. a code change and a deploy. Keep VISION_MODEL in the
+    # list: it is the knob that protects the footage gate from a REVIEW_MODEL
+    # cost tweak, and it is useless if it cannot be set where the others are.
+    for key in ('CONTENT_MODEL', 'REVIEW_MODEL', 'FOOTAGE_QUERY_MODEL',
+                'VISION_MODEL', 'ANALYTICS_MODEL', 'SELECTION_REVIEW_MODEL'):
+        if key in secret:
+            os.environ[key] = secret[key]
     # Connected Facebook Page — when set, the Story is cross-posted to FB
     if 'FACEBOOK_PAGE_ID' in secret:
         os.environ['FACEBOOK_PAGE_ID'] = secret['FACEBOOK_PAGE_ID']
@@ -320,8 +332,8 @@ def build_content_mix_brief(recent_topics, now=None):
 
     lines = [
         f"CONTENT MIX (last {window_days} days, {total} post(s)): {distribution}",
-        f"TARGET MIX: ~40% impact-on-you (prices, travel, rules), ~30% national "
-        f"security/crime, ~20% Netherlands identity / human interest, ~10% money & business.",
+        "TARGET MIX: ~40% impact-on-you (prices, travel, rules), ~30% national "
+        "security/crime, ~20% Netherlands identity / human interest, ~10% money & business.",
     ]
 
     if violence_share >= cap:
@@ -431,19 +443,32 @@ def get_published_urls(bucket_name):
     }
 
     try:
-        # Get all posts_*.json files from S3
-        list_response = s3_client.list_objects_v2(
-            Bucket=bucket_name,
-            Prefix='posts_'
-        )
+        # Get all posts_*.json files from S3.
+        #
+        # PAGINATED, and that is load-bearing. `list_objects_v2` returns at most
+        # 1000 keys per call. At 2 posts/day this prefix crosses 1000 objects
+        # around day 500, and an unpaginated call would then silently return
+        # only the lexicographically-FIRST 1000 — which, because keys sort as
+        # `posts_YYYYMMDD_HHMMSS`, means the OLDEST ones. Every recent post
+        # would drop out of the window at once, taking URL dedup, the 3-day
+        # title window, the 7-day content mix, the violence cap and footage
+        # dedup with it. No error, no alert: the pipeline would just start
+        # republishing old articles and repeating footage.
+        #
+        # `selection_reviewer._list_recent` already paginated this same prefix,
+        # so the two readers of it disagreed until now.
+        contents = []
+        paginator = s3_client.get_paginator('list_objects_v2')
+        for page in paginator.paginate(Bucket=bucket_name, Prefix='posts_'):
+            contents.extend(page.get('Contents', []))
 
-        if 'Contents' not in list_response:
+        if not contents:
             logger.info("📋 No previous posts found in S3")
             return published_urls, recent_titles, footage, recent_topics
 
-        logger.info(f"🔍 Checking {len(list_response['Contents'])} posts files for duplicates...")
+        logger.info(f"🔍 Checking {len(contents)} posts files for duplicates...")
 
-        for obj in list_response['Contents']:
+        for obj in contents:
             key = obj['Key']
             if not key.startswith('posts_') or not key.endswith('.json'):
                 continue
@@ -887,7 +912,7 @@ def _run_event_pipeline(timestamp: str, bucket_name: str, ai_agent, dry_run: boo
 
         # ── Stage 5: Publish as Reels (Instagram primary + Facebook best-effort;
         #    LinkedIn excluded — it takes news Reels only) ─
-        logger.info(f"\n📱 STAGE 5: Publishing REELS...")
+        logger.info("\n📱 STAGE 5: Publishing REELS...")
         outcome = build_crossposter(content_source="event").publish(
             REEL, media_url=video_url, caption=caption, dry_run=dry_run,
         )
@@ -1341,7 +1366,7 @@ def lambda_handler(event, context):
         
         # Success response
         logger.info("\n" + "="*60)
-        logger.info(f"✅ Lambda execution completed successfully!")
+        logger.info("✅ Lambda execution completed successfully!")
         logger.info(f"📊 Published: {published_count}/{len(posts)} posts")
         logger.info("="*60)
 

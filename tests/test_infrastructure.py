@@ -8,6 +8,7 @@ See local_only/test_architecture.md for the full pattern guide.
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -368,3 +369,90 @@ class TestGetSecrets:
         with patch("lambda_handler.boto3.Session", return_value=self._setup_mock(secret)):
             result = lh.get_secrets()
         assert result["ANTHROPIC_API_KEY"] == "k"
+
+
+# ── Retention (2 years) ──────────────────────────────────────────────────────
+
+_TF = Path(__file__).parent.parent / "infrastructure" / "terraform"
+
+
+def test_post_metrics_table_has_ttl():
+    """Without a TTL the table grows forever while every reader asks for 7-30
+    days — and both readers use scan + FilterExpression, whose cost tracks
+    total table size rather than the window."""
+    tf = (_TF / "analytics.tf").read_text(encoding="utf-8")
+    table = tf.split('resource "aws_dynamodb_table" "post_metrics"')[1].split("\nresource ")[0]
+    assert "ttl {" in table
+    assert 'attribute_name = "expires_at"' in table
+    assert "enabled        = true" in table
+
+
+def test_prompt_versions_has_no_ttl_on_purpose():
+    """This table is the rollback surface for auto-applied prompt changes.
+    Expiring rows quietly shortens how far back a recovery can reach, so the
+    2-year decision (which was about posts and engagement) does not apply."""
+    tf = (_TF / "analytics.tf").read_text(encoding="utf-8")
+    table = tf.split('resource "aws_dynamodb_table" "prompt_versions"')[1].split("\nresource ")[0]
+    assert "ttl {" not in table
+
+
+def test_unruled_root_prefixes_now_have_lifecycle_rules():
+    """posts_/articles_/pipeline_results_ matched no rule at all before this:
+    never transitioned, never expired, kept forever."""
+    tf = (_TF / "main.tf").read_text(encoding="utf-8")
+    lifecycle = tf.split('resource "aws_s3_bucket_lifecycle_configuration"')[1].split("\nresource ")[0]
+    for prefix in ('prefix = "articles_"', 'prefix = "pipeline_results_"', 'prefix = "posts_"'):
+        assert prefix in lifecycle, f"no lifecycle rule for {prefix}"
+    assert "noncurrent_version_expiration" in lifecycle
+
+
+def test_posts_prefix_is_never_archived_or_expired():
+    """The load-bearing exemption.
+
+    get_published_urls reads the BODY of every posts_ object on every run for
+    all-time URL dedup. A GLACIER transition would make those unreadable
+    without a restore, breaking URL dedup, the 3-day title window, the 7-day
+    content mix, the violence cap and footage dedup at once; an expiration
+    would let a two-year-old article be republished as new.
+    """
+    tf = (_TF / "main.tf").read_text(encoding="utf-8")
+    lifecycle = tf.split('resource "aws_s3_bucket_lifecycle_configuration"')[1].split("\nresource ")[0]
+    posts_rule = None
+    for block in lifecycle.split("  rule {"):
+        if 'prefix = "posts_"' in block:
+            posts_rule = block
+    assert posts_rule, "no posts_ rule found"
+    assert "GLACIER" not in posts_rule, "posts_ must stay directly readable"
+    assert "expiration {" not in posts_rule.replace("noncurrent_version_expiration", "")
+    assert "STANDARD_IA" in posts_rule
+
+
+def test_metrics_collector_stamps_two_year_expiry():
+    """DynamoDB only expires items that CARRY the attribute."""
+    import metrics_collector as MC
+
+    published = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
+    expires = MC._expires_at(published)
+    assert isinstance(expires, int)  # TTL reads a Number, not a String
+    delta_days = (expires - published.timestamp()) / 86400
+    assert 729 <= delta_days <= 731
+
+
+def test_expiry_anchored_to_publication_not_collection(monkeypatch):
+    """collect() re-writes the trailing 30 days daily. Anchoring to `now`
+    would slide the expiry forward on every pass, so rows would never age out."""
+    import metrics_collector as MC
+
+    old_post = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    first = MC._expires_at(old_post)
+    second = MC._expires_at(old_post)  # a later collection run, same post
+    assert first == second
+
+
+def test_retention_days_is_tunable(monkeypatch):
+    import metrics_collector as MC
+
+    monkeypatch.setenv("METRICS_RETENTION_DAYS", "365")
+    published = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    delta_days = (MC._expires_at(published) - published.timestamp()) / 86400
+    assert 364 <= delta_days <= 366

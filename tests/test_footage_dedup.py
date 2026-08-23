@@ -294,9 +294,19 @@ def test_create_news_video_has_dedup_params():
 def _s3_stub(objects):
     """Build a boto3-client stub whose list/get return *objects* {key: posts_list}."""
     client = MagicMock()
-    client.list_objects_v2.return_value = {
-        "Contents": [{"Key": k} for k in objects]
-    }
+    contents = [{"Key": k} for k in objects]
+    client.list_objects_v2.return_value = {"Contents": contents}
+
+    # get_published_urls paginates: an unpaginated call caps at 1000 keys and
+    # would silently return only the oldest posts once the prefix grows past
+    # that. Split the stub across two pages so the test would fail if the
+    # production code ever went back to reading a single response.
+    mid = max(1, len(contents) // 2)
+    paginator = MagicMock()
+    paginator.paginate.return_value = iter(
+        [{"Contents": contents[:mid]}, {"Contents": contents[mid:]}]
+    )
+    client.get_paginator.return_value = paginator
 
     def _get_object(Bucket, Key):
         body = MagicMock()
@@ -360,3 +370,49 @@ def test_get_published_urls_backward_compatible_with_old_posts():
     # legacy image_url is still tracked as a recent cover URL
     assert footage["image_urls"] == {"https://img/legacy.jpg"}
     assert footage["cover_hashes"] == []
+
+
+def test_get_published_urls_paginates_past_the_1000_key_cap():
+    """The silent cliff this prevents.
+
+    `list_objects_v2` returns at most 1000 keys. At 2 posts/day the `posts_`
+    prefix crosses that around day 500, and because keys sort as
+    `posts_YYYYMMDD_HHMMSS`, an unpaginated read would return the OLDEST 1000
+    and drop every recent post from the window — breaking URL dedup, the 3-day
+    title window, the 7-day content mix, the violence cap and footage dedup at
+    once, with no error raised.
+
+    Simulates that: 1200 old keys on page 1, the recent ones on page 2. A
+    single-page reader would never see the recent post.
+    """
+    recent_key = _key_for(0)
+    objects = {recent_key: [{"original_url": "https://recent.example/story"}]}
+    old_keys = [f"posts_2024{m:02d}{d:02d}_120000.json"
+                for m in range(1, 13) for d in range(1, 101)][:1200]
+    for k in old_keys:
+        objects[k] = [{"original_url": f"https://old.example/{k}"}]
+
+    client = MagicMock()
+    page1 = [{"Key": k} for k in old_keys]
+    page2 = [{"Key": recent_key}]
+
+    def _get_object(Bucket, Key):
+        body = MagicMock()
+        body.read.return_value = json.dumps(objects[Key]).encode("utf-8")
+        return {"Body": body}
+
+    client.get_object.side_effect = _get_object
+    paginator = MagicMock()
+    paginator.paginate.return_value = iter([{"Contents": page1}, {"Contents": page2}])
+    client.get_paginator.return_value = paginator
+    # Deliberately sabotaged: a single-page read must not be what the code uses.
+    client.list_objects_v2.return_value = {"Contents": page1}
+
+    import lambda_handler
+    with patch.object(lambda_handler.boto3, "client", return_value=client):
+        urls, _titles, _footage, _topics = lambda_handler.get_published_urls("bucket")
+
+    assert "https://recent.example/story" in urls, (
+        "recent post lost — get_published_urls is not paginating"
+    )
+    assert len(urls) == 1201

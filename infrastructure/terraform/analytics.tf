@@ -33,6 +33,21 @@ resource "aws_dynamodb_table" "post_metrics" {
     projection_type = "ALL"
   }
 
+  # 2-year retention. Before this the table had no TTL at all, so per-post
+  # engagement accumulated forever while every reader only ever asks for the
+  # last 7-30 days — and both readers (analytics_engine._load_posts,
+  # selection_reviewer._load_metrics) use scan + FilterExpression, whose cost
+  # tracks TOTAL table size rather than the window. Unbounded growth was
+  # therefore a slowly rising bill on data nobody reads.
+  #
+  # DynamoDB only expires items that CARRY the attribute, so this is inert for
+  # rows written before metrics_collector started stamping `expires_at`.
+  # local_only/backfill_metrics_ttl.py stamps those once.
+  ttl {
+    attribute_name = "expires_at"
+    enabled        = true
+  }
+
   tags = {
     Name        = "${var.project_name}-post-metrics"
     Environment = "production"
@@ -59,6 +74,20 @@ resource "aws_dynamodb_table" "prompt_versions" {
     name = "version"
     type = "S"
   }
+
+  # DELIBERATELY NO TTL, unlike post-metrics.
+  #
+  # This table is the rollback surface: analytics_engine auto-applies prompt
+  # changes above 0.80 confidence, and recovering from a bad auto-update means
+  # copying an older `content` back into Secrets Manager. Expiring rows would
+  # quietly shorten how far back that recovery reaches.
+  #
+  # The 2-year retention decision was about posts and their engagement, which
+  # is post-metrics. This table holds a few hundred rows of prompt text over
+  # its whole life — bounded in practice, and cheap next to what it protects.
+  # If it ever does need bounding, cap it by COUNT per prompt_name (keep the
+  # last N versions), not by age: an old prompt that was working is exactly
+  # what you want to roll back to.
 
   tags = {
     Name        = "${var.project_name}-prompt-versions"

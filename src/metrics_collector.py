@@ -25,6 +25,22 @@ _RESULTS_BUCKET = os.environ.get("RESULTS_BUCKET", "news-ai-agent-results-645949
 _METRICS_TABLE = os.environ.get("METRICS_TABLE", "news-ai-agent-post-metrics")
 _GRAPH_API = "https://graph.facebook.com/v24.0"
 
+# How long per-post engagement is kept. Enforced by the DynamoDB TTL declared in
+# infrastructure/terraform/analytics.tf; this constant only decides the stamp.
+# Read at call time so it can be retuned from Secrets Manager without a deploy.
+_DEFAULT_RETENTION_DAYS = 730  # 2 years
+
+
+def _expires_at(published_at: datetime) -> int:
+    """Epoch seconds at which this post's metrics row may be deleted.
+
+    Anchored to publication, not collection. `collect()` re-writes the trailing
+    30 days on every daily run, so anchoring to `now` would slide the expiry
+    forward on every pass and the row would never actually reach 2 years old.
+    """
+    days = int(os.environ.get("METRICS_RETENTION_DAYS", _DEFAULT_RETENTION_DAYS))
+    return int((published_at + timedelta(days=days)).timestamp())
+
 # Thematic categories, most specific first — first match wins. Geography is
 # deliberately NOT a topic: NL keywords match nearly every caption, which used
 # to label every post "Netherlands" and made topic performance unmeasurable.
@@ -336,6 +352,15 @@ class MetricsCollector:
                     "normalized_engagement_rate": str(normalized_engagement_rate),
                     "raw_engagement_rate": str(raw_engagement_rate),
                     "collected_at": datetime.now(timezone.utc).isoformat(),
+                    # 2-year retention, enforced by the table's TTL.
+                    #
+                    # Anchored to `published_at`, NOT to now: this collector
+                    # re-writes the trailing 30 days on every run, so anchoring
+                    # to now would push the expiry forward each time and the row
+                    # would outlive the window by a month. A number, not a
+                    # string — DynamoDB TTL only reads a Number attribute, and
+                    # every other field here is stringified.
+                    "expires_at": _expires_at(published_at),
                 }
 
                 if not dry_run:
