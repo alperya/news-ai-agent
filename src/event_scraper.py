@@ -64,7 +64,6 @@ class EventItem:
     start_date: str           # ISO format: "2025-06-14T20:00:00+00:00"
     location: str             # "Amsterdam"
     source: str               # e.g. "Eventbrite"
-    end_date: Optional[str] = None
     venue: Optional[str] = None
     category: str = "other"
     price: Optional[str] = None    # "Free" | "€25" | "€15–€45"
@@ -229,8 +228,17 @@ class EventScraper:
         events: List[EventItem] = []
         for item in items[:30]:
             try:
-                def txt(tag: str) -> str:
-                    el = item.find(tag) or item.find(tag, ns)
+                # `item` is bound as a default arg, not captured: the closure is
+                # redefined per iteration today so late binding never bites, but
+                # binding it explicitly keeps that true if the call ever moves.
+                # `is None` rather than `or`: an Element with no children is
+                # falsy, so `find(tag) or find(tag, ns)` ran the namespaced
+                # lookup for every plain <title>/<link> — and Element.__bool__
+                # is deprecated besides.
+                def txt(tag: str, item=item) -> str:
+                    el = item.find(tag)
+                    if el is None:
+                        el = item.find(tag, ns)
                     return html.unescape(el.text.strip()) if el is not None and el.text else ""
 
                 title = txt("title")

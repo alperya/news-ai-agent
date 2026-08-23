@@ -1,0 +1,22 @@
+# Lint, security and code-quality tooling.
+#
+# Split out of base.txt so the test job and the Lambda build don't pull it in.
+# Previously base.txt carried black/flake8/mypy, none of which were ever
+# invoked anywhere — no CI step, no Makefile target, no hook. ruff replaces
+# black + flake8 (same checks, one tool, ~100x faster); mypy is deliberately
+# not reinstated as a blocking gate on an untyped 11.6k-line codebase.
+#
+# Install: pip install -r requirements/base.txt -r requirements/dev.txt
+
+# Lint + format (replaces black, flake8)
+ruff>=0.16.0
+
+# Security static analysis
+bandit>=1.9.0
+
+# Dependency CVE audit
+pip-audit>=2.7.0
+
+# Code quality metrics — scripts/code_quality/analyze.py
+radon>=6.0.0
+pylint>=3.0.0

@@ -91,7 +91,6 @@ def create_event_list_slide(
     events: List[dict],
     date_range: str,
     output_path: str,
-    slide_number: int = 2,
 ) -> str:
     """Slide 2+ — native 1080×1920 portrait NL photo, event pills, handle footer."""
     events = events[:EVENTS_PER_SLIDE]
@@ -161,11 +160,11 @@ def create_event_list_slide(
         date_lbl = ev.get("date_label", "")
 
         title_lines = _wrap(title, f_title, max_tw)
-        t_block = sum(_lh(f_title, l) + 3 for l in title_lines)
+        t_block = sum(_lh(f_title, line) + 3 for line in title_lines)
         meta_h  = _lh(f_meta, "A") + 4
         block_h = t_block + meta_h + 10
 
-        title_w = max(_tw(f_title, l) for l in title_lines) if title_lines else 0
+        title_w = max(_tw(f_title, line) for line in title_lines) if title_lines else 0
         if venue:
             meta_w = 14 + _tw(f_meta, venue)
             if location or date_lbl:
@@ -187,7 +186,9 @@ def create_event_list_slide(
 
     # ── Pass 2: draw ─────────────────────────────────────────────────────────
     y = group_start
-    for (title_lines, block_h, title_w, meta_w, venue, location, date_lbl), pill_h in zip(pill_data, pill_heights):
+    for (title_lines, _block_h, title_w, meta_w, venue, location, date_lbl), pill_h in zip(
+        pill_data, pill_heights, strict=True,
+    ):
         pill_right = min(tx + max(title_w, meta_w) + 24, CARD_W - pill_margin_x)
         pill_top   = y
         pill_bot   = y + pill_h
@@ -277,7 +278,6 @@ def generate_carousel_slides(
             events=chunk,
             date_range=date_range,
             output_path=list_path,
-            slide_number=slide_idx,
         )
         paths.append(list_path)
         durations.append(_slide_seconds(len(chunk)))
@@ -329,7 +329,9 @@ def generate_reels_video(
     # Use absolute paths so ffmpeg resolves them correctly regardless of cwd
     abs_frames = [os.path.abspath(p) for p in slide_paths]
     concat_lines: List[str] = []
-    for p, d in zip(abs_frames, durations):
+    # strict: a caller-supplied `slide_durations` of the wrong length would
+    # otherwise be silently truncated here, producing a video that drops frames.
+    for p, d in zip(abs_frames, durations, strict=True):
         concat_lines.append(f"file '{p}'")
         concat_lines.append(f"duration {d}")
     # ffmpeg concat needs the last file listed once more without duration
@@ -453,7 +455,7 @@ def _fetch_pexels_photo(query: str, orientation: str = "square") -> Optional[Ima
 def _gradient_fallback(w: int, h: int) -> Image.Image:
     t = np.linspace(0, 1, h)
     bg = np.zeros((h, w, 3), dtype=np.uint8)
-    for c, (tv, bv) in enumerate(zip((80, 120, 160), (40, 70, 110))):
+    for c, (tv, bv) in enumerate(zip((80, 120, 160), (40, 70, 110), strict=True)):
         col = (tv + (bv - tv) * t).astype(np.uint8)
         bg[:, :, c] = col[:, np.newaxis]
     return Image.fromarray(bg)

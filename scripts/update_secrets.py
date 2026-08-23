@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Update AWS Secrets Manager with credentials and prompt templates."""
 
-import os
 import json
 from pathlib import Path
 import boto3
@@ -61,14 +60,14 @@ try:
     print("✅ AWS Secrets Manager güncellendi!")
     print(f"   Secret ARN: {response['ARN']}")
     print(f"   Version: {response['VersionId']}")
-    print(f"\n✨ Changes:")
+    print("\n✨ Changes:")
     print(f"   ✓ AI_PROMPT_SINGLE_ARTICLE: {len(secret_payload['AI_PROMPT_SINGLE_ARTICLE'])} chars")
     print(f"   ✓ AI_PROMPT_BATCH_SELECTION: {len(secret_payload['AI_PROMPT_BATCH_SELECTION'])} chars")
     print(f"   ✓ AI_PROMPT_QUALITY_CHECK: {len(secret_payload['AI_PROMPT_QUALITY_CHECK'])} chars")
-    print(f"\n📋 Next steps:")
-    print(f"   1. Rebuild Lambda: ./scripts/build_lambda.sh")
-    print(f"   2. Deploy: cd infrastructure/terraform && terraform apply -auto-approve")
-    print(f"   3. Test: aws lambda invoke --function-name news-ai-agent ...")
+    print("\n📋 Next steps:")
+    print("   1. Rebuild Lambda: ./scripts/build_lambda.sh")
+    print("   2. Deploy: cd infrastructure/terraform && terraform apply -auto-approve")
+    print("   3. Test: aws lambda invoke --function-name news-ai-agent ...")
     
 except ClientError as e:
     if e.response['Error']['Code'] == 'ResourceNotFoundException':

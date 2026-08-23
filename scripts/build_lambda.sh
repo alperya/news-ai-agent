@@ -26,7 +26,6 @@ cp src/fonts/Montserrat-Bold.ttf $BUILD_DIR/Montserrat-Bold.ttf
 cp src/fonts/Poppins-Bold.ttf $BUILD_DIR/Poppins-Bold.ttf
 cp src/fonts/Poppins-SemiBold.ttf $BUILD_DIR/Poppins-SemiBold.ttf
 cp src/fonts/Poppins-Regular.ttf $BUILD_DIR/Poppins-Regular.ttf
-cp src/fonts/NotoEmoji-Regular.ttf $BUILD_DIR/NotoEmoji-Regular.ttf
 cp lambda_handler.py $BUILD_DIR/
 cp token_refresher.py $BUILD_DIR/
 

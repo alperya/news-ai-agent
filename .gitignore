@@ -98,3 +98,4 @@ learnings/
 prompts/*.txt
 !prompts/*.txt.example
 scripts/client_secret.json
+analytics/

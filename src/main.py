@@ -317,7 +317,7 @@ class NewsAIPipeline:
                     if result and 'id' in result:
                         if platform == 'instagram':
                             post_url = result.get('url', f"https://www.instagram.com/p/{result['id']}/")
-                            logger.info(f"✅ SUCCESS! Instagram post published!")
+                            logger.info("✅ SUCCESS! Instagram post published!")
                             logger.info(f"   Post ID: {result['id']}")
                             logger.info(f"   URL: {post_url}")
                             
@@ -330,7 +330,7 @@ class NewsAIPipeline:
                             })
                         else:
                             tweet_url = f"https://twitter.com/i/web/status/{result['id']}"
-                            logger.info(f"✅ SUCCESS! Tweet posted!")
+                            logger.info("✅ SUCCESS! Tweet posted!")
                             logger.info(f"   Tweet ID: {result['id']}")
                             logger.info(f"   URL: {tweet_url}")
                             

@@ -42,8 +42,8 @@ class InstagramPublisher(ChannelPublisher):
 
         self.graph_api_url = "https://graph.facebook.com/v24.0"
 
-        logger.info(f"📋 Instagram API Configuration:")
-        logger.info(f"   API Version: v24.0")
+        logger.info("📋 Instagram API Configuration:")
+        logger.info("   API Version: v24.0")
         logger.info(f"   Account ID: {self.instagram_account_id}")
         logger.info(f"   Access Token: ***{self.access_token[-4:]}")
 
@@ -164,7 +164,7 @@ class InstagramPublisher(ChannelPublisher):
             if hasattr(e.response, 'text'):
                 error_msg += f" - {e.response.text}"
             logger.error(error_msg)
-            raise ValueError(error_msg)
+            raise ValueError(error_msg) from e
         except Exception as e:
             logger.error(f"❌ Error posting to Instagram: {str(e)}")
             raise
@@ -264,7 +264,7 @@ class InstagramPublisher(ChannelPublisher):
             if hasattr(e.response, 'text'):
                 error_msg += f" - {e.response.text}"
             logger.error(error_msg)
-            raise ValueError(error_msg)
+            raise ValueError(error_msg) from e
         except Exception as e:
             logger.error(f"❌ Error posting carousel: {str(e)}")
             raise
@@ -350,7 +350,7 @@ class InstagramPublisher(ChannelPublisher):
             if hasattr(e.response, 'text'):
                 error_msg += f" - {e.response.text}"
             logger.error(error_msg)
-            raise ValueError(error_msg)
+            raise ValueError(error_msg) from e
         except Exception as e:
             logger.error(f"❌ Error posting Reels: {str(e)}")
             raise
@@ -436,7 +436,7 @@ class InstagramPublisher(ChannelPublisher):
             if hasattr(e.response, 'text'):
                 error_msg += f" - {e.response.text}"
             logger.error(error_msg)
-            raise ValueError(error_msg)
+            raise ValueError(error_msg) from e
         except Exception as e:
             logger.error(f"❌ Error posting Story: {str(e)}")
             raise
@@ -573,7 +573,7 @@ class FacebookPublisher(ChannelPublisher):
             if hasattr(e.response, 'text'):
                 error_msg += f" - {e.response.text}"
             logger.error(error_msg)
-            raise ValueError(error_msg)
+            raise ValueError(error_msg) from e
         except Exception as e:
             logger.error(f"❌ Error posting Facebook Story: {str(e)}")
             raise
@@ -649,7 +649,7 @@ class FacebookPublisher(ChannelPublisher):
             if hasattr(e.response, 'text'):
                 error_msg += f" - {e.response.text}"
             logger.error(error_msg)
-            raise ValueError(error_msg)
+            raise ValueError(error_msg) from e
         except Exception as e:
             logger.error(f"❌ Error posting Facebook Reel: {str(e)}")
             raise
@@ -689,7 +689,7 @@ class FacebookPublisher(ChannelPublisher):
             if hasattr(e.response, 'text'):
                 error_msg += f" - {e.response.text}"
             logger.error(error_msg)
-            raise ValueError(error_msg)
+            raise ValueError(error_msg) from e
         except Exception as e:
             logger.error(f"❌ Error posting Facebook photo: {str(e)}")
             raise
@@ -873,7 +873,7 @@ class LinkedInPublisher(ChannelPublisher):
             if hasattr(e.response, 'text'):
                 error_msg += f" - {e.response.text}"
             logger.error(error_msg)
-            raise ValueError(error_msg)
+            raise ValueError(error_msg) from e
         except Exception as e:
             logger.error(f"❌ Error posting LinkedIn Reel: {str(e)}")
             raise

@@ -1,0 +1,147 @@
+# Tool configuration only. This project is deployed as a Lambda ZIP built by
+# scripts/build_lambda.sh, not installed as a package, so there is deliberately
+# no [build-system] or [project] table here.
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = [".venv", "lambda_build", "local_only", "analytics"]
+
+[tool.ruff.lint]
+# Ruff's default (E4/E7/E9 + pyflakes) plus flake8-bugbear.
+#
+# Deliberately narrow. This gate BLOCKS the deploy, so it may only contain rules
+# the codebase can actually hold at zero. Stylistic families (E501 line length,
+# UP pep585 annotations, I import sorting, SIM) currently report ~700 findings
+# between them; enabling one is a repo-wide reformat, which belongs in its own
+# commit rather than wired into a blocking gate on day one. Widen this list one
+# family at a time, each with the cleanup commit that makes it pass.
+select = ["E4", "E7", "E9", "F", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# `sys.path` must be mutated before the local imports resolve — see the
+# "Lambda import path" gotcha in CLAUDE.md. These are the only files that do it.
+"lambda_handler.py" = ["E402"]
+"token_refresher.py" = ["E402"]
+"src/main.py" = ["E402"]
+"src/reels_worker.py" = ["E402"]
+"src/youtube_worker.py" = ["E402"]
+"src/video/event_card.py" = ["E402"]
+"tests/*" = ["E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+addopts = "-v --strict-markers"
+
+[tool.bandit]
+exclude_dirs = [".venv", "tests", "lambda_build", "local_only", "analytics"]
+# The CI gate blocks on HIGH severity only (currently zero). MEDIUM/LOW are
+# counted into the code-quality metrics instead, so they ratchet down rather
+# than starting the gate red — a permanently-red gate gets switched off.
+#
+# B101 assert_used  — pytest uses bare asserts; tests are excluded anyway.
+# B108 hardcoded_tmp_directory — /tmp is the *only* writable path in a Lambda
+#                     execution environment, so every hit is by construction.
+skips = ["B101", "B108"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Code quality metrics — consumed by scripts/code_quality/{analyze,gate}.py
+#
+# THREE different numbers, and conflating them is the usual way a quality gate
+# ends up switched off:
+#
+#   industry — the published best-practice figure, source named. The target.
+#   gate     — a hard ceiling, set with headroom ABOVE the measured baseline.
+#              Crossing it means something went badly wrong in one commit.
+#   ratchet  — "not worse than the previous commit". This is what actually
+#              fires day to day, and it is why the gate can sit above industry
+#              without the whole thing becoming decorative.
+#
+# Measured baseline at 6666baa (2026-08-22), 30 files / 11,627 lines:
+#   max_cc 54  mean_cc 6.09  dup 3.44%  coupling 15  dit 2  lcom4 2  mi 16.09
+#   coverage 55.61%
+#
+# max_cc 54 is `lambda_handler.lambda_handler` itself; dit 2 and lcom4 2 are
+# flat because this codebase is procedural, not OO — those two metrics cover
+# 19 classes out of 11.6k lines and will barely move. See metrics.py.
+#
+# Four of the seven are already the wrong side of industry. Setting absolute
+# gates AT the industry figures would therefore alert on every commit forever,
+# which trains you to ignore the mail. The gates below sit above the baseline
+# so they catch a cliff-edge; the ratchet catches the drift.
+#
+# The email prints industry, gate and current side by side so the gap to best
+# practice stays visible rather than being quietly normalised away.
+# ─────────────────────────────────────────────────────────────────────────────
+[tool.code_quality]
+# Paths analysed. Tests are excluded: test code has its own complexity profile
+# (long linear arrange/act/assert bodies) and mixing it in would mask movement
+# in production code.
+include = ["src", "lambda_handler.py", "token_refresher.py"]
+exclude = [".venv", "lambda_build", "local_only", "analytics", "tests"]
+
+# Ratchet: a metric that gets worse than the previous commit by more than this
+# emails an alert. Absolute zero would fire on rounding noise in float metrics.
+ratchet_tolerance = 0.01
+
+[tool.code_quality.metrics.max_cyclomatic_complexity]
+label = "Max cyclomatic complexity"
+direction = "lower_is_better"
+industry = 10
+gate = 60      # baseline 54
+source = "McCabe (1976), original recommended ceiling"
+
+[tool.code_quality.metrics.mean_cyclomatic_complexity]
+label = "Mean cyclomatic complexity"
+direction = "lower_is_better"
+industry = 5
+gate = 7       # baseline 6.09
+source = "radon A/B grade boundary"
+
+[tool.code_quality.metrics.duplicated_line_pct]
+label = "Duplicated lines"
+direction = "lower_is_better"
+industry = 3.0
+gate = 5.0     # baseline 3.44
+unit = "%"
+source = "SonarQube default quality gate (3% on new code)"
+
+[tool.code_quality.metrics.max_module_coupling]
+label = "Max module coupling (Ce)"
+direction = "lower_is_better"
+industry = 20
+gate = 25      # baseline 15
+source = "Martin (1994) package metrics; practical cap for a repo this size"
+
+[tool.code_quality.metrics.max_depth_of_inheritance]
+label = "Max depth of inheritance"
+direction = "lower_is_better"
+industry = 5
+gate = 5       # baseline 2
+source = "Chidamber-Kemerer DIT, common 5-6 threshold"
+
+[tool.code_quality.metrics.max_lcom4]
+label = "Max LCOM4"
+direction = "lower_is_better"
+industry = 1
+gate = 3       # baseline 2
+source = "Hitz-Montazeri LCOM4; 1 = one cohesive responsibility"
+
+[tool.code_quality.metrics.min_maintainability_index]
+label = "Maintainability index (min)"
+direction = "higher_is_better"
+industry = 20
+gate = 12      # baseline 16.09 (floor: higher is better)
+source = "radon A grade (20-100)"
+
+[tool.code_quality.metrics.test_coverage_pct]
+label = "Test coverage"
+direction = "higher_is_better"
+industry = 80.0
+gate = 50.0    # baseline 55.61 (floor: higher is better)
+unit = "%"
+# Emitted only when CI folds in `pytest --cov-report=json`; absent from the
+# history backfill, because scoring coverage per historical commit would mean
+# running each commit's test suite against its own dependency set.
+source = "common industry target (80%); Google/Microsoft guidance is 60-80%"

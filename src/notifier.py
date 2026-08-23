@@ -129,7 +129,7 @@ def send_event_summary(summary: dict) -> bool:
     subject_line = f"[Events] {status_icon} Weekly NL Events — {status.upper()} — {ts[:10]}"
 
     lines = [
-        f"📅 News AI Agent — Weekly Events Pipeline",
+        "📅 News AI Agent — Weekly Events Pipeline",
         "=" * 55,
         "",
         f"⏰ Time:    {ts}",

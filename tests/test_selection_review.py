@@ -7,13 +7,13 @@ import json
 import os
 import sys
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from ai_agent import NewsAIAgent, SocialMediaPost  # noqa: E402
+from ai_agent import NewsAIAgent  # noqa: E402
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────

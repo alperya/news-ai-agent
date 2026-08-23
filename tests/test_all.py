@@ -590,7 +590,6 @@ def test_video_package_exports():
     """video package should export create_news_video and helpers."""
     from video import (
         create_news_video,
-        SubtitleSegment,
         clean_for_narration,
         group_subtitle_segments,
     )
@@ -618,7 +617,6 @@ def test_chars_to_words():
 
 def test_tts_uses_edge_tts_without_elevenlabs_key():
     """generate_tts should fall back to edge-tts when ELEVENLABS_API_KEY is empty."""
-    from video.config import ELEVENLABS_API_KEY
     # When there's no key, it should NOT raise — it falls back to edge-tts
     # (we just verify the import and fallback path exist)
     from video.tts import generate_tts, _edge_tts

@@ -24,7 +24,6 @@ How to get the short-lived token:
 """
 
 import json
-import os
 import sys
 import urllib.request
 import urllib.parse
@@ -102,13 +101,13 @@ print(f"✅ New token obtained — expires {expiry.strftime('%Y-%m-%d')} UTC")
 # ── Update .env ───────────────────────────────────────────────────────────────
 env_text = ENV_FILE.read_text()
 old_line = next(
-    (l for l in env_text.splitlines() if l.startswith("INSTAGRAM_ACCESS_TOKEN=")),
+    (line for line in env_text.splitlines() if line.startswith("INSTAGRAM_ACCESS_TOKEN=")),
     None,
 )
 if old_line:
     env_text = env_text.replace(old_line, f"INSTAGRAM_ACCESS_TOKEN={new_token}")
     ENV_FILE.write_text(env_text)
-    print(f"✅ .env updated")
+    print("✅ .env updated")
 else:
     print("⚠️  Could not find INSTAGRAM_ACCESS_TOKEN in .env — update it manually")
 
@@ -131,7 +130,7 @@ except ImportError:
     print("⚠️  boto3 not available — Secrets Manager not updated (run from project venv)")
 except Exception as e:
     print(f"⚠️  Secrets Manager update failed: {e}")
-    print(f"   Run: python scripts/update_secrets.py  (after .env is saved)")
+    print("   Run: python scripts/update_secrets.py  (after .env is saved)")
 
 print(f"\n🎉 Done! New token valid until {expiry.strftime('%Y-%m-%d')}.")
 print("   The auto-refresh Lambda will keep it alive going forward.")

@@ -83,8 +83,6 @@ FONT_REGULAR_PATH  = _find_font_file("Poppins-Regular.ttf")
 # Montserrat (used for Reels subtitles / hook overlays)
 FONT_MONTSERRAT_PATH = _find_font_file("Montserrat-Bold.ttf")
 
-# NotoEmoji — emoji fallback for PIL rendering on Lambda (no system emoji font)
-FONT_EMOJI_PATH = _find_font_file("NotoEmoji-Regular.ttf")
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 

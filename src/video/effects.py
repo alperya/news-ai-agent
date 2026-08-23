@@ -441,10 +441,10 @@ def build_subtitle_overlays(
         dur = segment.end - segment.start
         total_words = len(words) or 1
         line_chunks = [lines[i:i + 2] for i in range(0, len(lines), 2)]
-        chunk_word_counts = [sum(len(l.split()) for l in chunk) for chunk in line_chunks]
+        chunk_word_counts = [sum(len(line.split()) for line in chunk) for chunk in line_chunks]
 
         current_start = segment.start
-        for chunk, wc in zip(line_chunks, chunk_word_counts):
+        for chunk, wc in zip(line_chunks, chunk_word_counts, strict=True):
             chunk_end = current_start + dur * (wc / total_words)
             canvas = _render_subtitle_chunk_png(chunk, font)
             png = os.path.join(tmp_dir, f"sub_{idx}.png")
@@ -480,7 +480,7 @@ def _render_subtitle_chunk_png(lines: list, font):
     text_rgba = _hex_to_rgb(SUBTITLE_TEXT_COLOR) + (255,)
 
     y = 0
-    for line, (lw, lh, top_off) in zip(lines, line_metrics):
+    for line, (lw, lh, top_off) in zip(lines, line_metrics, strict=True):
         box_w = lw + 2 * pad_x
         box_x = (VIDEO_WIDTH - box_w) // 2
         draw.rounded_rectangle(
@@ -549,7 +549,7 @@ def build_hook_overlays(hook_text: str, tmp_dir: str, duration: float = 3.0) -> 
     white = (255, 255, 255, 255)
 
     y = pad_y
-    for line, (lw, lh, top_off) in zip(lines, line_heights):
+    for line, (lw, lh, top_off) in zip(lines, line_heights, strict=True):
         text_x = (VIDEO_WIDTH - lw) // 2
         text_y = y + (row_h - lh) // 2 - top_off
         draw.text((text_x, text_y), line, font=font, fill=white)

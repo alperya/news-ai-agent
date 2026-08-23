@@ -91,7 +91,9 @@ def test_collect_runs_the_watchdog_even_with_nothing_to_collect():
 def _run_news_pipeline(articles, posts=None, reviewed=None):
     """Drive the news pipeline to one of its early exits. Returns (body, send_alert mock)."""
     scraper = MagicMock()
-    scraper.scrape_all_sources.return_value = [MagicMock(to_dict=lambda: a) for a in articles]
+    scraper.scrape_all_sources.return_value = [
+        MagicMock(to_dict=lambda a=a: a) for a in articles
+    ]
 
     agent = MagicMock()
     agent.process_batch.return_value = posts if posts is not None else []

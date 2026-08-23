@@ -68,8 +68,8 @@ _STOPWORDS = {
     'de', 'het', 'een', 'en', 'van', 'in', 'op', 'te', 'voor', 'met', 'aan',
     'is', 'zijn', 'bij', 'door', 'naar', 'dat', 'die', 'niet', 'om', 'ook',
     'na', 'uit', 'over', 'als', 'maar', 'meer', 'nog', 'weer', 'wordt', 'werd',
-    'the', 'a', 'an', 'and', 'of', 'to', 'for', 'with', 'on', 'in', 'at',
-    'is', 'are', 'was', 'were', 'be', 'by', 'from', 'as', 'that', 'this',
+    'the', 'a', 'an', 'and', 'of', 'to', 'for', 'with', 'on', 'at',
+    'are', 'was', 'were', 'be', 'by', 'from', 'as', 'that', 'this',
 }
 
 
@@ -310,19 +310,6 @@ class DutchNewsScraper:
         logger.info(f"Total articles scraped: {len(all_articles)}")
         return all_articles
     
-    def scrape_source(self, source: str, category: str = 'general') -> List[NewsArticle]:
-        """Scrape specific source and category"""
-        if source not in self.RSS_FEEDS:
-            logger.error(f"Unknown source: {source}")
-            return []
-        
-        categories = self.RSS_FEEDS[source]
-        if category not in categories:
-            logger.warning(f"Unknown category {category}, using first available")
-            category = list(categories.keys())[0]
-        
-        return self.fetch_feed(categories[category], source, category)
-
 
 def save_articles_json(articles: List[NewsArticle], filename: str = 'articles.json'):
     """Save articles to JSON file"""
