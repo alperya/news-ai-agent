@@ -181,6 +181,10 @@ def get_secrets():
     # Per-role effort — the cheapest cost lever (it changes how much the model
     # thinks, and thinking bills as output tokens). Read at call time by
     # ai_agent._effort_for, so retuning spend is a secret edit, not a deploy.
+    # Vision-gate A/B: set VISION_SHADOW_MODEL to run a challenger on the same
+    # thumbnails and record the delta. Empty = experiment off (the default).
+    if 'VISION_SHADOW_MODEL' in secret:
+        os.environ['VISION_SHADOW_MODEL'] = secret['VISION_SHADOW_MODEL']
     for key in ('EFFORT_BATCH_SELECTION', 'EFFORT_VISION_FOOTAGE_GATE',
                 'EFFORT_QUALITY_CHECK', 'EFFORT_FOOTAGE_QUERIES',
                 'EFFORT_CAROUSEL_CAPTION', 'EFFORT_SINGLE_ARTICLE',

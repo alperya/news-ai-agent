@@ -189,6 +189,23 @@ resource "aws_s3_bucket_lifecycle_configuration" "results_lifecycle" {
     }
   }
 
+  # Vision-gate A/B samples: one small object per comparison, read only by the
+  # weekly email over a 7-day window. 90 days keeps a few experiments' worth of
+  # history for a retrospective without letting a bounded experiment leave an
+  # unbounded prefix behind.
+  rule {
+    id     = "expire-vision-ab-after-90-days"
+    status = "Enabled"
+
+    filter {
+      prefix = "vision_ab/"
+    }
+
+    expiration {
+      days = 90
+    }
+  }
+
   # Versioning is enabled bucket-wide, but until now only the errors/ rule
   # expired non-current versions — so every overwritten object anywhere else
   # kept all of its old versions forever, invisibly.

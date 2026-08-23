@@ -868,6 +868,7 @@ class NewsAIAgent:
                         "reason": match.group(0).strip()[:60] if match else "unparsed",
                     })
             logger.info(f"🖼️  Thumbnail validation ({place_mode}): {sum(results)}/{n} passed")
+            self._shadow_compare(content, results, headline, place_mode)
             return results
         except Exception as e:
             logger.warning(f"⚠️  Thumbnail validation failed, using all clips: {e}")
@@ -876,6 +877,99 @@ class NewsAIAgent:
                     {"index": i, "ok": True, "reason": "gate_error"} for i in range(1, n + 1)
                 )
             return [True] * n
+
+    def _shadow_compare(self, content: list, primary: List[bool],
+                        headline: str, place_mode: str) -> None:
+        """Run a challenger model on the SAME thumbnails and record the delta.
+
+        Answers "could a cheaper model run this gate?" with production data
+        instead of a guess. The gate is 58% of a run's Claude spend and is
+        input-dominated, so the only lever that moves it is the input price per
+        token: Opus $5, Sonnet $3, Haiku $1 per MTok.
+
+        WHY AGREEMENT RATE ALONE IS THE WRONG METRIC
+        --------------------------------------------
+        The two directions of disagreement are not equally bad:
+
+          * shadow FAILs what primary PASSed  -> stricter. Wasteful: fewer
+            candidate clips survive, so the search escalates more often. Costs
+            money, never ships a wrong image.
+          * shadow PASSes what primary FAILed -> LOOSER. This is the dangerous
+            one. Primary rejected that clip because it claimed the wrong place,
+            showed impossible terrain, or wasn't the story's subject — the exact
+            failures (Harlingen, Kansai, the cosy fireplace) this gate exists to
+            stop. A cheaper model that is merely "95% in agreement" but looser
+            on the 5% is not cheaper, it is broken.
+
+        So the recorded verdict is driven by `looser` count, not by agreement.
+
+        Entirely best-effort: flag-gated, wrapped, and never touches `primary`.
+        A shadow failure must not cost a post.
+        """
+        shadow_model = os.environ.get("VISION_SHADOW_MODEL", "").strip()
+        if not shadow_model or shadow_model == self.vision_model:
+            return
+        try:
+            response = self._create(
+                role="vision_shadow",
+                model=shadow_model,
+                max_tokens=1000,
+                effort="low",
+                messages=[{"role": "user", "content": content}],
+            )
+            text = self._response_text(response)
+            n = len(primary)
+            shadow: List[bool] = []
+            for i in range(1, n + 1):
+                m = re.search(rf'^\s*{i}\s*:\s*(PASS|FAIL)[^\n]*',
+                              text, re.IGNORECASE | re.MULTILINE)
+                shadow.append(m.group(1).upper() == 'PASS' if m else True)
+
+            agree = sum(1 for a, b in zip(primary, shadow, strict=True) if a == b)
+            looser = [i for i, (a, b) in enumerate(zip(primary, shadow, strict=True), 1)
+                      if b and not a]
+            stricter = [i for i, (a, b) in enumerate(zip(primary, shadow, strict=True), 1)
+                        if a and not b]
+
+            record = {
+                "event": "vision_shadow",
+                "headline": headline[:80],
+                "place_mode": place_mode,
+                "primary_model": self.vision_model,
+                "shadow_model": shadow_model,
+                "clips": n,
+                "agree": agree,
+                "agreement_pct": round(agree / n * 100, 1) if n else 0.0,
+                "shadow_looser": len(looser),      # DANGEROUS direction
+                "shadow_stricter": len(stricter),  # merely wasteful
+                "primary_passed": sum(primary),
+                "shadow_passed": sum(shadow),
+            }
+            logger.info(json.dumps(record))
+            self._persist_shadow(record)
+        except Exception as exc:
+            logger.warning(f"⚠️  Vision shadow comparison skipped: {exc}")
+
+    @staticmethod
+    def _persist_shadow(record: dict) -> None:
+        """One small object per comparison, so the weekly email can aggregate.
+
+        Per-run keys rather than one appended file: two news runs a day plus a
+        carousel could otherwise race a read-modify-write and lose samples.
+        """
+        if boto3 is None:
+            return
+        try:
+            bucket = os.environ.get(
+                "RESULTS_BUCKET", "news-ai-agent-results-645949963620")
+            key = f"vision_ab/{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
+            boto3.client("s3").put_object(
+                Bucket=bucket, Key=key,
+                Body=json.dumps(record).encode("utf-8"),
+                ContentType="application/json",
+            )
+        except Exception as exc:
+            logger.warning(f"⚠️  Could not persist vision A/B sample: {exc}")
 
     # ── Event methods ──────────────────────────────────────────────────────────
 

@@ -260,3 +260,85 @@ def test_effort_keys_are_copied_out_of_secrets_manager():
     text = (Path(__file__).parent.parent / "lambda_handler.py").read_text(encoding="utf-8")
     for key in ("EFFORT_BATCH_SELECTION", "EFFORT_VISION_FOOTAGE_GATE"):
         assert key in text, f"{key} not copied by get_secrets()"
+
+
+# ── Vision gate A/B ─────────────────────────────────────────────────────────
+
+def _gate_agent(monkeypatch, primary_text, shadow_text=None):
+    """Agent whose vision call returns `primary_text`, shadow returns `shadow_text`."""
+    agent = _agent()
+    calls = {"n": 0}
+
+    def _create(**kw):
+        calls["n"] += 1
+        text = primary_text if calls["n"] == 1 else shadow_text
+        if text is None:
+            raise RuntimeError("shadow model exploded")
+        return SimpleNamespace(
+            content=[_text_block(text)], stop_reason="end_turn",
+            usage=SimpleNamespace(input_tokens=10, output_tokens=5),
+        )
+
+    agent.client.messages.create.side_effect = lambda **kw: _create(**kw)
+    monkeypatch.setattr("ai_agent.NewsAIAgent._persist_shadow", staticmethod(lambda r: None))
+    return agent, calls
+
+
+def test_shadow_is_off_by_default(monkeypatch):
+    """The experiment costs money; it must never run unless switched on."""
+    monkeypatch.delenv("VISION_SHADOW_MODEL", raising=False)
+    agent, calls = _gate_agent(monkeypatch, "1: PASS\n2: FAIL")
+    agent.validate_footage_thumbnails("h", [], ["u1", "u2"])
+    assert calls["n"] == 1, "shadow ran without VISION_SHADOW_MODEL set"
+
+
+def test_shadow_never_changes_the_primary_verdict(monkeypatch):
+    """The whole safety property. The challenger disagrees on every clip here;
+    the returned verdicts must still be the primary's."""
+    monkeypatch.setenv("VISION_SHADOW_MODEL", "claude-haiku-4-5")
+    agent, _ = _gate_agent(monkeypatch, "1: PASS\n2: FAIL", "1: FAIL\n2: PASS")
+    assert agent.validate_footage_thumbnails("h", [], ["u1", "u2"]) == [True, False]
+
+
+def test_shadow_failure_does_not_break_publishing(monkeypatch):
+    """A dead challenger must cost nothing. This runs inside the publish path."""
+    monkeypatch.setenv("VISION_SHADOW_MODEL", "claude-haiku-4-5")
+    agent, _ = _gate_agent(monkeypatch, "1: PASS\n2: PASS", None)  # shadow raises
+    assert agent.validate_footage_thumbnails("h", [], ["u1", "u2"]) == [True, True]
+
+
+def test_shadow_separates_looser_from_stricter(monkeypatch, caplog):
+    """Direction is the finding, not the agreement rate.
+
+    Clip 1: primary FAIL, shadow PASS  -> LOOSER (dangerous: primary rejected it
+            for claiming the wrong place / wrong subject).
+    Clip 2: primary PASS, shadow FAIL  -> stricter (merely wasteful).
+    Clip 3: both PASS                  -> agreement.
+    """
+    import json as _json
+    monkeypatch.setenv("VISION_SHADOW_MODEL", "claude-haiku-4-5")
+    agent, _ = _gate_agent(
+        monkeypatch, "1: FAIL\n2: PASS\n3: PASS", "1: PASS\n2: FAIL\n3: PASS")
+    with caplog.at_level("INFO"):
+        agent.validate_footage_thumbnails("h", [], ["u1", "u2", "u3"])
+    # NB: the claude_usage line also carries role="vision_shadow", so match on
+    # the event key, not on the model name appearing anywhere in the record.
+    rec = next(_json.loads(m) for m in caplog.messages
+               if m.startswith("{") and '"event": "vision_shadow"' in m)
+    assert rec["shadow_looser"] == 1
+    assert rec["shadow_stricter"] == 1
+    assert rec["agree"] == 1 and rec["clips"] == 3
+
+
+def test_shadow_skipped_when_same_as_primary(monkeypatch):
+    """Comparing a model against itself burns money for no information."""
+    monkeypatch.setenv("VISION_SHADOW_MODEL", "claude-sonnet-5")
+    monkeypatch.delenv("VISION_MODEL", raising=False)
+    agent, calls = _gate_agent(monkeypatch, "1: PASS")
+    agent.validate_footage_thumbnails("h", [], ["u1"])
+    assert calls["n"] == 1
+
+
+def test_shadow_flag_reachable_from_secrets_manager():
+    text = (Path(__file__).parent.parent / "lambda_handler.py").read_text(encoding="utf-8")
+    assert "VISION_SHADOW_MODEL" in text

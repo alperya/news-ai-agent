@@ -520,6 +520,12 @@ Rules:
             "",
             self._code_quality_section(),
             "",
+        ]
+        # Only present while an experiment is actually running.
+        vision_ab = self._vision_ab_section()
+        if vision_ab:
+            lines += ["━" * 55, "🔬 " + vision_ab, ""]
+        lines += [
             "━" * 55,
             "📂 Full analysis saved to S3 under analytics/",
             "",
@@ -590,6 +596,85 @@ Rules:
         except Exception as exc:
             logger.warning(f"Code quality rendering failed: {exc}")
             return "Code quality section could not be rendered."
+
+    def _vision_ab_section(self, days: int = 7) -> str:
+        """Summarise the vision-gate A/B, if one is running.
+
+        The recommendation is driven by the LOOSER count, not by agreement.
+        A challenger that agrees 95% of the time but passes clips the primary
+        rejected is not 95% as good — those rejections are the wrong-place and
+        wrong-subject failures the gate exists to catch, so every one of them is
+        a potential published mistake. Stricter disagreements only cost money.
+        """
+        try:
+            keys = []
+            paginator = self._s3.get_paginator("list_objects_v2")
+            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+            for page in paginator.paginate(Bucket=_RESULTS_BUCKET, Prefix="vision_ab/"):
+                for o in page.get("Contents", []):
+                    if o["LastModified"] >= cutoff:
+                        keys.append(o["Key"])
+        except Exception:
+            return ""          # no experiment running — omit the section entirely
+
+        if not keys:
+            return ""
+
+        samples = []
+        for key in sorted(keys):
+            try:
+                body = self._s3.get_object(Bucket=_RESULTS_BUCKET, Key=key)["Body"].read()
+                samples.append(json.loads(body))
+            except Exception:
+                continue
+        if not samples:
+            return ""
+
+        clips = sum(s.get("clips", 0) for s in samples)
+        agree = sum(s.get("agree", 0) for s in samples)
+        looser = sum(s.get("shadow_looser", 0) for s in samples)
+        stricter = sum(s.get("shadow_stricter", 0) for s in samples)
+        primary = samples[-1].get("primary_model", "?")
+        shadow = samples[-1].get("shadow_model", "?")
+        pct = round(agree / clips * 100, 1) if clips else 0.0
+
+        # Price per MTok (input, output). Input is what matters: the gate sends
+        # ~15 images per call and reads back one word per image.
+        price = {"claude-opus-5": 5.0, "claude-opus-4-8": 5.0, "claude-opus-4-6": 5.0,
+                 "claude-sonnet-5": 3.0, "claude-haiku-4-5": 1.0}
+        saving = ""
+        if primary in price and shadow in price and price[primary] > price[shadow]:
+            ratio = price[shadow] / price[primary]
+            saving = (f"  Input cost if switched: {ratio:.0%} of today's "
+                      f"(${price[primary]:.0f} -> ${price[shadow]:.0f} per MTok)")
+
+        if looser == 0 and pct >= 95:
+            verdict = (f"SWITCH LOOKS SAFE — {shadow} never passed a clip {primary} "
+                       f"rejected across {clips} clips.")
+        elif looser == 0:
+            verdict = (f"SAFE BUT STRICTER — no dangerous disagreements, though "
+                       f"{shadow} rejected {stricter} extra clips, which pushes the "
+                       f"search into escalation more often (costs an extra call).")
+        else:
+            verdict = (f"DO NOT SWITCH — {shadow} passed {looser} clip(s) that "
+                       f"{primary} rejected. Those rejections are wrong-place / "
+                       f"wrong-subject calls; each one is a potential published "
+                       f"mistake, and agreement rate does not capture that.")
+
+        lines = [
+            "VISION GATE A/B",
+            "-" * 78,
+            f"Primary: {primary}   Challenger: {shadow}",
+            f"Samples: {len(samples)} runs / {clips} clips over {days} days",
+            "",
+            f"  Agreement            {agree}/{clips}  ({pct}%)",
+            f"  Challenger STRICTER  {stricter}   (wasteful: more escalation)",
+            f"  Challenger LOOSER    {looser}   (DANGEROUS: would ship a rejected clip)",
+        ]
+        if saving:
+            lines.append(saving)
+        lines += ["", f"  {verdict}"]
+        return "\n".join(lines)
 
     # ── Main ─────────────────────────────────────────────────────────────────
 
