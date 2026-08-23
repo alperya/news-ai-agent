@@ -2,7 +2,19 @@
 # >=0.79.0: output_config={'effort': ...} must be an accepted kwarg.
 # Older SDKs raise TypeError; ai_agent._create degrades gracefully, but
 # silently losing effort control would undo the cost tuning.
-anthropic>=0.79.0
+#
+# <1.0.0: anthropic 1.0.0 REMOVED the legacy `.completions` API, and
+# langsmith's wrap_anthropic still references `client.completions.create`.
+# The combination raises AttributeError while merely constructing the client,
+# which took the news pipeline down for two slots on 2026-08-22/23. There is no
+# fixed langsmith release yet (0.11.1 is latest and still broken).
+#
+# ai_agent now falls back to an untraced client if the wrapper raises, so this
+# cap is about KEEPING TRACING, not about staying up. Lift it once langsmith
+# stops touching `.completions` — verify with:
+#   python -c "import anthropic;from langsmith.wrappers import wrap_anthropic;\
+#              wrap_anthropic(anthropic.Anthropic(api_key='x'))"
+anthropic>=0.79.0,<1.0.0
 requests>=2.31.0
 
 # YouTube Data API v3

@@ -187,3 +187,40 @@ def test_readme_documents_the_shipped_model_defaults():
         assert default in row.group(1), (
             f"README says {var} = {row.group(1).strip()!r} but code defaults to {default!r}"
         )
+
+
+# ── Observability must never break publishing ───────────────────────────────
+
+def test_agent_constructs_with_the_real_langsmith_wrapper():
+    """The regression that took production down for two slots.
+
+    `anthropic` 1.0.0 removed the legacy `.completions` API while langsmith's
+    `wrap_anthropic` still referenced `client.completions.create`, so building
+    the agent raised AttributeError before a single article was scraped —
+    2026-08-22 19:00 and 2026-08-23 09:00 AMS both published nothing.
+
+    Every other test in this file patches `_ls_wrap_anthropic` with identity,
+    which is exactly why none of them caught it. This one uses the REAL
+    installed packages, so the pinned dependency combination is verified in CI
+    on every push rather than discovered by a missed slot.
+    """
+    agent = NewsAIAgent(api_key="test-key-not-used-for-network")
+    assert agent.client is not None
+    assert hasattr(agent.client, "messages")
+
+
+def test_tracing_failure_degrades_instead_of_raising(monkeypatch):
+    """Even if the wrapper breaks again, the run must continue untraced.
+
+    The pin keeps tracing working today; this keeps the account publishing on
+    the day some future wrapper/SDK pair breaks again. Same principle the
+    publishing path already follows — a Facebook or YouTube failure never
+    blocks Instagram.
+    """
+    def _boom(_client):
+        raise AttributeError("'Anthropic' object has no attribute 'completions'")
+
+    monkeypatch.setattr("ai_agent._ls_wrap_anthropic", _boom)
+    agent = NewsAIAgent(api_key="test-key-not-used-for-network")
+    assert agent.client is not None
+    assert hasattr(agent.client, "messages")   # usable, just unwrapped

@@ -283,7 +283,27 @@ class NewsAIAgent:
             raise ValueError("ANTHROPIC_API_KEY not found in environment")
         
         base_client = anthropic.Anthropic(api_key=self.api_key)
-        self.client = _ls_wrap_anthropic(base_client) if _ls_wrap_anthropic else base_client
+        # Tracing must NEVER be able to stop the account publishing.
+        #
+        # This exact line took production down for two slots (2026-08-22 19:00
+        # and 2026-08-23 09:00 AMS): `anthropic` 1.0.0 removed the legacy
+        # `.completions` API, and langsmith's `wrap_anthropic` still reaches for
+        # `client.completions.create`, so it raised AttributeError while merely
+        # *constructing* the agent — before a single article was scraped.
+        #
+        # Same principle the publishing path already follows (a Facebook or
+        # YouTube failure never blocks Instagram): an observability wrapper is
+        # strictly optional, so a failure here degrades to an unwrapped client
+        # and the run continues without traces.
+        self.client = base_client
+        if _ls_wrap_anthropic:
+            try:
+                self.client = _ls_wrap_anthropic(base_client)
+            except Exception as exc:
+                logger.warning(
+                    f"⚠️  LangSmith tracing disabled — wrap_anthropic failed "
+                    f"({type(exc).__name__}: {exc}). Publishing continues untraced."
+                )
 
         # ── Model per role (2026-08 retune) ──────────────────────────────────
         #
