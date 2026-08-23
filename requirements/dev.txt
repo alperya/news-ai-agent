@@ -18,5 +18,11 @@ bandit>=1.9.0
 pip-audit>=2.7.0
 
 # Code quality metrics — scripts/code_quality/analyze.py
+#
+# Also installed by the `test` job: tests/test_code_quality.py imports
+# metrics.py, which imports radon. base.txt alone breaks pytest COLLECTION.
+#
+# No pylint: duplication/coupling/DIT/LCOM4 are implemented in metrics.py
+# rather than delegated, so the definitions cannot shift under a dependency
+# upgrade and invalidate the historical series.
 radon>=6.0.0
-pylint>=3.0.0
