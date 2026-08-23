@@ -682,3 +682,82 @@ def test_gate_explicitly_passes_generically_dutch_wide_shots():
     text = _gate_prompt_text(agent)
     assert "polders" in text and "flat farmland" in text
     assert "do not fail them for being wide" in text
+
+
+def test_vision_batch_limit_matches_caller_batch():
+    """The two batch caps must agree, or clips are silently dropped unjudged.
+
+    `footage.fetch_stock_clips` slices its candidates to VALIDATION_BATCH and
+    then zips that batch against the verdicts the gate returns. The gate applies
+    its own VISION_BATCH_LIMIT cap. If the caller's batch were the larger of the
+    two, the surplus clips would never be judged and would vanish from `passed`
+    with no audit entry — the invisible-footage-failure class this module exists
+    to prevent. The zip is strict=True so a mismatch raises, and this test makes
+    it fail in CI rather than mid-render.
+    """
+    import ai_agent
+    import video.footage as F
+
+    assert F.VALIDATION_BATCH <= ai_agent.VISION_BATCH_LIMIT, (
+        f"VALIDATION_BATCH ({F.VALIDATION_BATCH}) exceeds VISION_BATCH_LIMIT "
+        f"({ai_agent.VISION_BATCH_LIMIT}); the surplus clips would be dropped unjudged"
+    )
+
+
+# ── Vision cost controls ────────────────────────────────────────────────────
+
+def test_thumbnail_downsized_for_pexels():
+    """Pexels preview JPEGs are the largest single input in the pipeline —
+    15 per call, up to 2 calls per run. The gate answers four yes/no questions
+    that do not need full resolution."""
+    import video.footage as F
+
+    out = F.thumbnail_for_vision("https://images.pexels.com/videos/1/x.jpg")
+    assert f"w={F.VISION_THUMBNAIL_WIDTH}" in out
+    assert "auto=compress" in out
+
+
+def test_thumbnail_replaces_existing_size_params():
+    """A stale w/h from the original URL must not fight the new width."""
+    import video.footage as F
+
+    out = F.thumbnail_for_vision(
+        "https://images.pexels.com/videos/1/x.jpg?w=1200&h=630&cs=srgb"
+    )
+    assert "w=1200" not in out
+    assert "h=630" not in out
+    assert f"w={F.VISION_THUMBNAIL_WIDTH}" in out
+
+
+def test_thumbnail_leaves_foreign_hosts_alone():
+    """An unknown CDN may not honour these params; a 404 would fail the clip
+    rather than shrink it, which is strictly worse than a large image."""
+    import video.footage as F
+
+    url = "https://cdn.example.com/thumb.jpg"
+    assert F.thumbnail_for_vision(url) == url
+
+
+def test_thumbnail_survives_malformed_url():
+    import video.footage as F
+
+    assert F.thumbnail_for_vision("") == ""
+    assert F.thumbnail_for_vision("not a url") == "not a url"
+
+
+def test_vision_gate_receives_downsized_thumbnails(monkeypatch):
+    """Guards the wiring: the resize must actually reach the API call."""
+    import video.footage as F
+
+    F2 = _patch_pexels(monkeypatch, [_vid(1), _vid(2)])
+    agent = MagicMock()
+    agent.validate_footage_thumbnails.return_value = [True, True]
+    F2.fetch_stock_clips(
+        title="t", content="c", tmp_dir="/tmp", count=2,
+        footage_queries=["dutch canal"], headline="h", ai_agent=agent,
+    )
+    urls = agent.validate_footage_thumbnails.call_args[0][2]
+    assert urls, "no thumbnails passed to the gate"
+    for url in urls:
+        if "pexels.com" in url:
+            assert f"w={F.VISION_THUMBNAIL_WIDTH}" in url

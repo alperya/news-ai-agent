@@ -11,6 +11,7 @@ import logging
 import os
 import re
 from typing import List, Optional, Set
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import requests as http_requests
 from PIL import Image
@@ -37,8 +38,29 @@ logger = logging.getLogger(__name__)
 
 # How many queries feed the pooled candidate search before escalating.
 POOL_QUERIES = 3
-# Thumbnails sent to the vision gate in one call (Haiku multimodal batch).
+# Thumbnails sent to the vision gate in one call.
+#
+# Kept at 15 (not lowered to ~10) on purpose: the gate legitimately rejects a
+# large share of candidates, and a thinner batch pushes the search into the
+# escalation ladder more often — which costs an EXTRA vision call, wiping out
+# the saving. The cost lever is thumbnail size below, not batch size.
+#
+# Must stay <= ai_agent.VISION_BATCH_LIMIT; tests/test_footage_geo.py asserts it.
 VALIDATION_BATCH = 15
+
+# Width, in pixels, of the thumbnails handed to the vision gate.
+#
+# Pexels' `image` field is a full-size preview JPEG. Sent at native size these
+# are the single largest input in the whole pipeline: 15 images per call, up to
+# 2 calls per run, 2 runs a day. On the high-resolution tier an image can cost
+# ~4,784 tokens, so the thumbnails alone can dominate the daily bill — far more
+# than the choice of model does.
+#
+# The gate answers four yes/no questions: is this the story's subject, does it
+# name a place, could it be the Netherlands, does it hit the avoid list. None of
+# those need a 1920px image; 640px is comfortably enough to read a skyline, a
+# mountain or a fireplace. This is a cost change, not a quality trade.
+VISION_THUMBNAIL_WIDTH = 640
 # Per-candidate decisions persisted into posts_*.json. Separate budgets: a run
 # whose rejections fill one shared cap used to record NO used clips at all, so
 # the audit trail went silent in exactly the runs worth auditing.
@@ -50,6 +72,34 @@ AUDIT_REJECT_LIMIT = 25
 # Reel can look, so the rescue tier promises the *country* instead. A national
 # term can never become a wrong-town claim.
 _LAST_RESORT_QUERIES = NATIONAL_ANCHOR_QUERIES
+
+def thumbnail_for_vision(url: str, width: int = VISION_THUMBNAIL_WIDTH) -> str:
+    """Ask Pexels for a smaller preview before sending it to the vision gate.
+
+    Pexels serves resized variants of its own images through query parameters,
+    so this costs one URL rewrite and no download, no re-encode and no extra
+    request from our side — the model fetches the smaller image directly.
+
+    Non-Pexels hosts are returned untouched: an unknown CDN may not honour these
+    parameters, and a URL that 404s would fail the clip rather than shrink it.
+    Only `images.pexels.com` is rewritten, and existing parameters are merged
+    rather than replaced so any signing or format hints survive.
+    """
+    if not url:
+        return url
+    try:
+        parsed = urlparse(url)
+        if not parsed.netloc.endswith("pexels.com"):
+            return url
+        params = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        params.update({"auto": "compress", "cs": "tinysrgb", "w": str(width), "dpr": "1"})
+        # A stale `h` from the original URL would fight the new width and can
+        # produce an odd crop; width alone preserves aspect ratio.
+        params.pop("h", None)
+        return urlunparse(parsed._replace(query=urlencode(params)))
+    except Exception:  # a malformed URL must not lose the clip
+        return url
+
 
 # ── Dutch → English keyword map for better Pexels results ────────────────────
 
@@ -308,11 +358,14 @@ def _validate(
     batch = with_thumbs[:VALIDATION_BATCH]
     details: List[dict] = []
     results = ai_agent.validate_footage_thumbnails(
-        headline, avoid_terms or [], [v["image"] for v in batch],
+        headline, avoid_terms or [], [thumbnail_for_vision(v["image"]) for v in batch],
         place_mode=place_mode, place=place, details_out=details,
     )
-    passed = [v for v, ok in zip(batch, results) if ok]
-    for v, ok in zip(batch, results):
+    # strict: `results` is one verdict per clip in `batch`. A length mismatch
+    # would silently drop unjudged clips into the discard pile — the exact class
+    # of invisible footage failure the audit trail exists to catch.
+    passed = [v for v, ok in zip(batch, results, strict=True) if ok]
+    for v, ok in zip(batch, results, strict=True):
         if not ok:
             _audit(audit_out, v, "vision", ok=False)
 

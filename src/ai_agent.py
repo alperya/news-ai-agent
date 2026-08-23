@@ -239,6 +239,41 @@ class SocialMediaPost:
         return cp > 0x2600
 
 
+# USD per million tokens, (input, output). Used only to annotate the
+# `claude_usage` log line so cost per role is readable in CloudWatch without a
+# spreadsheet. VERIFY AGAINST CURRENT PRICING BEFORE TRUSTING A TOTAL — these
+# are list prices as of 2026-08 and Anthropic changes them. An unknown model
+# simply logs `est_cost_usd: null` rather than guessing.
+#
+# Note claude-sonnet-5 carries introductory pricing of $2/$10 through
+# 2026-08-31; $3/$15 below is the standard rate, so estimates are conservative.
+_MODEL_PRICES = {
+    "claude-opus-5": (5.0, 25.0),
+    "claude-opus-4-8": (5.0, 25.0),
+    "claude-opus-4-7": (5.0, 25.0),
+    "claude-opus-4-6": (5.0, 25.0),
+    "claude-sonnet-5": (3.0, 15.0),
+    "claude-sonnet-4-6": (3.0, 15.0),
+    "claude-haiku-4-5": (1.0, 5.0),
+    "claude-fable-5": (10.0, 50.0),
+}
+
+# Flipped off process-wide the first time an `output_config` is rejected, so a
+# too-old SDK or a model override that predates effort degrades once rather
+# than on every call. See NewsAIAgent._create.
+_EFFORT_SUPPORTED = True
+
+# Hard ceiling on images per vision call. The caller batches too
+# (`video.footage.VALIDATION_BATCH`); this is the API-side guard so a future
+# caller cannot send an unbounded number of images in one request.
+#
+# The two MUST agree: `footage.py` zips its batch against the returned results,
+# so a caller batch larger than this limit would be silently truncated here and
+# the surplus clips dropped without ever being judged. `tests/test_footage_geo.py`
+# asserts the relationship.
+VISION_BATCH_LIMIT = 15
+
+
 class NewsAIAgent:
     """AI Agent for processing news into social media content"""
     
@@ -249,14 +284,115 @@ class NewsAIAgent:
         
         base_client = anthropic.Anthropic(api_key=self.api_key)
         self.client = _ls_wrap_anthropic(base_client) if _ls_wrap_anthropic else base_client
-        # One model for everything since the Opus 5 migration (2026-08). The old
-        # split (Opus for content, Haiku for review/vision) optimised cost, but
-        # at ~6-8 calls/day the difference is a few $/month — and the vision
-        # gate is now the backbone of geographic footage safety, where model
-        # quality directly prevents published mistakes (Harlingen/Kansai).
+
+        # ── Model per role (2026-08 retune) ──────────────────────────────────
+        #
+        # Everything ran on claude-opus-5 from the Opus 5 migration until this
+        # retune. Two roles stay there because they are the ones that decide
+        # whether a post is good and whether it is *wrong*:
+        #
+        #   CONTENT_MODEL — batch selection is the editorial brain. It picks the
+        #     story, scores personal_stake/share_potential, and writes the post.
+        #     Cheapening this is cheapening the product.
+        #   VISION_MODEL  — the footage gate. CLAUDE.md is explicit that model
+        #     quality here directly prevents published mistakes (Harlingen,
+        #     Kansai, the cosy-fireplace heatwave). A wrong-place Reel costs
+        #     more in credibility than a year of the savings.
+        #
+        # The rest are structured extraction or short-form rewriting, where
+        # Sonnet 5 is at or near Opus quality:
+        #
+        #   REVIEW_MODEL        — quality_check rewrites one short post.
+        #   FOOTAGE_QUERY_MODEL — extracts place + place_type + queries. The
+        #     safety *decision* is made in code by footage_geo.derive_place_mode,
+        #     not by the model, so this is extraction, not judgement.
+        #
+        # VISION_MODEL is a NEW knob split out of REVIEW_MODEL. Before the
+        # split those three roles shared one variable, so lowering REVIEW_MODEL
+        # to save money on quality_check would silently have downgraded the
+        # footage gate too — the single most expensive mistake available here.
         self.model = os.getenv('CONTENT_MODEL', 'claude-opus-5')
-        self.review_model = os.getenv('REVIEW_MODEL', 'claude-opus-5')
-        self.footage_model = os.getenv('FOOTAGE_QUERY_MODEL', 'claude-opus-5')
+        self.review_model = os.getenv('REVIEW_MODEL', 'claude-sonnet-5')
+        self.footage_model = os.getenv('FOOTAGE_QUERY_MODEL', 'claude-sonnet-5')
+        self.vision_model = os.getenv('VISION_MODEL', 'claude-opus-5')
+
+    def _create(self, *, role: str, model: str, max_tokens: int,
+                effort: Optional[str] = None, **kwargs):
+        """Single entry point for every Claude call: effort + usage logging.
+
+        Two things happen here that used to happen nowhere:
+
+        1. `output_config={"effort": ...}` — no call site set this before, so
+           all nine ran at the API default of `high` with adaptive thinking
+           billed into `max_tokens` at output-token rates. Effort is the
+           cheapest lever available: it changes spend without changing model.
+
+        2. A structured `claude_usage` log line per call, so cost per role is
+           measurable instead of estimated. There was no token accounting in
+           this repo at all, which meant any model/effort decision was
+           guesswork. Uses the same `json.dumps({"event": ...})` shape as the
+           `viral_skip` log so CloudWatch Logs Insights can query them alike.
+
+        Effort degrades safely: if the SDK is too old to accept `output_config`
+        or a model override rejects it, the flag is dropped process-wide and the
+        call is retried plain. A systematic 400 here would otherwise push every
+        call site into its own fallback path and quietly disable the agent.
+        """
+        global _EFFORT_SUPPORTED
+        params = dict(model=model, max_tokens=max_tokens, **kwargs)
+        if effort and _EFFORT_SUPPORTED:
+            params["output_config"] = {"effort": effort}
+
+        try:
+            response = self.client.messages.create(**params)
+        except Exception as exc:
+            if "output_config" not in params:
+                raise
+            logger.warning(
+                f"⚠️  effort not accepted ({type(exc).__name__}: {exc}); "
+                "retrying without output_config and disabling it for this process"
+            )
+            _EFFORT_SUPPORTED = False
+            params.pop("output_config")
+            response = self.client.messages.create(**params)
+
+        self._log_usage(role, model, effort, response)
+        return response
+
+    @staticmethod
+    def _log_usage(role: str, model: str, effort: Optional[str], response) -> None:
+        """Emit one structured usage line. Never raises — it is telemetry."""
+        try:
+            usage = getattr(response, "usage", None)
+            if usage is None:
+                return
+            inp = getattr(usage, "input_tokens", 0) or 0
+            out = getattr(usage, "output_tokens", 0) or 0
+            cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+            cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
+            price = _MODEL_PRICES.get(model)
+            cost = None
+            if price:
+                # Cache reads bill at ~0.1x input, writes at ~1.25x.
+                cost = round(
+                    (inp * price[0] + cache_read * price[0] * 0.1
+                     + cache_write * price[0] * 1.25 + out * price[1]) / 1_000_000,
+                    6,
+                )
+            logger.info(json.dumps({
+                "event": "claude_usage",
+                "role": role,
+                "model": model,
+                "effort": effort or "default",
+                "input_tokens": inp,
+                "output_tokens": out,
+                "cache_read_tokens": cache_read,
+                "cache_write_tokens": cache_write,
+                "est_cost_usd": cost,
+                "stop_reason": getattr(response, "stop_reason", None),
+            }))
+        except Exception:  # telemetry must never break a publish
+            pass
 
     @staticmethod
     def _response_text(response) -> str:
@@ -313,9 +449,11 @@ class NewsAIAgent:
         try:
             logger.info(f"Processing article: {article['title'][:50]}...")
 
-            response = self.client.messages.create(
+            response = self._create(
+                role="single_article",
                 model=self.model,
                 max_tokens=4000,  # thinking counts against max_tokens on Opus 5
+                effort="high",
                 messages=[{
                     "role": "user",
                     "content": prompt
@@ -389,7 +527,7 @@ class NewsAIAgent:
             
             return result
             
-        except json.JSONDecodeError as e:
+        except json.JSONDecodeError:
             logger.error(f"Failed to parse JSON response: {response_text}")
             return {
                 'content': 'Son dakika haberi',
@@ -433,9 +571,11 @@ class NewsAIAgent:
             prompt_template = self._load_prompt('quality_check.txt', 'AI_PROMPT_QUALITY_CHECK')
             prompt = prompt_template.format(content=post.content)
 
-            response = self.client.messages.create(
+            response = self._create(
+                role="quality_check",
                 model=self.review_model,
                 max_tokens=4000,  # thinking counts against max_tokens on Opus 5
+                effort="medium",
                 messages=[{"role": "user", "content": prompt}]
             )
             raw = self._response_text(response)
@@ -496,9 +636,11 @@ class NewsAIAgent:
             'footage_queries.txt', 'AI_PROMPT_FOOTAGE_QUERIES', _FOOTAGE_QUERIES_PROMPT,
         ).format(title=title, description=description)
         try:
-            response = self.client.messages.create(
+            response = self._create(
+                role="footage_queries",
                 model=self.footage_model,
                 max_tokens=3000,  # thinking counts against max_tokens on Opus 5
+                effort="low",
                 messages=[{"role": "user", "content": prompt}],
             )
             text = self._response_text(response)
@@ -549,9 +691,11 @@ class NewsAIAgent:
         preview = "\n".join(f"- {t}" for t in fact_texts[:7])
         try:
             prompt = self._load_prompt('carousel_caption.txt', 'AI_PROMPT_CAROUSEL_CAPTION').format(facts=preview)
-            response = self.client.messages.create(
+            response = self._create(
+                role="carousel_caption",
                 model=self.model,
                 max_tokens=2000,  # thinking counts against max_tokens on Opus 5
+                effort="low",
                 messages=[{"role": "user", "content": prompt}],
             )
             text = self._response_text(response).strip()
@@ -602,7 +746,7 @@ class NewsAIAgent:
         if not thumbnail_urls:
             return []
 
-        batch = thumbnail_urls[:15]
+        batch = thumbnail_urls[:VISION_BATCH_LIMIT]
         avoid_str = ", ".join(avoid_terms) if avoid_terms else "none"
         n = len(batch)
 
@@ -660,9 +804,11 @@ class NewsAIAgent:
             content.append({"type": "image", "source": {"type": "url", "url": url}})
 
         try:
-            response = self.client.messages.create(
-                model=self.review_model,
+            response = self._create(
+                role="vision_footage_gate",
+                model=self.vision_model,
                 max_tokens=3000,  # thinking counts against max_tokens on Opus 5
+                effort="medium",
                 messages=[{"role": "user", "content": content}],
             )
             text = self._response_text(response)
@@ -726,9 +872,11 @@ class NewsAIAgent:
         )
 
         try:
-            response = self.client.messages.create(
+            response = self._create(
+                role="score_events",
                 model=self.review_model,
                 max_tokens=4000,  # thinking counts against max_tokens on Opus 5
+                effort="low",
                 messages=[{"role": "user", "content": prompt}],
             )
             raw = self._response_text(response)
@@ -807,9 +955,11 @@ class NewsAIAgent:
         )
 
         try:
-            response = self.client.messages.create(
+            response = self._create(
+                role="events_selection",
                 model=self.model,
                 max_tokens=8000,  # thinking counts against max_tokens on Opus 5
+                effort="medium",
                 messages=[{"role": "user", "content": prompt}],
             )
             raw = self._response_text(response)
@@ -949,9 +1099,11 @@ class NewsAIAgent:
         )
 
         try:
-            response = self.client.messages.create(
+            response = self._create(
+                role="batch_selection",
                 model=self.model,
                 max_tokens=8000,  # thinking counts against max_tokens on Opus 5
+                effort="high",
                 messages=[{
                     "role": "user",
                     "content": prompt
@@ -1130,7 +1282,7 @@ ARTICLE {i}:
 
             return posts
             
-        except json.JSONDecodeError as e:
+        except json.JSONDecodeError:
             logger.error(f"Failed to parse JSON response: {response_text[:500]}")
             # Fallback: return empty list
             return []
