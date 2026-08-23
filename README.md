@@ -27,6 +27,11 @@ An intelligent AI-powered pipeline that automatically scrapes Dutch news from NO
 - ✅ **Post-deploy smoke test** — CI invokes the deployed Lambda's health check after `terraform apply` and fails the build if the new code doesn't load
 - ✅ Objective, news-agency style content (BBC/Reuters style)
 - ✅ **LangSmith + Langfuse** observability — LLM traces, token usage, latency & cost dashboard
+- ✅ **Static analysis in CI** — `ruff` + `bandit` (HIGH-severity) block the deploy; `pip-audit` reports dependency CVEs. Blocking is safe here: a blocked deploy just leaves the previous working version running on its cron
+- ✅ **Code quality metrics per commit** — cyclomatic complexity, duplication, module coupling, depth of inheritance, LCOM4, maintainability index and coverage, scored on every push and emailed on regression. Reports *industry figure*, *gate* and *current value* side by side, so the gap to best practice stays visible rather than being normalised away. Deliberately **non-blocking** — a ratchet metric must not block a production hotfix on a pipeline with no rollback
+- ✅ **Model per role** — Opus 5 where quality decides the outcome (story selection, the vision footage gate), Sonnet 5 for structured extraction and short rewrites, with per-role `effort` and a structured `claude_usage` log line giving measured cost per role
+- ✅ **2-year retention** — DynamoDB TTL + S3 lifecycle rules. Previously there was no retention policy at all: engagement data and run records were kept forever while every reader asked for 7–30 days
+- ✅ **Architecture documented** — [`architecture/`](architecture/) holds SDLC, runtime and data diagrams in Mermaid, with CI asserting the schedules quoted in them still match Terraform
 
 ## 🎬 Reels Video Pipeline
 
@@ -193,6 +198,7 @@ All posts include an AI-assistance disclaimer at the bottom.
 | **Observability** | LangSmith + Langfuse (LLM traces, token usage, cost, latency) |
 | **Cloud** | AWS Lambda, S3, EventBridge, Secrets Manager |
 | **IaC** | Terraform |
+| **Quality** | ruff, bandit, pip-audit, pytest + coverage, radon (metrics) |
 | **Language** | Python 3.12 |
 | **Instagram API** | Instagram Graph API v24.0 |
 | **YouTube API** | YouTube Data API v3 (OAuth 2.0, resumable upload) |
@@ -222,7 +228,12 @@ All configuration is managed through environment variables (`.env` locally, AWS 
 | `VIRAL_SKIP_MULTIPLIER` | ❌ | Engagement multiple over the 30-day median that counts as viral (default `5.0`) |
 | `VIRAL_MIN_ENGAGEMENT` | ❌ | Absolute engagement floor for a viral skip (default `1000`) |
 | `VIRAL_WINDOW_HOURS` | ❌ | How recent the previous post must be to protect it (default `24`) |
-| `REVIEW_MODEL` | ❌ | Quality gate model (default: `claude-opus-5`) |
+| `CONTENT_MODEL` | ❌ | Story selection + post generation — the editorial brain (default: `claude-opus-5`) |
+| `VISION_MODEL` | ❌ | Footage vision gate — prevents wrong-place Reels (default: `claude-opus-5`) |
+| `REVIEW_MODEL` | ❌ | Quality gate (default: `claude-sonnet-5`) |
+| `FOOTAGE_QUERY_MODEL` | ❌ | Pexels query + place extraction (default: `claude-sonnet-5`) |
+| `ANALYTICS_MODEL` | ❌ | Weekly analytics + prompt auto-update (default: `claude-opus-5`) |
+| `SELECTION_REVIEW_MODEL` | ❌ | Weekly editorial review (default: `claude-opus-5`) |
 | `LANGCHAIN_API_KEY` | ❌ | LangSmith API key — enables LLM trace dashboard |
 | `LANGCHAIN_PROJECT` | ❌ | LangSmith project name (default suggestion: `news-ai-agent`) |
 | `LANGCHAIN_TRACING_V2` | ❌ | Set to `true` to activate LangSmith tracing |

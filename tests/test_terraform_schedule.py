@@ -1,5 +1,7 @@
 """Infrastructure-as-code guard: the daily-fact EventBridge schedule must
 stay wired to the main Lambda with the right cron + input."""
+
+import re
 from pathlib import Path
 
 _TF = (Path(__file__).parent.parent / "infrastructure" / "terraform" / "main.tf").read_text()
@@ -48,3 +50,40 @@ def test_main_render_lambda_does_not_retry_on_failure():
     """Heavy main render: retries=0 so a timeout alerts immediately (no 3× burn)."""
     assert "maximum_retry_attempts = each.value.retries" in _TF
     assert "retries = 0 }" in _TF
+
+
+# ── Architecture docs must not drift from Terraform ─────────────────────────
+
+_ARCH = Path(__file__).parent.parent / "architecture"
+
+
+def test_architecture_runtime_matches_terraform_crons():
+    """The diagrams quote cron expressions. Prose drifts; Terraform does not.
+
+    This is what keeps architecture/ honest: if someone retunes a schedule and
+    forgets the doc, CI says so instead of the doc quietly becoming fiction.
+    """
+    runtime = (_ARCH / "runtime.md").read_text(encoding="utf-8")
+    tf = "".join(
+        (Path(__file__).parent.parent / "infrastructure" / "terraform" / name).read_text(
+            encoding="utf-8"
+        )
+        for name in ("main.tf", "analytics.tf")
+    )
+    for cron in re.findall(r'schedule_expression = "([^"]+)"', tf):
+        assert cron in runtime, f"{cron} is in Terraform but not in architecture/runtime.md"
+
+
+def test_architecture_records_disabled_rules():
+    """Both disabled rules must be shown as disabled — a diagram that implies
+    the events post still fires is worse than no diagram."""
+    runtime = (_ARCH / "runtime.md").read_text(encoding="utf-8")
+    for rule in ("evening_schedule", "events_thursday_schedule"):
+        idx = runtime.find(rule)
+        assert idx != -1, f"{rule} missing from runtime.md"
+        assert "DISABLED" in runtime[idx:idx + 200], f"{rule} not marked DISABLED"
+
+
+def test_architecture_docs_cross_link():
+    for name in ("sdlc.md", "runtime.md", "data.md", "README.md"):
+        assert (_ARCH / name).exists(), f"architecture/{name} missing"
