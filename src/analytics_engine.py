@@ -90,17 +90,32 @@ class AnalyticsEngine:
         return sorted(snapshots, key=lambda x: x["date"])
 
     def _load_previous_analysis(self) -> Optional[dict]:
-        """Load last week's analysis result from S3 for diff comparison."""
+        """Load last week's analysis result from S3 for diff comparison.
+
+        Sorts by KEY, not by `LastModified`, and does not truncate the listing.
+
+        The previous version took `MaxKeys=10` and then sorted that page by
+        `LastModified`. S3 returns keys in lexicographic order, so once more
+        than 10 `analytics/weekly_*` objects existed — i.e. after ten weeks —
+        that page was the ten OLDEST files, and "last week's analysis" silently
+        became an ancient one. The week-over-week engagement delta in the email
+        has been comparing against the wrong baseline ever since, with no error.
+
+        Keys are `analytics/weekly_YYYY-MM-DD.json`, so lexicographic order is
+        chronological order; sorting by key is both correct and cheaper than
+        trusting object metadata that a re-upload would change.
+        """
         try:
-            response = self._s3.list_objects_v2(
-                Bucket=_RESULTS_BUCKET, Prefix="analytics/weekly_", MaxKeys=10
-            )
-            objects = sorted(
-                response.get("Contents", []), key=lambda x: x["LastModified"], reverse=True
-            )
+            keys: list[str] = []
+            paginator = self._s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(
+                Bucket=_RESULTS_BUCKET, Prefix="analytics/weekly_"
+            ):
+                keys.extend(o["Key"] for o in page.get("Contents", []))
+            objects = sorted(keys, reverse=True)
             if len(objects) < 2:
                 return None
-            previous_key = objects[1]["Key"]
+            previous_key = objects[1]
             obj = self._s3.get_object(Bucket=_RESULTS_BUCKET, Key=previous_key)
             return json.loads(obj["Body"].read())
         except Exception:
@@ -500,6 +515,12 @@ Rules:
 
         lines += [
             "━" * 55,
+            "🧱 CODE QUALITY (last 7 days of commits)",
+            "━" * 55,
+            "",
+            self._code_quality_section(),
+            "",
+            "━" * 55,
             "📂 Full analysis saved to S3 under analytics/",
             "",
         ]
@@ -517,6 +538,58 @@ Rules:
             logger.info("📧 Weekly analytics email sent")
         except Exception as exc:
             logger.error(f"SNS send failed: {exc}")
+
+    # ── Code quality ─────────────────────────────────────────────────────────
+
+    def _code_quality_section(self, days: int = 7) -> str:
+        """Render the code-quality block from the history CI writes to S3.
+
+        The producer is the `code-quality` GitHub Actions job (it runs
+        `scripts/code_quality/analyze.py` on every commit to main and appends to
+        `code_quality/history.json`); this is only the reporter. The Lambda has
+        no access to the git repo, which is why the metrics cannot be computed
+        here.
+
+        Thresholds ride along inside the history file rather than being read
+        from `pyproject.toml`, because `build_lambda.sh` does not copy
+        `pyproject.toml` into the ZIP — see `src/code_quality_report.py`.
+
+        Best-effort throughout: a missing history file must never break the
+        analytics email, which is the load-bearing one.
+        """
+        try:
+            from code_quality_report import render_section
+        except ImportError:
+            return "Code quality reporting unavailable (module missing from deploy)."
+
+        try:
+            body = self._s3.get_object(
+                Bucket=_RESULTS_BUCKET, Key="code_quality/history.json"
+            )["Body"].read()
+            history = json.loads(body)
+        except ClientError:
+            return (
+                "No code quality history yet — the CI job writes\n"
+                "code_quality/history.json on the next push to main."
+            )
+        except Exception as exc:
+            logger.warning(f"Code quality history unreadable: {exc}")
+            return "Code quality history could not be read."
+
+        entries = history.get("entries", [])
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        recent = [e for e in entries if (e.get("commit_date") or "") >= cutoff]
+
+        # A quiet week still deserves the current-state table, so fall back to
+        # the latest entry rather than reporting nothing at all.
+        if not recent and entries:
+            recent = entries[-1:]
+
+        try:
+            return render_section(recent, history.get("config") or None)
+        except Exception as exc:
+            logger.warning(f"Code quality rendering failed: {exc}")
+            return "Code quality section could not be rendered."
 
     # ── Main ─────────────────────────────────────────────────────────────────
 
