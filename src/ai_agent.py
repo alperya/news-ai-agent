@@ -263,6 +263,23 @@ _MODEL_PRICES = {
 # than on every call. See NewsAIAgent._create.
 _EFFORT_SUPPORTED = True
 
+
+def _effort_for(role: str, default: str) -> str:
+    """Per-role effort, read at CALL time so a retune needs no deploy.
+
+    Effort is the cheapest cost lever available — it changes how much the model
+    thinks without changing which model runs, and thinking is billed as output
+    tokens at the model's output rate. Hard-coding it at each call site made
+    every cost adjustment a code change; this makes it a Secrets Manager edit,
+    matching how the viral-skip and content-mix thresholds already work.
+
+    Read at call time, NOT at import: `get_secrets()` copies values out of
+    Secrets Manager after the container has already imported this module, so a
+    module-level `os.environ.get` would freeze the deploy-time default and a
+    retune would silently never apply. `get_secrets()` must also list each key.
+    """
+    return os.environ.get(f"EFFORT_{role.upper()}", default)
+
 # Hard ceiling on images per vision call. The caller batches too
 # (`video.footage.VALIDATION_BATCH`); this is the API-side guard so a future
 # caller cannot send an unbounded number of images in one request.
@@ -334,7 +351,7 @@ class NewsAIAgent:
         self.model = os.getenv('CONTENT_MODEL', 'claude-opus-5')
         self.review_model = os.getenv('REVIEW_MODEL', 'claude-sonnet-5')
         self.footage_model = os.getenv('FOOTAGE_QUERY_MODEL', 'claude-sonnet-5')
-        self.vision_model = os.getenv('VISION_MODEL', 'claude-opus-5')
+        self.vision_model = os.getenv('VISION_MODEL', 'claude-sonnet-5')
 
     def _create(self, *, role: str, model: str, max_tokens: int,
                 effort: Optional[str] = None, **kwargs):
@@ -359,6 +376,7 @@ class NewsAIAgent:
         call site into its own fallback path and quietly disable the agent.
         """
         global _EFFORT_SUPPORTED
+        effort = _effort_for(role, effort) if effort else effort
         params = dict(model=model, max_tokens=max_tokens, **kwargs)
         if effort and _EFFORT_SUPPORTED:
             params["output_config"] = {"effort": effort}
@@ -826,9 +844,13 @@ class NewsAIAgent:
         try:
             response = self._create(
                 role="vision_footage_gate",
+                # 15 PASS/FAIL verdicts measured at 502-606 output tokens, so a
+                # 3000 ceiling only ever bought thinking. Right-sized with room
+                # to spare; effort low because this is visual classification,
+                # not reasoning.
                 model=self.vision_model,
-                max_tokens=3000,  # thinking counts against max_tokens on Opus 5
-                effort="medium",
+                max_tokens=1000,
+                effort="low",
                 messages=[{"role": "user", "content": content}],
             )
             text = self._response_text(response)
@@ -1123,7 +1145,7 @@ class NewsAIAgent:
                 role="batch_selection",
                 model=self.model,
                 max_tokens=8000,  # thinking counts against max_tokens on Opus 5
-                effort="high",
+                effort="medium",
                 messages=[{
                     "role": "user",
                     "content": prompt

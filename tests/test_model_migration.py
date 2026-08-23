@@ -40,21 +40,34 @@ def _clean_agent(monkeypatch):
     return _agent()
 
 
-def test_quality_critical_roles_stay_on_opus_5(monkeypatch):
-    """The two roles that must never be cheapened.
+def test_batch_selection_stays_on_opus_5(monkeypatch):
+    """The one role that is not negotiable on cost.
 
-    Batch selection is the editorial brain — it picks the story and writes the
-    post, so its model IS the product. The vision footage gate is what stops a
-    Reel claiming the wrong place; CLAUDE.md records the measured failures
-    (Harlingen for Deventer, Kansai for Schiphol, a fireplace for a wildfire)
-    that make model quality here a correctness property, not a nicety.
-
-    If a future cost retune moves either of these off Opus, that should be a
-    deliberate decision that fails this test first.
+    Batch selection picks the story, scores it on both ranking axes and writes
+    the post — its model IS the product. Everything else here was retuned for
+    cost on 2026-08-23; this was not.
     """
     agent = _clean_agent(monkeypatch)
     assert agent.model == "claude-opus-5"
-    assert agent.vision_model == "claude-opus-5"
+
+
+def test_vision_gate_is_not_downgraded_below_sonnet(monkeypatch):
+    """A deliberate cost floor, and NOT a revert to a known-good setup.
+
+    The gate is the largest line in a run and is INPUT-dominated (~29.6k in vs
+    ~1.1k out across two calls), so the input price per token is what moves the
+    bill: Opus $5 vs Sonnet $3 vs Haiku $1 per MTok.
+
+    Haiku would be cheaper still, and it is tempting to call that a revert
+    because the gate "used to run on Haiku". It did not: the older two-layer
+    validator ran on Haiku, while the current four-test geo-aware gate
+    (6988f15) and the Opus 5 migration (33b68f0) landed on the SAME day. This
+    gate has never run on Haiku, so going there is an unvalidated combination,
+    not a rollback. Sonnet is the floor until `footage_audit` data says
+    otherwise.
+    """
+    agent = _clean_agent(monkeypatch)
+    assert agent.vision_model == "claude-sonnet-5"
 
 
 def test_secondary_roles_default_to_sonnet(monkeypatch):
@@ -79,7 +92,7 @@ def test_vision_model_is_a_separate_knob_from_review(monkeypatch):
     monkeypatch.delenv("VISION_MODEL", raising=False)
     agent = _agent()
     assert agent.review_model == "claude-haiku-4-5"
-    assert agent.vision_model == "claude-opus-5", (
+    assert agent.vision_model == "claude-sonnet-5", (
         "VISION_MODEL must not follow REVIEW_MODEL"
     )
 
@@ -224,3 +237,26 @@ def test_tracing_failure_degrades_instead_of_raising(monkeypatch):
     agent = NewsAIAgent(api_key="test-key-not-used-for-network")
     assert agent.client is not None
     assert hasattr(agent.client, "messages")   # usable, just unwrapped
+
+
+def test_effort_is_tunable_without_a_deploy(monkeypatch):
+    """Effort is the cheapest cost lever, so it must be a secret edit.
+
+    It changes how much the model thinks without changing which model runs, and
+    thinking bills as output tokens. Hard-coded at each call site it made every
+    cost adjustment a code change; read at CALL time it matches how the viral
+    and content-mix thresholds already work.
+    """
+    import ai_agent
+
+    assert ai_agent._effort_for("batch_selection", "medium") == "medium"
+    monkeypatch.setenv("EFFORT_BATCH_SELECTION", "low")
+    assert ai_agent._effort_for("batch_selection", "medium") == "low"
+
+
+def test_effort_keys_are_copied_out_of_secrets_manager():
+    """A knob absent from get_secrets() is unreachable from the secret — the
+    same trap the model knobs and viral thresholds already document."""
+    text = (Path(__file__).parent.parent / "lambda_handler.py").read_text(encoding="utf-8")
+    for key in ("EFFORT_BATCH_SELECTION", "EFFORT_VISION_FOOTAGE_GATE"):
+        assert key in text, f"{key} not copied by get_secrets()"

@@ -229,9 +229,10 @@ All configuration is managed through environment variables (`.env` locally, AWS 
 | `VIRAL_MIN_ENGAGEMENT` | ❌ | Absolute engagement floor for a viral skip (default `1000`) |
 | `VIRAL_WINDOW_HOURS` | ❌ | How recent the previous post must be to protect it (default `24`) |
 | `CONTENT_MODEL` | ❌ | Story selection + post generation — the editorial brain (default: `claude-opus-5`) |
-| `VISION_MODEL` | ❌ | Footage vision gate — prevents wrong-place Reels (default: `claude-opus-5`) |
+| `VISION_MODEL` | ❌ | Footage vision gate — prevents wrong-place Reels (default: `claude-sonnet-5`) |
 | `REVIEW_MODEL` | ❌ | Quality gate (default: `claude-sonnet-5`) |
 | `FOOTAGE_QUERY_MODEL` | ❌ | Pexels query + place extraction (default: `claude-sonnet-5`) |
+| `EFFORT_<ROLE>` | ❌ | Per-role thinking depth, e.g. `EFFORT_BATCH_SELECTION=low`. Read at call time — the cheapest cost lever, tunable without a deploy |
 | `ANALYTICS_MODEL` | ❌ | Weekly analytics + prompt auto-update (default: `claude-opus-5`) |
 | `SELECTION_REVIEW_MODEL` | ❌ | Weekly editorial review (default: `claude-opus-5`) |
 | `LANGCHAIN_API_KEY` | ❌ | LangSmith API key — enables LLM trace dashboard |

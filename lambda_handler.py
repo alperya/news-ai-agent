@@ -178,6 +178,15 @@ def get_secrets():
                 'VISION_MODEL', 'ANALYTICS_MODEL', 'SELECTION_REVIEW_MODEL'):
         if key in secret:
             os.environ[key] = secret[key]
+    # Per-role effort — the cheapest cost lever (it changes how much the model
+    # thinks, and thinking bills as output tokens). Read at call time by
+    # ai_agent._effort_for, so retuning spend is a secret edit, not a deploy.
+    for key in ('EFFORT_BATCH_SELECTION', 'EFFORT_VISION_FOOTAGE_GATE',
+                'EFFORT_QUALITY_CHECK', 'EFFORT_FOOTAGE_QUERIES',
+                'EFFORT_CAROUSEL_CAPTION', 'EFFORT_SINGLE_ARTICLE',
+                'EFFORT_EVENTS_SELECTION', 'EFFORT_SCORE_EVENTS'):
+        if key in secret:
+            os.environ[key] = secret[key]
     # Connected Facebook Page — when set, the Story is cross-posted to FB
     if 'FACEBOOK_PAGE_ID' in secret:
         os.environ['FACEBOOK_PAGE_ID'] = secret['FACEBOOK_PAGE_ID']
