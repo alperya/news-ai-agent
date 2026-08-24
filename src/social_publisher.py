@@ -13,6 +13,19 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+class ContainerError(ValueError):
+    """Meta rejected the media during container processing.
+
+    Distinct from every other failure in this module because of *when* it
+    happens: the container never reached FINISHED, so the publish call was
+    never made and nothing went live. That makes it the one failure a caller
+    may safely retry — rebuilding the container cannot double-post.
+
+    Kept a ValueError subclass so existing `except ValueError` handlers keep
+    working unchanged.
+    """
+
+
 class InstagramPublisher(ChannelPublisher):
     """Instagram Publisher using Meta Graph API."""
 
@@ -52,26 +65,43 @@ class InstagramPublisher(ChannelPublisher):
         pass
     
     def _check_container_status(self, creation_id: str, max_attempts: int = 30, delay: int = 2) -> bool:
-        """Check if media container is ready for publishing"""
+        """Check if media container is ready for publishing.
+
+        Raises ContainerError when Meta reports ERROR — a state that means the
+        media was rejected during processing and therefore **nothing has been
+        published**. Callers can safely rebuild and retry on it; that is not
+        true of a failure after the publish call.
+        """
         status_url = f"{self.graph_api_url}/{creation_id}"
-        
+
         for attempt in range(max_attempts):
             try:
                 # Ensure valid token before each status check
                 self._ensure_valid_token()
-                
-                response = requests.get(status_url, params={'fields': 'status_code', 'access_token': self.access_token})
+
+                # `status` alongside `status_code` is load-bearing, not extra
+                # detail. The error branch below reads data['status'], and for
+                # as long as only `status_code` was requested that key was never
+                # in the response — so EVERY container failure ever logged read
+                # "Unknown error" and no rejection reason was recoverable.
+                # `status_code` is the state (IN_PROGRESS/FINISHED/ERROR);
+                # `status` is Meta's human-readable reason.
+                response = requests.get(
+                    status_url,
+                    params={'fields': 'status_code,status', 'access_token': self.access_token},
+                    timeout=30,
+                )
                 response.raise_for_status()
                 data = response.json()
-                
+
                 status = data.get('status_code')
-                
+
                 if status == 'FINISHED':
                     logger.info(f"✅ Media container ready (attempt {attempt + 1})")
                     return True
                 elif status == 'ERROR':
-                    error_msg = data.get('status', 'Unknown error')
-                    raise ValueError(f"Media container error: {error_msg}")
+                    error_msg = data.get('status') or 'no reason returned by Meta'
+                    raise ContainerError(f"Media container error: {error_msg}")
                 else:
                     # Status: IN_PROGRESS or other
                     logger.info(f"⏳ Media container processing... (attempt {attempt + 1}/{max_attempts}, status: {status})")
@@ -379,67 +409,112 @@ class InstagramPublisher(ChannelPublisher):
             logger.info("🔐 Validating Instagram token...")
             self._ensure_valid_token()
 
-            # Step 1: Create STORIES media container
-            logger.info("📦 Creating Story media container...")
-            container_url = f"{self.graph_api_url}/{self.instagram_account_id}/media"
-            container_params = {
-                'media_type': 'STORIES',
-                'video_url': video_url,
-                'access_token': self.access_token,
-            }
+            # Steps 1-2 are retried as a unit on ContainerError. Safe by
+            # construction: ContainerError means the container never reached
+            # FINISHED, so the publish call below was never made and nothing
+            # went live — a rebuild cannot double-post. (Contrast the async
+            # workers, which must NOT retry, because their failures can happen
+            # *after* Instagram accepted the media.)
+            #
+            # Observed 2026-08-24: Meta rejected a fact Story mid-processing
+            # while Facebook accepted the identical file, and the same pipeline
+            # had published fine the day before with a video of the same
+            # duration and size — i.e. transient on Meta's side, and previously
+            # unretried, so one bad 9-second window cost the whole slot.
+            creation_id = self._create_story_container(video_url)
 
-            response = requests.post(container_url, params=container_params)
-            response.raise_for_status()
-            creation_id = response.json().get('id')
-
-            if not creation_id:
-                raise ValueError("No creation_id returned from Instagram API")
-
-            logger.info(f"✅ Story container created: {creation_id}")
-
-            # Step 2: Wait for video processing (videos take longer than photos).
-            logger.info("⏳ Waiting for video to be processed...")
-            if not self._check_container_status(creation_id, max_attempts=80, delay=8):
-                raise ValueError("Story container not ready after maximum attempts")
-
-            # Step 3: Ensure token still valid
+            # Step 3: Ensure token is still valid before publishing
             logger.info("🔐 Validating token before publishing...")
             self._ensure_valid_token()
 
-            # Step 4: Publish the Story container
-            logger.info("📤 Publishing Story...")
-            publish_url = f"{self.graph_api_url}/{self.instagram_account_id}/media_publish"
-            publish_params = {
-                'creation_id': creation_id,
-                'access_token': self.access_token,
-            }
+            return self._publish_story_container(creation_id)
 
-            publish_response = requests.post(publish_url, params=publish_params)
-            publish_response.raise_for_status()
+        except Exception as e:
+            logger.error(f"❌ Error posting Story: {str(e)}")
+            raise
 
-            media_id = publish_response.json().get('id')
-            logger.info(f"✅ Story published: {media_id}")
-            logger.info(json.dumps({
-                "event": "post_published",
-                "post_id": media_id,
-                "post_type": "story",
-            }))
+    def _create_story_container(self, video_url: str) -> str:
+        """Create the STORIES container and wait for it, retrying once on rejection."""
+        attempts = int(os.getenv('STORY_CONTAINER_ATTEMPTS', '2'))
+        last: Optional[Exception] = None
+        for attempt in range(1, attempts + 1):
+            try:
+                creation_id = self._post_story_container(video_url)
+                logger.info("⏳ Waiting for video to be processed...")
+                if not self._check_container_status(creation_id, max_attempts=80, delay=8):
+                    raise ValueError("Story container not ready after maximum attempts")
+                return creation_id
+            except ContainerError as exc:
+                last = exc
+                if attempt < attempts:
+                    logger.warning(
+                        f"⚠️  Story container rejected (attempt {attempt}/{attempts}): {exc}. "
+                        "Nothing was published, so rebuilding and retrying."
+                    )
+                    time.sleep(10)
+        raise last if last else ValueError("Story container could not be created")
 
-            return {
-                'id': media_id,
-                'creation_id': creation_id,
-                'type': 'story',
-            }
+    def _post_story_container(self, video_url: str) -> str:
+        """POST the STORIES container and return its creation id."""
+        logger.info("📦 Creating Story media container...")
+        container_url = f"{self.graph_api_url}/{self.instagram_account_id}/media"
+        container_params = {
+            'media_type': 'STORIES',
+            'video_url': video_url,
+            'access_token': self.access_token,
+        }
 
+        try:
+            response = requests.post(container_url, params=container_params, timeout=60)
+            response.raise_for_status()
         except requests.exceptions.HTTPError as e:
             error_msg = f"Instagram Story API error: {str(e)}"
             if hasattr(e.response, 'text'):
                 error_msg += f" - {e.response.text}"
             logger.error(error_msg)
             raise ValueError(error_msg) from e
-        except Exception as e:
-            logger.error(f"❌ Error posting Story: {str(e)}")
-            raise
+
+        creation_id = response.json().get('id')
+        if not creation_id:
+            raise ValueError("No creation_id returned from Instagram API")
+
+        logger.info(f"✅ Story container created: {creation_id}")
+        return creation_id
+
+    def _publish_story_container(self, creation_id: str) -> dict:
+        """Publish an already-FINISHED container. Never retried: past this
+        point Instagram may have accepted the media, and a retry would risk a
+        duplicate Story."""
+        logger.info("📤 Publishing Story...")
+        publish_url = f"{self.graph_api_url}/{self.instagram_account_id}/media_publish"
+        try:
+            publish_response = requests.post(
+                publish_url,
+                params={'creation_id': creation_id, 'access_token': self.access_token},
+                timeout=60,
+            )
+            publish_response.raise_for_status()
+        except requests.exceptions.HTTPError as e:
+            error_msg = f"Instagram Story API error: {str(e)}"
+            if hasattr(e.response, 'text'):
+                error_msg += f" - {e.response.text}"
+            logger.error(error_msg)
+            raise ValueError(error_msg) from e
+
+        media_id = publish_response.json().get('id')
+        logger.info(f"✅ Story published: {media_id}")
+        logger.info(json.dumps({
+            "event": "post_published",
+            "post_id": media_id,
+            "post_type": "story",
+        }))
+
+        return {
+            'id': media_id,
+            'creation_id': creation_id,
+            'type': 'story',
+        }
+
 
 
 class FacebookPublisher(ChannelPublisher):
