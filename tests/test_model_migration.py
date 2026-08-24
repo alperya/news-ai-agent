@@ -342,3 +342,77 @@ def test_shadow_skipped_when_same_as_primary(monkeypatch):
 def test_shadow_flag_reachable_from_secrets_manager():
     text = (Path(__file__).parent.parent / "lambda_handler.py").read_text(encoding="utf-8")
     assert "VISION_SHADOW_MODEL" in text
+
+
+def test_effort_is_not_sent_to_models_that_reject_it(monkeypatch):
+    """Haiku 4.5 returns 400 "This model does not support the effort parameter".
+
+    Checked before the call, so the vision A/B — which points a challenger at
+    exactly such a model — never burns a request to rediscover it.
+    """
+    import ai_agent
+    ai_agent._EFFORT_UNSUPPORTED.clear()
+    agent = _agent()
+    sent = {}
+    agent.client.messages.create.side_effect = lambda **kw: (
+        sent.update(kw) or SimpleNamespace(
+            content=[_text_block("ok")], stop_reason="end_turn",
+            usage=SimpleNamespace(input_tokens=1, output_tokens=1))
+    )
+    agent._create(role="vision_shadow", model="claude-haiku-4-5", max_tokens=100,
+                  effort="low", messages=[{"role": "user", "content": "x"}])
+    assert "output_config" not in sent
+
+
+def test_one_models_rejection_does_not_disable_effort_for_others(monkeypatch):
+    """The bug this replaced.
+
+    The unsupported-effort memo was a single process-wide flag, so the Haiku
+    A/B shadow call disabled effort for Opus 5 batch selection and the Sonnet 5
+    vision gate for the rest of that container's life — silently undoing the
+    cost tuning. Observed in production 2026-08-24 at 07:01 and 17:01.
+    """
+    import ai_agent
+    ai_agent._EFFORT_UNSUPPORTED.clear()
+    agent = _agent()
+    seen = []
+
+    def _create(**kw):
+        seen.append(kw)
+        if kw["model"] == "rejects-effort" and "output_config" in kw:
+            raise ValueError("This model does not support the effort parameter.")
+        return SimpleNamespace(content=[_text_block("ok")], stop_reason="end_turn",
+                               usage=SimpleNamespace(input_tokens=1, output_tokens=1))
+
+    agent.client.messages.create.side_effect = _create
+    msg = [{"role": "user", "content": "x"}]
+
+    agent._create(role="r1", model="rejects-effort", max_tokens=100,
+                  effort="low", messages=msg)
+    seen.clear()
+    agent._create(role="batch_selection", model="claude-opus-5", max_tokens=100,
+                  effort="medium", messages=msg)
+    assert "output_config" in seen[0], (
+        "a different model's rejection disabled effort for Opus 5"
+    )
+    assert "rejects-effort" in ai_agent._EFFORT_UNSUPPORTED
+    assert "claude-opus-5" not in ai_agent._EFFORT_UNSUPPORTED
+
+
+def test_usage_log_records_effort_actually_sent(monkeypatch, caplog):
+    """Telemetry must not claim an effort the API rejected — the cost analysis
+    is built on these lines."""
+    import json as _json
+
+    import ai_agent
+    ai_agent._EFFORT_UNSUPPORTED.clear()
+    agent = _agent()
+    agent.client.messages.create.side_effect = lambda **kw: SimpleNamespace(
+        content=[_text_block("ok")], stop_reason="end_turn",
+        usage=SimpleNamespace(input_tokens=1, output_tokens=1))
+    with caplog.at_level("INFO"):
+        agent._create(role="vision_shadow", model="claude-haiku-4-5", max_tokens=100,
+                      effort="low", messages=[{"role": "user", "content": "x"}])
+    rec = next(_json.loads(m) for m in caplog.messages
+               if m.startswith("{") and '"claude_usage"' in m)
+    assert rec["effort"] == "default", "logged an effort that was never sent"

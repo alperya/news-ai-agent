@@ -258,10 +258,25 @@ _MODEL_PRICES = {
     "claude-fable-5": (10.0, 50.0),
 }
 
-# Flipped off process-wide the first time an `output_config` is rejected, so a
-# too-old SDK or a model override that predates effort degrades once rather
-# than on every call. See NewsAIAgent._create.
-_EFFORT_SUPPORTED = True
+# Models that reject `output_config.effort` outright. Effort is supported on the
+# Opus 4.5+ and Sonnet 4.6+ families; Haiku 4.5 and Sonnet 4.5 return
+# 400 "This model does not support the effort parameter."
+#
+# Checked BEFORE the call so an incompatible model never burns a request to
+# discover it — which matters because the vision A/B deliberately points a
+# challenger at exactly such a model.
+_NO_EFFORT_MODELS = {
+    "claude-haiku-4-5",
+    "claude-haiku-4-5-20251001",
+    "claude-sonnet-4-5",
+}
+
+# Learned at runtime, PER MODEL. Was a single process-wide flag, which meant one
+# incompatible model disabled effort for every other role in the container: the
+# Haiku A/B shadow call poisoned effort for Opus 5 batch selection and the
+# Sonnet 5 vision gate, silently undoing the cost tuning for the rest of that
+# container's life. Keyed by model so a rejection only ever speaks for itself.
+_EFFORT_UNSUPPORTED: set = set()
 
 
 def _effort_for(role: str, default: str) -> str:
@@ -375,10 +390,14 @@ class NewsAIAgent:
         call is retried plain. A systematic 400 here would otherwise push every
         call site into its own fallback path and quietly disable the agent.
         """
-        global _EFFORT_SUPPORTED
         effort = _effort_for(role, effort) if effort else effort
         params = dict(model=model, max_tokens=max_tokens, **kwargs)
-        if effort and _EFFORT_SUPPORTED:
+        effort_sent = bool(
+            effort
+            and model not in _NO_EFFORT_MODELS
+            and model not in _EFFORT_UNSUPPORTED
+        )
+        if effort_sent:
             params["output_config"] = {"effort": effort}
 
         try:
@@ -387,14 +406,18 @@ class NewsAIAgent:
             if "output_config" not in params:
                 raise
             logger.warning(
-                f"⚠️  effort not accepted ({type(exc).__name__}: {exc}); "
-                "retrying without output_config and disabling it for this process"
+                f"⚠️  effort not accepted by {model} ({type(exc).__name__}: {exc}); "
+                f"retrying without it and disabling effort for {model} only"
             )
-            _EFFORT_SUPPORTED = False
+            _EFFORT_UNSUPPORTED.add(model)
+            effort_sent = False
             params.pop("output_config")
             response = self.client.messages.create(**params)
 
-        self._log_usage(role, model, effort, response)
+        # Log what was actually SENT, not what was asked for: recording an
+        # effort the API rejected would make the cost telemetry describe a
+        # request that never happened.
+        self._log_usage(role, model, effort if effort_sent else None, response)
         return response
 
     @staticmethod
